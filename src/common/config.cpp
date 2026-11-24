@@ -220,6 +220,14 @@ bool ArgsManager::ReadConfigFiles(std::string& error, bool ignore_invalid_keys)
         error = strprintf("specified data directory \"%s\" does not exist.", GetArg("-datadir", ""));
         return false;
     }
+    if (GetPathArg("-datadir").empty()) {
+        const auto preferred{GetSavedDataDir()};
+        if (!preferred.empty() && (!preferred.is_absolute() || !fs::is_directory(preferred))) {
+            error = strprintf("data directory \"%s\" saved by the GUI must be an existing absolute directory. Select a directory in the GUI or use -datadir.",
+                              fs::PathToString(preferred));
+            return false;
+        }
+    }
     return true;
 }
 

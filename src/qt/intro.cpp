@@ -130,10 +130,16 @@ bool Intro::showIfNeeded(bool& did_show_intro, int64_t& prune_MiB)
         return true;
     /* 1) Default data directory for operating system */
     QString dataDir = GUIUtil::getDefaultDataDirectory();
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    const auto preferred{GetDataDirPreference()};
+    if (!preferred.empty()) dataDir = GUIUtil::PathToQString(preferred);
+#else
     /* 2) Allow QSettings to override default dir */
     dataDir = settings.value("strDataDir", dataDir).toString();
+#endif
+    const auto selected{GUIUtil::QStringToPath(dataDir)};
 
-    if(!fs::exists(GUIUtil::QStringToPath(dataDir)) || gArgs.GetBoolArg("-choosedatadir", DEFAULT_CHOOSE_DATADIR) || settings.value("fReset", false).toBool() || gArgs.GetBoolArg("-resetguisettings", false))
+    if(!selected.is_absolute() || !fs::is_directory(selected) || gArgs.GetBoolArg("-choosedatadir", DEFAULT_CHOOSE_DATADIR) || settings.value("fReset", false).toBool() || gArgs.GetBoolArg("-resetguisettings", false))
     {
         /* Use selectParams here to guarantee Params() can be used by node interface */
         try {
@@ -157,10 +163,12 @@ bool Intro::showIfNeeded(bool& did_show_intro, int64_t& prune_MiB)
             }
             dataDir = intro.getDataDirectory();
             try {
-                if (TryCreateDirectories(GUIUtil::QStringToPath(dataDir))) {
+                const auto chosen{fs::absolute(GUIUtil::QStringToPath(dataDir))};
+                if (TryCreateDirectories(chosen)) {
                     // If a new data directory has been created, make wallets subdirectory too
-                    TryCreateDirectories(GUIUtil::QStringToPath(dataDir) / "wallets");
+                    TryCreateDirectories(chosen / "wallets");
                 }
+                dataDir = GUIUtil::PathToQString(chosen);
                 break;
             } catch (const fs::filesystem_error&) {
                 QMessageBox::critical(nullptr, CLIENT_NAME,
@@ -174,7 +182,15 @@ bool Intro::showIfNeeded(bool& did_show_intro, int64_t& prune_MiB)
 
         settings.setValue("strDataDir", dataDir);
         settings.setValue("fReset", false);
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+        settings.sync();
+        if (settings.status() != QSettings::NoError) {
+            QMessageBox::critical(nullptr, CLIENT_NAME, tr("The selected data directory could not be saved."));
+            return false;
+        }
+#endif
     }
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
     /* Only override -datadir if different from the default, to make it possible to
      * override -datadir in the sugarchain.conf file in the default data directory
      * (to be consistent with bitcoind behavior)
@@ -182,6 +198,7 @@ bool Intro::showIfNeeded(bool& did_show_intro, int64_t& prune_MiB)
     if(dataDir != GUIUtil::getDefaultDataDirectory()) {
         gArgs.SoftSetArg("-datadir", fs::PathToString(GUIUtil::QStringToPath(dataDir))); // use OS locale for path setting
     }
+#endif
     return true;
 }
 
