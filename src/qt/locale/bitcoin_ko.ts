@@ -4074,6 +4074,10 @@ Go to File &gt; Open Wallet to load a wallet.
         <translation type="unfinished">%s 개발자들</translation>
     </message>
     <message>
+        <source>The Sugarchain En developers</source>
+        <translation>슈가체인 엔 개발자들</translation>
+    </message>
+    <message>
         <source>%s failed to validate the -assumeutxo snapshot state. This indicates a hardware problem, or a bug in the software, or a bad software modification that allowed an invalid snapshot to be loaded. As a result of this, the node will shut down and stop using any state that was built on the snapshot, resetting the chain height from %d to %d. On the next restart, the node will resume syncing from %d without using any snapshot data. Please report this incident to %s, including how you obtained the snapshot. The invalid snapshot chainstate will be left on disk in case it is helpful in diagnosing the issue that caused this error.</source>
         <translation type="unfinished">-assumeutxo 스냅샷 상태 검증하는것에 %s가 실패했습니다. 이것은 하드웨어 문제, 소프트웨어 버그, 잘못된 소프트웨어 수정으로 인해 유효하지 않은 스냅샷이 로드가 되었음을 의미합니다. 그 결과로 인해 노드는 종료되며, 해당 스냅샷을 기반으로 생성된 모든 상태의 사용을 중단하고 체인 높이를 %d에서 %d로 초기화 합니다. 다음 재시작 시, 노드는 스냅샷 데이터를 사용하지 않고 %d높이부터 동기화를 다시 시작합니다. 이 문제를 보고할 때에는 %s 스냅샷을 어떻게 획득했는지도 함께 포함하여 보고해 주십시요. 오류 원인 분석에 도움이 될 수 있도록 유효하지 않은 스냅샷의 체인 상태(chainstate)는 디스크에 그대로 남겨집니다. </translation>
     </message>
