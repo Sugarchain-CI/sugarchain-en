@@ -204,9 +204,11 @@ FUZZ_TARGET(ephemeral_package_eval, .init = initialize_tx_pool)
     // All RBF-spendable outpoints outside of the unsubmitted package
     std::set<COutPoint> mempool_outpoints;
     std::unordered_map<COutPoint, CAmount, SaltedOutpointHasher> outpoints_value;
+    const auto& consensus{node.chainman->GetParams().GetConsensus()};
+    int height{1};
     for (const auto& outpoint : g_outpoints_coinbase_init_mature) {
         Assert(mempool_outpoints.insert(outpoint).second);
-        outpoints_value[outpoint] = 50 * COIN;
+        outpoints_value[outpoint] = GetBlockSubsidy(height++, consensus);
     }
 
     auto outpoints_updater = std::make_shared<OutpointsUpdater>(mempool_outpoints);
@@ -359,9 +361,11 @@ FUZZ_TARGET(tx_package_eval, .init = initialize_tx_pool)
     // All RBF-spendable outpoints outside of the unsubmitted package
     std::set<COutPoint> mempool_outpoints;
     std::unordered_map<COutPoint, CAmount, SaltedOutpointHasher> outpoints_value;
+    const auto& consensus{node.chainman->GetParams().GetConsensus()};
+    int height{1};
     for (const auto& outpoint : g_outpoints_coinbase_init_mature) {
         Assert(mempool_outpoints.insert(outpoint).second);
-        outpoints_value[outpoint] = 50 * COIN;
+        outpoints_value[outpoint] = GetBlockSubsidy(height++, consensus);
     }
 
     auto outpoints_updater = std::make_shared<OutpointsUpdater>(mempool_outpoints);

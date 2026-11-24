@@ -14,3 +14,12 @@ Sugarchain En issues, including GUI problems, in
 IBD performance benchmarks and reproduction guide: [IBD Optimization & Benchmarking](doc/ibd-optimization.md)
 
 Historical Yespower auditing and reusable local results: [Lazy PoW Validation in the Background](doc/lazy-pow-validation.md)
+
+## Regtest upgrade
+
+Regtest now starts at 42.94967296 SUGAR per block and halves every 12,500,000
+blocks. Start a fresh regtest data directory for this schedule. Blocks that
+claimed the previous 50 SUGAR reward exceed the current subsidy limit.
+Keep old regtest data separately if you need it for testing. The debug-only
+`-regtest -test=bitcoinregtest` option selects the previous schedule for
+precomputed test fixtures and old test-chain data.

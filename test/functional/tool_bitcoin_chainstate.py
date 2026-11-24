@@ -18,9 +18,10 @@ from test_framework.util import assert_equal
 from test_framework.wallet import MiniWallet
 
 START_HEIGHT = 199
+START_TIME = 1_700_000_000
 # Hardcoded in regtest chainparams
 SNAPSHOT_BASE_BLOCK_HEIGHT = 299
-SNAPSHOT_BASE_BLOCK_HASH = "7cc695046fec709f8c9394b6f928f81e81fd3ac20977bb68760fa1faa7916ea2"
+SNAPSHOT_BASE_BLOCK_HASH = "688b39797b714d41c01cd2bca7fba497c81790d650321f42d5b06b3d2092b588"
 
 
 class BitcoinChainstateTest(BitcoinTestFramework):
@@ -28,7 +29,8 @@ class BitcoinChainstateTest(BitcoinTestFramework):
         self.skip_if_no_bitcoin_chainstate()
 
     def set_test_params(self):
-        """Use the pregenerated, deterministic chain up to height 199."""
+        self.setup_clean_chain = True
+        self.use_bitcoin_regtest = False
         self.num_nodes = 2
 
     def setup_network(self):
@@ -36,6 +38,11 @@ class BitcoinChainstateTest(BitcoinTestFramework):
         including blocks the other hasn't yet seen."""
         self.add_nodes(2)
         self.start_nodes()
+        n0, n1 = self.nodes
+        n0.setmocktime(START_TIME)
+        wallet = MiniWallet(n0)
+        for block_hash in self.generate(wallet, START_HEIGHT, sync_fun=self.no_op):
+            assert_equal(n1.submitblock(n0.getblock(block_hash, 0)), None)
 
     def generate_snapshot_chain(self):
         self.log.info(f"Generate deterministic chain up to block {SNAPSHOT_BASE_BLOCK_HEIGHT} for node0 while node1 disconnected")

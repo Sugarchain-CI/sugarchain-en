@@ -50,14 +50,19 @@ static void TestBlockSubsidyHalvings(int nSubsidyHalvingInterval)
 
 BOOST_AUTO_TEST_CASE(block_subsidy_test)
 {
-    const auto chainParams = CreateChainParams(*m_node.args, ChainType::MAIN);
-    // Official Sugarchain reward and interval; not derived from the function
-    // being tested. The other fixtures retain Bitcoin-style initial subsidies.
-    BOOST_CHECK_EQUAL(chainParams->GetConsensus().nInitialSubsidy, CAmount{4294967296});
-    BOOST_CHECK_EQUAL(chainParams->GetConsensus().nSubsidyHalvingInterval, 12500000);
-    TestBlockSubsidyHalvings(chainParams->GetConsensus()); // As in main
-    TestBlockSubsidyHalvings(150); // As in regtest
-    TestBlockSubsidyHalvings(1000); // Just another interval
+    constexpr CAmount INITIAL_SUBSIDY{4'294'967'296};
+    constexpr int HALVING_INTERVAL{12'500'000};
+    for (const ChainType chain : {ChainType::MAIN, ChainType::TESTNET, ChainType::REGTEST}) {
+        BOOST_TEST_CONTEXT(ChainTypeToString(chain)) {
+            const auto chain_params{CreateChainParams(*m_node.args, chain)};
+            const auto& consensus{chain_params->GetConsensus()};
+            BOOST_CHECK_EQUAL(consensus.nInitialSubsidy, INITIAL_SUBSIDY);
+            BOOST_CHECK_EQUAL(consensus.nSubsidyHalvingInterval, HALVING_INTERVAL);
+            BOOST_CHECK_EQUAL(GetBlockSubsidy(1, consensus), INITIAL_SUBSIDY);
+            TestBlockSubsidyHalvings(consensus);
+        }
+    }
+    TestBlockSubsidyHalvings(1000); // Exercise a separate interval.
 }
 
 BOOST_AUTO_TEST_CASE(subsidy_limit_test)
@@ -141,7 +146,10 @@ BOOST_AUTO_TEST_CASE(signet_parse_tests)
 //! Test retrieval of valid assumeutxo values.
 BOOST_AUTO_TEST_CASE(test_assumeutxo)
 {
-    const auto params = CreateChainParams(*m_node.args, ChainType::REGTEST);
+    const auto native_params{CreateChainParams(*m_node.args, ChainType::REGTEST)};
+    BOOST_CHECK(!native_params->AssumeutxoForHeight(110));
+
+    const auto params{CChainParams::RegTest({.bitcoin_regtest = true})};
 
     // These heights don't have assumeutxo configurations associated, per the contents
     // of kernel/chainparams.cpp.

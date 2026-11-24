@@ -109,6 +109,7 @@ class TestNode():
         use_cli=False,
         start_perf=False,
         version=None,
+        bitcoin_regtest=False,
         v2transport=False,
         uses_wallet=False,
         ipcbind=False,
@@ -157,6 +158,8 @@ class TestNode():
         if self.binaries.bin_dir is not None:
             # Historical binaries otherwise look for bitcoin.conf instead of the shared fixture.
             self.args.append(f"-conf={self.bitcoinconf}")
+        if bitcoin_regtest and self.chain == "regtest" and self.version is None:
+            self.args.append("-test=bitcoinregtest")
         if uses_wallet is not None and not uses_wallet:
             self.args.append("-disablewallet")
 
