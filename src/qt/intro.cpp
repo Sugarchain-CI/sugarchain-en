@@ -50,7 +50,7 @@ Intro::Intro(QWidget *parent, int64_t blockchain_size_gb, int64_t chain_state_si
     ui->lblExplanation1->setText(ui->lblExplanation1->text()
         .arg(CLIENT_NAME)
         .arg(m_blockchain_size_gb)
-        .arg(2009)
+        .arg(2019)
         .arg(tr("Sugarchain"))
     );
     ui->lblExplanation2->setText(ui->lblExplanation2->text().arg(CLIENT_NAME));
@@ -316,12 +316,15 @@ void Intro::UpdatePruneLabels(bool prune_checked)
     }
     ui->lblExplanation3->setVisible(prune_checked);
     ui->pruneGB->setEnabled(prune_checked);
-    static constexpr uint64_t nPowTargetSpacing = 10 * 60;  // from chainparams, which we don't have at this stage
-    static constexpr uint32_t expected_block_data_size = 2250000;  // includes undo data
-    const uint64_t expected_backup_days = m_prune_target_gb * 1e9 / (uint64_t(expected_block_data_size) * 86400 / nPowTargetSpacing);
-    ui->lblPruneSuffix->setText(
-        //: Explanatory text on the capability of the current prune target.
-        tr("(sufficient to restore backups %n day(s) old)", "", expected_backup_days));
+    const bool mainnet = Params().GetChainType() == ChainType::MAIN;
+    ui->lblPruneSuffix->setVisible(mainnet);
+    if (mainnet) {
+        // A conservative estimate of the average stored block and undo size.
+        static constexpr uint64_t expected_block_data_size{1024};
+        const auto block_time = Params().GetConsensus().nPowTargetSpacing;
+        const auto estimated_days = m_prune_target_gb * 1e9 / (expected_block_data_size * 86400 / block_time);
+        ui->lblPruneSuffix->setText(tr("(estimated block retention: %n day(s))", "", estimated_days));
+    }
     ui->sizeWarningLabel->setText(
         tr("%1 will download and store a copy of the Sugarchain block chain.").arg(CLIENT_NAME) + " " +
         storageRequiresMsg.arg(m_required_space_gb) + " " +
