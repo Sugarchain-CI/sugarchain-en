@@ -18,7 +18,7 @@ import subprocess
 import sys
 import time
 
-from verify_bundle import check_metadata, require
+from verify_bundle import BUNDLE_NAME, check_metadata, require
 
 
 class Node:
@@ -148,6 +148,7 @@ def main():
     work.mkdir()
 
     app = args.app.resolve()
+    require(app.name == BUNDLE_NAME, f"Expected bundle name {BUNDLE_NAME}")
     bindir = args.bindir.resolve()
     with (app / "Contents/Info.plist").open("rb") as source:
         info = plistlib.load(source)

@@ -7,7 +7,7 @@ cmake --build build --target deploy
 ```
 
 When complete, it produces `Sugarchain-En-<version>-macos.zip` containing
-`Sugarchain En.app`. The configured `macos-archive-path.txt` in the build
+`Sugarchain-Qt.app`. The configured `macos-archive-path.txt` in the build
 directory records the archive path for the selected build environment.
 
 ## Native runtime verification
@@ -16,7 +16,7 @@ After unpacking a native shared-Qt deployment archive, macOS CI runs:
 
 ```bash
 python3 contrib/macdeploy/verify-native.py \
-  --app "build/deploy/Sugarchain En.app" \
+  --app "build/deploy/Sugarchain-Qt.app" \
   --bindir build/bin \
   --work-dir "$RUNNER_TEMP/en-macos-app-smoke"
 ```
