@@ -85,7 +85,7 @@
        <item row="2" column="0">
         <widget class="QLabel" name="labelClientUserAgent">
          <property name="text">
-          <string>User Agent</string>
+          <string>P2P User Agent</string>
          </property>
          <property name="indent">
           <number>10</number>
