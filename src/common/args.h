@@ -27,6 +27,9 @@ class ArgsManager;
 extern const char * const BITCOIN_CONF_FILENAME;
 extern const char * const BITCOIN_SETTINGS_FILENAME;
 
+/** Custom data directory selected in the GUI on Windows or macOS, if set. */
+fs::path GetDataDirPreference();
+
 // Return true if -datadir option points to a valid directory or is not specified.
 bool CheckDataDirOption(const ArgsManager& args);
 
@@ -148,6 +151,7 @@ protected:
     mutable fs::path m_cached_blocks_path GUARDED_BY(cs_args);
     mutable fs::path m_cached_datadir_path GUARDED_BY(cs_args);
     mutable fs::path m_cached_network_datadir_path GUARDED_BY(cs_args);
+    mutable std::optional<fs::path> m_gui_datadir_preference GUARDED_BY(cs_args);
 
     [[nodiscard]] bool ReadConfigStream(std::istream& stream, const std::string& filepath, std::string& error, bool ignore_invalid_keys = false);
 
@@ -442,6 +446,7 @@ private:
      * @return Absolute path on success, otherwise an empty path when a non-directory path would be returned
      */
     fs::path GetDataDir(bool net_specific) const;
+    fs::path GetSavedDataDir() const;
 
     /**
      * Return -regtest/-signet/-testnet/-testnet4/-chain= setting as a ChainType enum if a
