@@ -17,10 +17,14 @@
 #include <qt/walletmodel.h>
 
 #include <QAbstractItemDelegate>
+#include <QAbstractItemView>
 #include <QApplication>
 #include <QDateTime>
+#include <QFontMetrics>
+#include <QHelpEvent>
 #include <QPainter>
 #include <QStatusTipEvent>
+#include <QToolTip>
 
 #include <algorithm>
 #include <map>
@@ -38,6 +42,22 @@ public:
         : QAbstractItemDelegate(parent), platformStyle(_platformStyle)
     {
         connect(this, &TxViewDelegate::width_changed, this, &TxViewDelegate::sizeHintChanged);
+    }
+
+    bool helpEvent(QHelpEvent* event, QAbstractItemView* view,
+                   const QStyleOptionViewItem& option, const QModelIndex& index) override
+    {
+        const QString address = index.data(TransactionTableModel::AddressRole).toString();
+        if (!event || event->type() != QEvent::ToolTip || !view || address.isEmpty()) {
+            return QAbstractItemDelegate::helpEvent(event, view, option, index);
+        }
+
+        QString tooltip = index.data(Qt::ToolTipRole).toString();
+        if (!tooltip.contains(address)) {
+            tooltip += QStringLiteral("\n") + address;
+        }
+        QToolTip::showText(event->globalPos(), tooltip, view);
+        return true;
     }
 
     inline void paint(QPainter *painter, const QStyleOptionViewItem &option,
@@ -70,7 +90,8 @@ public:
 
         painter->setPen(foreground);
         QRect boundingRect;
-        painter->drawText(addressRect, Qt::AlignLeft | Qt::AlignVCenter, address, &boundingRect);
+        const QString displayed_address = painter->fontMetrics().elidedText(address, Qt::ElideRight, addressRect.width());
+        painter->drawText(addressRect, Qt::AlignLeft | Qt::AlignVCenter, displayed_address, &boundingRect);
 
         if(amount < 0)
         {
