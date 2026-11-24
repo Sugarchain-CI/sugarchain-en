@@ -13,6 +13,7 @@
 #include <qt/rpcconsole.h>
 #include <qt/splashscreen.h>
 #include <test/util/setup_common.h>
+#include <univalue.h>
 #include <validation.h>
 
 #include <QAction>
@@ -131,13 +132,15 @@ void AppTests::appTests()
     QScopedPointer<const NetworkStyle> style(NetworkStyle::instantiate(Params().GetChainType()));
     m_app.setupPlatformStyle();
     m_app.createWindow(style.data());
-    connect(&m_app, &BitcoinApplication::windowShown, this, &AppTests::guiTests);
+    connect(&m_app, &BitcoinApplication::windowShown, this, &AppTests::guiTests, Qt::QueuedConnection);
     expectCallback("guiTests");
     m_app.baseInitialize();
     m_app.requestInitialize();
     m_app.exec();
-    m_app.requestShutdown();
-    m_app.exec();
+    if (!m_shutdown_via_rpc) {
+        m_app.requestShutdown();
+        m_app.exec();
+    }
 
     // Reset global state to avoid interfering with later tests.
     LogInstance().DisconnectTestLogger();
@@ -151,6 +154,14 @@ void AppTests::guiTests(BitcoinGUI* window)
     expectCallback("consoleTests");
     QAction* action = window->findChild<QAction*>("openRPCConsoleAction");
     action->activate(QAction::Trigger);
+
+    QVERIFY(QMetaObject::invokeMethod(window, "aboutClicked"));
+    QVERIFY(QApplication::activeModalWidget());
+    QSignalSpy shutdown_spy(&m_app, &BitcoinApplication::requestedShutdown);
+    m_app.node().executeRpc("stop", UniValue::VARR, "");
+    m_shutdown_via_rpc = shutdown_spy.wait(5000);
+    QVERIFY(m_shutdown_via_rpc);
+    QVERIFY(!QApplication::activeModalWidget());
 }
 
 //! Entry point for RPCConsole tests.
@@ -167,7 +178,7 @@ AppTests::HandleCallback::~HandleCallback()
     auto it = callbacks.find(m_callback);
     assert(it != callbacks.end());
     callbacks.erase(it);
-    if (callbacks.empty()) {
+    if (callbacks.empty() && !m_app_tests.m_shutdown_via_rpc) {
         m_app_tests.m_app.exit(0);
     }
 }

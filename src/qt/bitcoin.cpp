@@ -273,11 +273,7 @@ void BitcoinApplication::createWindow(const NetworkStyle *networkStyle)
     connect(window, &BitcoinGUI::quitRequested, this, &BitcoinApplication::requestShutdown);
 
     pollShutdownTimer = new QTimer(window);
-    connect(pollShutdownTimer, &QTimer::timeout, [this]{
-        if (!QApplication::activeModalWidget()) {
-            window->detectShutdown();
-        }
-    });
+    connect(pollShutdownTimer, &QTimer::timeout, window, &BitcoinGUI::detectShutdown);
 }
 
 void BitcoinApplication::createSplashScreen(const NetworkStyle *networkStyle)
@@ -338,6 +334,21 @@ void BitcoinApplication::requestInitialize()
 
 void BitcoinApplication::requestShutdown()
 {
+    if (m_shutdown_requested) return;
+    m_shutdown_requested = true;
+    pollShutdownTimer->stop();
+    shutdown();
+}
+
+void BitcoinApplication::shutdown()
+{
+    if (auto* modal = QApplication::activeModalWidget()) {
+        modal->hide();
+        // Let any nested dialog event loop return before waiting on the node.
+        QTimer::singleShot(0, this, &BitcoinApplication::shutdown);
+        return;
+    }
+
     for (const auto w : QGuiApplication::topLevelWindows()) {
         w->hide();
     }
@@ -366,7 +377,6 @@ void BitcoinApplication::requestShutdown()
     // Unsetting the client model can cause the current thread to wait for node
     // to complete an operation, like wait for a RPC execution to complete.
     window->setClientModel(nullptr);
-    pollShutdownTimer->stop();
 
 #ifdef ENABLE_WALLET
     // Delete wallet controller here manually, instead of relying on Qt object
