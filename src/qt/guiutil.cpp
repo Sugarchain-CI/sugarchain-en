@@ -22,6 +22,7 @@
 #include <protocol.h>
 #include <script/script.h>
 #include <util/chaintype.h>
+#include <util/strencodings.h>
 #include <util/exception.h>
 #include <util/fs.h>
 #include <util/fs_helpers.h>
@@ -105,25 +106,13 @@ QFont fixedPitchFont(bool use_embedded_font)
     return QFontDatabase::systemFont(QFontDatabase::FixedFont);
 }
 
-// Return a pre-generated dummy bech32m address (P2TR) with invalid checksum.
-static std::string DummyAddress(const CChainParams &params)
+// Return an example of the active network's SegWit address format.
+static std::string DummyAddress()
 {
-    std::string addr;
-    switch (params.GetChainType()) {
-    case ChainType::MAIN:
-        addr = "bc1p35yvjel7srp783ztf8v6jdra7dhfzk5jaun8xz2qp6ws7z80n4tq2jku9f";
-        break;
-    case ChainType::SIGNET:
-    case ChainType::TESTNET:
-    case ChainType::TESTNET4:
-        addr = "tb1p35yvjel7srp783ztf8v6jdra7dhfzk5jaun8xz2qp6ws7z80n4tqa6qnlg";
-        break;
-    case ChainType::REGTEST:
-        addr = "bcrt1p35yvjel7srp783ztf8v6jdra7dhfzk5jaun8xz2qp6ws7z80n4tqsr2427";
-        break;
-    } // no default case, so the compiler can warn about missing cases
-    assert(!addr.empty());
-
+    using util::hex_literals::operator""_hex_u8;
+    constexpr uint160 EXAMPLE_KEY_HASH{"af2b3822dae21f000bc388e45592d230e1f79095"_hex_u8};
+    std::string addr{EncodeDestination(WitnessV0KeyHash{EXAMPLE_KEY_HASH})};
+    addr.back() = addr.back() == 'q' ? 'p' : 'q'; // Keep the checksum invalid.
     if (Assume(!IsValidDestinationString(addr))) return addr;
     return {};
 }
@@ -136,7 +125,7 @@ void setupAddressWidget(QValidatedLineEdit *widget, QWidget *parent)
     // We don't want translators to use own addresses in translations
     // and this is the only place, where this address is supplied.
     widget->setPlaceholderText(QObject::tr("Enter a Sugarchain address (e.g. %1)").arg(
-        QString::fromStdString(DummyAddress(Params()))));
+        QString::fromStdString(DummyAddress())));
     widget->setValidator(new BitcoinAddressEntryValidator(parent));
     widget->setCheckValidator(new BitcoinAddressCheckValidator(parent));
 }
