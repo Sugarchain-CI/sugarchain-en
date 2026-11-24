@@ -95,6 +95,7 @@ private:
     ClientModel* clientModel{nullptr};
     BitcoinGUI* window{nullptr};
     QTimer* pollShutdownTimer{nullptr};
+    bool m_shutdown_requested{false};
 #ifdef ENABLE_WALLET
     PaymentServer* paymentServer{nullptr};
     WalletController* m_wallet_controller{nullptr};
@@ -105,6 +106,7 @@ private:
     std::unique_ptr<interfaces::Node> m_node;
 
     void startThread();
+    void shutdown();
 };
 
 int GuiMain(int argc, char* argv[]);

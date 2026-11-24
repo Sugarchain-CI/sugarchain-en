@@ -40,6 +40,7 @@ private:
 
     //! Bitcoin application.
     BitcoinApplication& m_app;
+    bool m_shutdown_via_rpc{false};
 
     //! Set of pending callback names. Used to track expected callbacks and shut
     //! down the app after the last callback has been handled and all tests have
