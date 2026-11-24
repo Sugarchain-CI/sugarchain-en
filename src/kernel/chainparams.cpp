@@ -34,6 +34,9 @@
 
 using namespace util::hex_literals;
 
+static constexpr CAmount SUGARCHAIN_INITIAL_SUBSIDY{CAmount{1} << 32};
+static constexpr int SUGARCHAIN_SUBSIDY_HALVING_INTERVAL{12'500'000};
+
 static CBlock CreateGenesisBlock(const char* pszTimestamp, const CScript& genesisOutputScript, uint32_t nTime, uint32_t nNonce, uint32_t nBits, int32_t nVersion, const CAmount& genesisReward)
 {
     CMutableTransaction txNew;
@@ -83,8 +86,8 @@ public:
         consensus.signet_blocks = false;
         consensus.signet_challenge.clear();
         // Official Sugarchain mainnet consensus (master-v0.16.3, 64bc05ccc1dc).
-        consensus.nInitialSubsidy = CAmount{1} << 32;
-        consensus.nSubsidyHalvingInterval = 12'500'000;
+        consensus.nInitialSubsidy = SUGARCHAIN_INITIAL_SUBSIDY;
+        consensus.nSubsidyHalvingInterval = SUGARCHAIN_SUBSIDY_HALVING_INTERVAL;
         consensus.BIP34Height = 17;
         consensus.BIP34Hash = uint256{"72e36f3fcdf98d3625dfe03f28a914c513b913231e479d53fc22e5e46cf5b585"};
         consensus.BIP65Height = 0;
@@ -194,7 +197,8 @@ public:
         m_chain_type = ChainType::TESTNET;
         consensus.signet_blocks = false;
         consensus.signet_challenge.clear();
-        consensus.nSubsidyHalvingInterval = 210000;
+        consensus.nInitialSubsidy = SUGARCHAIN_INITIAL_SUBSIDY;
+        consensus.nSubsidyHalvingInterval = SUGARCHAIN_SUBSIDY_HALVING_INTERVAL;
         consensus.script_flag_exceptions.emplace( // BIP16 exception
             uint256{"00000000dd30457c001f4095d208cc1296b0eed002427aa599874af7a432b105"}, SCRIPT_VERIFY_NONE);
         consensus.BIP34Height = 21111;
@@ -544,7 +548,8 @@ public:
         m_chain_type = ChainType::REGTEST;
         consensus.signet_blocks = false;
         consensus.signet_challenge.clear();
-        consensus.nSubsidyHalvingInterval = 150;
+        consensus.nInitialSubsidy = opts.bitcoin_regtest ? 50 * COIN : SUGARCHAIN_INITIAL_SUBSIDY;
+        consensus.nSubsidyHalvingInterval = opts.bitcoin_regtest ? 150 : SUGARCHAIN_SUBSIDY_HALVING_INTERVAL;
         consensus.BIP34Height = 1; // Always active unless overridden
         consensus.BIP34Hash = uint256();
         consensus.BIP65Height = 1;  // Always active unless overridden
@@ -623,7 +628,7 @@ public:
         fDefaultConsistencyChecks = true;
         m_is_mockable_chain = true;
 
-        m_assumeutxo_data = {
+        if (opts.bitcoin_regtest) m_assumeutxo_data = {
             {   // For use by unit tests
                 .height = 110,
                 .hash_serialized = AssumeutxoHash{uint256{"b952555c8ab81fec46f3d4253b7af256d766ceb39fb7752b9d18cdf4a0141327"}},
@@ -638,11 +643,20 @@ public:
                 .blockhash = uint256{"385901ccbd69dff6bbd00065d01fb8a9e464dede7cfe0372443884f9b1dcf6b9"},
             },
             {
-                // For use by test/functional/feature_assumeutxo.py and test/functional/tool_bitcoin_chainstate.py
+                // For use by test/functional/feature_assumeutxo.py
                 .height = 299,
                 .hash_serialized = AssumeutxoHash{uint256{"d2b051ff5e8eef46520350776f4100dd710a63447a8e01d917e92e79751a63e2"}},
                 .m_chain_tx_count = 334,
                 .blockhash = uint256{"7cc695046fec709f8c9394b6f928f81e81fd3ac20977bb68760fa1faa7916ea2"},
+            },
+        };
+        if (!opts.bitcoin_regtest) m_assumeutxo_data = {
+            {
+                // Native Sugarchain fixture from test/functional/tool_bitcoin_chainstate.py.
+                .height = 299,
+                .hash_serialized = AssumeutxoHash{uint256{"ab2ebd2641eebee79a801f88a61b82148f479ff7774f710a41c8e3fdeef7a709"}},
+                .m_chain_tx_count = 334,
+                .blockhash = uint256{"688b39797b714d41c01cd2bca7fba497c81790d650321f42d5b06b3d2092b588"},
             },
         };
 

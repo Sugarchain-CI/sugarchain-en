@@ -378,7 +378,11 @@ TestingSetup::TestingSetup(
 TestChain100Setup::TestChain100Setup(
     const ChainType chain_type,
     TestOpts opts)
-    : TestingSetup{ChainType::REGTEST, opts}
+    : TestingSetup{ChainType::REGTEST, [&opts] {
+          // Preserve the deterministic chain used by inherited test vectors.
+          opts.extra_args.push_back("-test=bitcoinregtest");
+          return opts;
+      }()}
 {
     SetMockTime(1598887952);
     constexpr std::array<unsigned char, 32> vchKey = {
