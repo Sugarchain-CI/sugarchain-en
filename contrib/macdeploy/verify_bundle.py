@@ -14,6 +14,7 @@ from zipfile import ZipFile
 
 # Both Darwin cross builds produce thin 64-bit Mach-O executables.
 MACH_CPU_TYPES = {"arm64": 0x0100000C, "aarch64": 0x0100000C, "x86_64": 0x01000007}
+BUNDLE_NAME = "Sugarchain-Qt.app"
 
 
 def require(condition, message):
@@ -31,8 +32,10 @@ def check_metadata(info):
 
 
 def check_archive(path, architecture):
-    contents = "Sugarchain En.app/Contents"
+    contents = f"{BUNDLE_NAME}/Contents"
     with ZipFile(path) as archive:
+        roots = {member.split("/", 1)[0] for member in archive.namelist()}
+        require(roots == {BUNDLE_NAME}, f"Expected only {BUNDLE_NAME} in the archive, found {sorted(roots)}")
         bad_member = archive.testzip()
         require(bad_member is None, f"Invalid ZIP checksum for {bad_member}")
         with archive.open(f"{contents}/Info.plist") as source:
