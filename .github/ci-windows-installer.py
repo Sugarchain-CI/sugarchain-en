@@ -51,6 +51,7 @@ def main():
     program_files = Path(os.environ.get("ProgramW6432", os.environ["ProgramFiles"]))
     default_install = program_files / "Sugarchain"
     previous_default = program_files / "Sugarchain En"
+    programs_menu = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs"
 
     def registry_value(name, product_key=keyname):
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, product_key, 0, winreg.KEY_READ | registry_view) as key:
@@ -71,7 +72,20 @@ def main():
     run_nsis(installer)
     assert Path(registry_value("Path")) == default_install
     assert (default_install / "sugarchain-qt.exe").is_file()
+    assert registry_value("StartMenuGroup") == "Sugarchain"
+    shortcuts = {
+        programs_menu / "Sugarchain/Sugarchain En.lnk": default_install / "sugarchain-qt.exe",
+        programs_menu / "Sugarchain/Uninstall Sugarchain En.lnk": default_install / "uninstall.exe",
+    }
+    for shortcut, executable in shortcuts.items():
+        assert shortcut.is_file(), shortcut
+        target = subprocess.check_output([
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            "(New-Object -ComObject WScript.Shell).CreateShortcut($env:SUGARCHAIN_TEST_SHORTCUT).TargetPath",
+        ], env={**os.environ, "SUGARCHAIN_TEST_SHORTCUT": str(shortcut)}, text=True, timeout=30)
+        assert Path(target.strip()) == executable, (shortcut, target)
     run_nsis(default_install / "uninstall.exe", default_install, uninstall=True)
+    assert not any(shortcut.exists() for shortcut in shortcuts)
     assert_not_registered(keyname)
 
     # Reproduce the legacy registration and files that the upgrade recognizes.
@@ -104,7 +118,7 @@ def main():
     assert not list(install.rglob("test_bitcoin*.exe")), "Production installer contains test programs"
     assert not list(install.rglob("bench_*.exe")), "Production installer contains benchmarks"
     assert Path(registry_value("Path")) == install
-    startmenu = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs" / registry_value("StartMenuGroup")
+    startmenu = programs_menu / registry_value("StartMenuGroup")
     obsolete = [startmenu / f"Sugarchain En ({network}).lnk" for network in ("testnet", "testnet4", "test signet")]
     assert not any(path.exists() for path in obsolete)
 
@@ -140,7 +154,8 @@ def main():
     assert not any(path.exists() for path in programs), "Uninstaller left packaged production programs"
     assert config.read_bytes() == expected_config
     assert extra.read_bytes() == expected_extra
-    report = {"production_binaries": len(programs), "default_install": "passed", "legacy_upgrade": "passed",
+    report = {"production_binaries": len(programs), "default_install": "passed", "start_menu_shortcuts": "passed",
+              "legacy_upgrade": "passed",
               "previous_default_upgrade": "passed", "custom_path_upgrade": "passed", "native_runtime": "passed",
               "uninstall_preserves_user_files": "passed"}
     if args.with_wallet_restart:
