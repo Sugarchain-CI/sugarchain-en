@@ -37,8 +37,10 @@ Test is as follows:
 """
 from decimal import Decimal
 import os
+import struct
 import time
 
+from test_framework.messages import ser_compact_size
 from test_framework.p2p import P2PTxInvStore
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
@@ -196,6 +198,24 @@ class MempoolPersistTest(BitcoinTestFramework):
 
         self.test_importmempool_union()
         self.test_persist_unbroadcast()
+        self.test_legacy_mempool()
+
+    def test_legacy_mempool(self):
+        node = self.nodes[0]
+        self.generate(node, 1, sync_fun=self.no_op)
+        tx = self.mini_wallet.send_self_transfer(from_node=node)
+        self.stop_node(0)
+
+        # Sugarchain 0.16.5 wrote the version, transactions and fee deltas without an unbroadcast set.
+        mempool_file = node.chain_path / "mempool.dat"
+        mempool_file.write_bytes(struct.pack("<QQ", 1, 1) + bytes.fromhex(tx["hex"]) +
+                                 struct.pack("<qq", int(time.time()), 0) + ser_compact_size(0))
+        with node.assert_debug_log([
+            f"Mempool file {mempool_file} ended while reading unbroadcast metadata.",
+            "Older version 1 files omit this metadata. Transactions already accepted remain in the mempool.",
+        ]):
+            self.start_node(0)
+        assert_equal(node.getrawmempool(), [tx["txid"]])
 
     def test_persist_unbroadcast(self):
         node0 = self.nodes[0]
