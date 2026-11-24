@@ -1087,11 +1087,17 @@ public:
 class AddressDescriptor final : public DescriptorImpl
 {
     const CTxDestination m_destination;
+    const std::string m_legacy_regtest_address;
 protected:
-    std::string ToStringExtra() const override { return EncodeDestination(m_destination); }
+    // Preserve the serialized text and ID of earlier En regtest wallet descriptors.
+    std::string ToStringExtra() const override
+    {
+        return m_legacy_regtest_address.empty() ? EncodeDestination(m_destination) : m_legacy_regtest_address;
+    }
     std::vector<CScript> MakeScripts(const std::vector<CPubKey>&, std::span<const CScript>, FlatSigningProvider&) const override { return Vector(GetScriptForDestination(m_destination)); }
 public:
-    AddressDescriptor(CTxDestination destination) : DescriptorImpl({}, "addr"), m_destination(std::move(destination)) {}
+    explicit AddressDescriptor(CTxDestination destination, std::string legacy_regtest_address = {})
+        : DescriptorImpl({}, "addr"), m_destination(std::move(destination)), m_legacy_regtest_address(std::move(legacy_regtest_address)) {}
     bool IsSolvable() const final { return false; }
 
     std::optional<OutputType> GetOutputType() const override
@@ -1104,7 +1110,7 @@ public:
     std::optional<int64_t> ScriptSize() const override { return GetScriptForDestination(m_destination).size(); }
     std::unique_ptr<DescriptorImpl> Clone() const override
     {
-        return std::make_unique<AddressDescriptor>(m_destination);
+        return std::make_unique<AddressDescriptor>(m_destination, m_legacy_regtest_address);
     }
 };
 
@@ -2445,12 +2451,13 @@ std::vector<std::unique_ptr<DescriptorImpl>> ParseScript(uint32_t& key_exp_index
         return {};
     }
     if (ctx == ParseScriptContext::TOP && Func("addr", expr)) {
-        CTxDestination dest = DecodeDestination(std::string(expr.begin(), expr.end()));
+        std::string legacy_regtest_address;
+        CTxDestination dest = DecodeDestination(std::string(expr.begin(), expr.end()), error, nullptr, &legacy_regtest_address);
         if (!IsValidDestination(dest)) {
             error = "Address is not valid";
             return {};
         }
-        ret.emplace_back(std::make_unique<AddressDescriptor>(std::move(dest)));
+        ret.emplace_back(std::make_unique<AddressDescriptor>(std::move(dest), std::move(legacy_regtest_address)));
         return ret;
     } else if (Func("addr", expr)) {
         error = "Can only have addr() at top level";

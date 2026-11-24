@@ -23,3 +23,8 @@ claimed the previous 50 SUGAR reward exceed the current subsidy limit.
 Keep old regtest data separately if you need it for testing. The debug-only
 `-regtest -test=bitcoinregtest` option selects the previous schedule for
 precomputed test fixtures and old test-chain data.
+
+New regtest receive addresses use `R…` for P2PKH, `r…` for P2SH, and
+`rugar1…` for SegWit. Regtest still reads the previous En address formats
+and opens wallets with those addresses, including imported watch-only
+descriptors.

@@ -5,6 +5,7 @@
 #include <test/data/key_io_invalid.json.h>
 #include <test/data/key_io_valid.json.h>
 
+#include <common/args.h>
 #include <key.h>
 #include <key_io.h>
 #include <script/script.h>
@@ -17,6 +18,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include <algorithm>
+#include <array>
+#include <string_view>
 
 BOOST_FIXTURE_TEST_SUITE(key_io_tests, BasicTestingSetup)
 
@@ -84,6 +87,8 @@ BOOST_AUTO_TEST_CASE(key_io_valid_parse)
 // Goal: check that generated keys match test vectors
 BOOST_AUTO_TEST_CASE(key_io_valid_gen)
 {
+    // Test the upstream address vectors with their original regtest encoding.
+    m_node.args->ForceSetArg("-test", "bitcoinregtest");
     UniValue tests = read_json(json_tests::key_io_valid);
 
     for (unsigned int idx = 0; idx < tests.size(); idx++) {
@@ -115,6 +120,34 @@ BOOST_AUTO_TEST_CASE(key_io_valid_gen)
         }
     }
 
+    SelectParams(ChainType::MAIN);
+}
+
+BOOST_AUTO_TEST_CASE(native_address_formats)
+{
+    const std::array<CTxDestination, 3> destinations{PKHash{}, ScriptHash{}, WitnessV0KeyHash{}};
+    const std::array chains{ChainType::MAIN, ChainType::TESTNET, ChainType::REGTEST};
+    const std::array<std::array<std::string_view, 3>, 3> prefixes{{
+        {"S", "s", "sugar1q"},
+        {"T", "t", "tugar1q"},
+        {"R", "r", "rugar1q"},
+    }};
+    for (size_t i{0}; i < chains.size(); ++i) {
+        SelectParams(chains[i]);
+        for (size_t j{0}; j < destinations.size(); ++j) {
+            const auto address{EncodeDestination(destinations[j])};
+            BOOST_TEST_CONTEXT(address) {
+                BOOST_CHECK(address.starts_with(prefixes[i][j]));
+                BOOST_CHECK(DecodeDestination(address) == destinations[j]);
+                for (const auto other_chain : chains) {
+                    if (other_chain == chains[i]) continue;
+                    SelectParams(other_chain);
+                    BOOST_CHECK(!IsValidDestinationString(address));
+                }
+            }
+            SelectParams(chains[i]);
+        }
+    }
     SelectParams(ChainType::MAIN);
 }
 
