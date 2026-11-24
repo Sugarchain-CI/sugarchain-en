@@ -10,6 +10,33 @@ When complete, it produces `Sugarchain-En-<version>-macos.zip` containing
 `Sugarchain-Qt.app`. The configured `macos-archive-path.txt` in the build
 directory records the archive path for the selected build environment.
 
+## Developer ID release signing
+
+Use a macOS signing host with Xcode command-line tools, Python 3, a Developer ID
+Application certificate and its private key in the Keychain, and a
+`notarytool` Keychain profile for the signing team. See Apple's
+[notarization workflow](https://developer.apple.com/documentation/security/customizing-the-notarization-workflow)
+for setting up the profile.
+
+After unpacking a static Qt release candidate and adding release notices and
+licenses, sign the staged app and create the distribution ZIP:
+
+```bash
+contrib/macdeploy/notarize-release.sh \
+  staging/Sugarchain-Qt.app release/Sugarchain-En-macos-arm64.zip \
+  'Developer ID Application: NAME (TEAM_ID)' sugarchain-release
+```
+
+Run the command for each target architecture and save the Apple submission ID
+with the release records. The script requires an existing output parent
+directory and a new ZIP path. It checks the signature, stapled ticket, and
+Gatekeeper assessment on the app extracted from the final ZIP. Use a
+browser-downloaded copy of that ZIP to verify first launch on a clean Mac of
+each architecture.
+
+Archives built with an ad hoc signature must be identified as ad hoc and
+unnotarized in the release notes. Gatekeeper may reject them.
+
 ## Native runtime verification
 
 After unpacking a native shared-Qt deployment archive, macOS CI runs:
