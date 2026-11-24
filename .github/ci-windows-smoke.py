@@ -231,6 +231,9 @@ class Node:
         ]
         if self.chain == "regtest":
             command.append("-regtest")
+        else:
+            # The offline mainnet fixture never downloads the chain.
+            command.append("-prune=550")
         if self.gui:
             command += ["-splash=0", "-min", "-debug=qt"]
         self.debug_log = self.cookie.parent / ("restart-debug.log" if restart else "debug.log")

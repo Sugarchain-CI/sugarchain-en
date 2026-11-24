@@ -94,6 +94,7 @@ class MiningMainnetTest(BitcoinTestFramework):
         self.num_nodes = 1
         self.setup_clean_chain = True
         self.chain = ""
+        self.extra_args = [["-prune=550"]]
 
     def add_options(self, parser):
         parser.add_argument('--datafile', default='data/sugarchain_mainnet_alt.json',
@@ -119,8 +120,6 @@ class MiningMainnetTest(BitcoinTestFramework):
 
     def run_test(self):
         node = self.nodes[0]
-        node.stderr.seek(0)
-        node.stderr.truncate()
         path = os.path.join(os.path.dirname(os.path.realpath(__file__)), self.options.datafile)
         with open(path, encoding='utf8') as source:
             fixture = json.load(source)

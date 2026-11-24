@@ -139,8 +139,9 @@ public:
         pchMessageStart[3] = 0x9d;
         nDefaultPort = 34230;
         nPruneAfterHeight = 100000;
-        m_assumed_blockchain_size = 0;
-        m_assumed_chain_state_size = 0;
+        // Rounded above a November 2026 mainnet snapshot (height 45.6M).
+        m_assumed_blockchain_size = 40;
+        m_assumed_chain_state_size = 1;
 
         const char* timestamp = "The Times 17/July/2019 Bitcoin falls after senators call Facebook delusional over libra";
         const CScript output = CScript() << "04678afdb0fe5548271967f1a67130b7105cd6a828e03909a67962e0ea1f61deb649f6bc3f4cef38c4f35504e51ec112de5c384df7ba0b8d578a4c702b6bf11d5f"_hex << OP_CHECKSIG;
