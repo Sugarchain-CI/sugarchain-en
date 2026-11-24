@@ -26,8 +26,9 @@ networking and consensus. Its mainnet downloads and validates Sugarchain blocks
 and transactions, not the Bitcoin blockchain. Synchronization time and storage
 depend on the chain size, pruning settings, hardware, and network connection.
 Only Sugarchain mainnet and isolated regtest are supported. Public Bitcoin
-testnet, testnet4, and signet modes are rejected. The installer creates a
-mainnet shortcut; regtest can be selected explicitly with -regtest.
+testnet, testnet4, and signet modes are rejected. The installer creates mainnet
+and uninstall shortcuts in the Sugarchain Start Menu folder by default.
+Regtest can be selected explicitly with -regtest.
 
 Existing Data and Settings
 --------------------------
