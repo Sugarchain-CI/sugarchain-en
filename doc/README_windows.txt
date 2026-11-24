@@ -20,6 +20,7 @@ are not part of the production installer.
 The default folder for a fresh installation is C:\Program Files\Sugarchain.
 Upgrades keep the registered installation folder, including the previous
 Sugarchain En default and custom locations.
+Select Run Sugarchain on the final installer page to open the installed GUI.
 
 Sugarchain En is based on Bitcoin Core v31.1 and implements Sugarchain mainnet
 networking and consensus. Its mainnet downloads and validates Sugarchain blocks
