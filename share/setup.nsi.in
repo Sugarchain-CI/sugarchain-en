@@ -41,6 +41,7 @@ Unicode true
 
 # Variables
 Var StartMenuGroup
+Var RegisteredInstallDir
 Var LegacyInstallDir
 Var LegacyStartMenuGroup
 Var LegacyRegKey
@@ -60,7 +61,7 @@ Var LegacyProductName
 !insertmacro MUI_LANGUAGE English
 
 # Installer attributes
-InstallDir "$PROGRAMFILES64\Sugarchain En"
+InstallDir "$PROGRAMFILES64\Sugarchain"
 CRCCheck force
 XPStyle on
 BrandingText " "
@@ -73,7 +74,6 @@ VIAddVersionKey CompanyWebsite "${URL}"
 VIAddVersionKey FileVersion "@CLIENT_VERSION_STRING@"
 VIAddVersionKey FileDescription "Installer for @CLIENT_NAME@"
 VIAddVersionKey LegalCopyright "Copyright (C) 2009-@COPYRIGHT_YEAR@ @COPYRIGHT_HOLDERS_FINAL@"
-InstallDirRegKey HKCU "${REGKEY}" Path
 ShowUninstDetails show
 
 # Installer sections
@@ -103,13 +103,13 @@ Section -Main SEC0000
 SectionEnd
 
 Section -post SEC0001
-    WriteRegStr HKCU "${REGKEY}" Path $INSTDIR
     SetOutPath $INSTDIR
     ClearErrors
     WriteUninstaller $INSTDIR\uninstall.exe
     IfErrors 0 +3
         MessageBox MB_OK|MB_ICONSTOP "Could not write the Sugarchain En uninstaller. Existing registration has been retained." /SD IDOK
         Abort
+    WriteRegStr HKCU "${REGKEY}" Path $INSTDIR
     !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
     CreateDirectory $SMPROGRAMS\$StartMenuGroup
     CreateShortcut "$SMPROGRAMS\$StartMenuGroup\$(^Name).lnk" $INSTDIR\@BITCOIN_GUI_NAME@@EXEEXT@
@@ -226,10 +226,13 @@ Function .onInit
       MessageBox MB_OK|MB_ICONSTOP "Cannot install 64-bit version on a 32-bit system." /SD IDOK
       Abort
     ${EndIf}
-    # InstallDirRegKey is evaluated before the explicit 64-bit registry view.
-    ReadRegStr $R1 HKCU "${REGKEY}" Path
-    ${If} $R1 != ""
-        StrCpy $INSTDIR $R1
+    ReadRegStr $RegisteredInstallDir HKCU "${REGKEY}" Path
+    ${If} $RegisteredInstallDir != ""
+        GetFullPathName $RegisteredInstallDir $RegisteredInstallDir
+        ${If} $RegisteredInstallDir == ""
+            MessageBox MB_OK|MB_ICONSTOP "The registered Sugarchain En installation path is invalid. Repair or uninstall it normally before installing. No files have been changed." /SD IDOK
+            Abort
+        ${EndIf}
     ${EndIf}
     StrCpy $LegacyProductName "Sugarchain Komorebi"
     StrCpy $LegacyRegKey "${LEGACY_REGKEY}"
@@ -242,8 +245,8 @@ Function .onInit
     ${If} $LegacyInstallDir != ""
         GetFullPathName $LegacyInstallDir $LegacyInstallDir
         StrCmp $LegacyInstallDir "" invalid_legacy
-        ${If} $R1 != ""
-        ${AndIf} $R1 != $LegacyInstallDir
+        ${If} $RegisteredInstallDir != ""
+        ${AndIf} $RegisteredInstallDir != $LegacyInstallDir
             MessageBox MB_OK|MB_ICONSTOP "Separate Sugarchain En and Komorebi installations are registered. Uninstall the old product normally before upgrading En. No files have been changed." /SD IDOK
             Abort
         ${EndIf}
@@ -254,15 +257,18 @@ Function .onInit
         ${If} $LegacyStartMenuGroup == ""
             ReadRegStr $LegacyStartMenuGroup HKLM "$LegacyRegKey" StartMenuGroup
         ${EndIf}
-        StrCpy $INSTDIR $LegacyInstallDir
-        IfSilent done
+        StrCpy $RegisteredInstallDir $LegacyInstallDir
+        IfSilent set_install_dir
         MessageBox MB_OK|MB_ICONINFORMATION "Sugarchain Komorebi will be upgraded to Sugarchain En in its existing installation folder. Wallets, chain data and settings are preserved. To choose a new folder, first uninstall the old application normally."
     ${EndIf}
-    Goto done
+    Goto set_install_dir
 invalid_legacy:
     MessageBox MB_OK|MB_ICONSTOP "The registered Sugarchain Komorebi installation is incomplete. Repair or uninstall it normally before installing Sugarchain En. No files have been changed." /SD IDOK
     Abort
-done:
+set_install_dir:
+    ${If} $RegisteredInstallDir != ""
+        StrCpy $INSTDIR $RegisteredInstallDir
+    ${EndIf}
 FunctionEnd
 
 Function CheckInstallDirectory
@@ -274,9 +280,9 @@ Function CheckInstallDirectory
     ${Else}
         ClearErrors
     ${EndIf}
-    ${If} $LegacyInstallDir != ""
-    ${AndIf} $LegacyInstallDir != $0
-        MessageBox MB_OK|MB_ICONSTOP "Upgrade Sugarchain Komorebi in its existing folder, or uninstall it normally before selecting a new folder." /SD IDOK
+    ${If} $RegisteredInstallDir != ""
+    ${AndIf} $RegisteredInstallDir != $0
+        MessageBox MB_OK|MB_ICONSTOP "Upgrade Sugarchain in its existing folder, or uninstall it normally before selecting a new folder." /SD IDOK
         Abort
     ${EndIf}
 FunctionEnd
