@@ -56,9 +56,10 @@ bool LoadMempool(CTxMemPool& pool, const fs::path& load_path, Chainstate& active
     int64_t already_there = 0;
     int64_t unbroadcast = 0;
     const auto now{NodeClock::now()};
+    uint64_t version{0};
+    bool reading_unbroadcast{false};
 
     try {
-        uint64_t version;
         file >> version;
 
         if (version == MEMPOOL_DUMP_VERSION_NO_XOR_KEY) {
@@ -68,6 +69,7 @@ bool LoadMempool(CTxMemPool& pool, const fs::path& load_path, Chainstate& active
             file >> obfuscation;
             file.SetObfuscation(obfuscation);
         } else {
+            LogWarning("Skipping mempool file %s with unsupported format version %u.\n", fs::PathToString(load_path), version);
             return false;
         }
 
@@ -132,7 +134,9 @@ bool LoadMempool(CTxMemPool& pool, const fs::path& load_path, Chainstate& active
         }
 
         std::set<Txid> unbroadcast_txids;
+        reading_unbroadcast = true;
         file >> unbroadcast_txids;
+        reading_unbroadcast = false;
         if (opts.apply_unbroadcast_set) {
             unbroadcast = unbroadcast_txids.size();
             for (const auto& txid : unbroadcast_txids) {
@@ -142,7 +146,13 @@ bool LoadMempool(CTxMemPool& pool, const fs::path& load_path, Chainstate& active
             }
         }
     } catch (const std::exception& e) {
-        LogInfo("Failed to deserialize mempool data on file: %s. Continuing anyway.\n", e.what());
+        if (reading_unbroadcast && version == MEMPOOL_DUMP_VERSION_NO_XOR_KEY && file.feof()) {
+            LogWarning("Mempool file %s ended while reading unbroadcast metadata. Older version 1 files omit this metadata. Transactions already accepted remain in the mempool.\n",
+                       fs::PathToString(load_path));
+        } else {
+            LogWarning("Failed to finish loading mempool file %s: %s. Transactions already accepted remain in the mempool.\n",
+                       fs::PathToString(load_path), e.what());
+        }
         return false;
     }
 
