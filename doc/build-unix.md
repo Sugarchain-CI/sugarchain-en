@@ -85,6 +85,11 @@ the necessary parts of Qt, the libqrencode and pass `-DBUILD_GUI=ON`. Skip if yo
 
     sudo apt-get install qt6-base-dev qt6-tools-dev qt6-l10n-tools qt6-tools-dev-tools libgl-dev
 
+The portable Linux GUI uses the packaged XCB backend on X11 and through
+XWayland on Wayland. It reads the host Fontconfig configuration from
+/etc/fonts. Builds using the distribution Qt can use the native Wayland
+plugin.
+
 Additionally, to support Wayland protocol for modern desktop environments:
 
     sudo apt install qt6-wayland
