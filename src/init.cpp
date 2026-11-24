@@ -512,7 +512,7 @@ void SetupServerArgs(ArgsManager& argsman, bool can_listen_ipc)
     argsman.AddArg("-loadblock=<file>", "Imports blocks from external file on startup", ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-maxmempool=<n>", strprintf("Keep the transaction memory pool below <n> megabytes (default: %u)", DEFAULT_MAX_MEMPOOL_SIZE_MB), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
     argsman.AddArg("-parpow=<n>", strprintf("Maximum concurrent Yespower header verification tasks (1-%d, default: %d)", MAX_HEADER_POW_WORKERS, DEFAULT_HEADER_POW_WORKERS), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
-    argsman.AddArg("-fast-startup=<0|1>", "Start by trusting eligible historical indexes, then verify missing local Yespower evidence in the background (default: 0). Both modes use shared startup optimizations. With 0, perform the full historical PoW recheck, ignoring disk evidence. New headers are still verified. Historical trust remains until background verification completes. Incompatible with -reindex", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
+    argsman.AddArg("-fast-startup=<0|1>", "Start by trusting eligible historical indexes, then verify missing local Yespower evidence in the background (default: 1, or 0 with -reindex). Both modes use shared startup optimizations. With 0, perform the full historical PoW recheck, ignoring disk evidence. New headers are still verified. Historical trust remains until background verification completes. Explicit 1 is incompatible with -reindex", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
     argsman.AddArg("-background-pow-pause=<ms>", "Pause between computed historical DB batches of at most 512 entries (0-1000 ms, default: 0). Previously this pause applied per header. Does not delay warm evidence reuse or foreground verification", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
     argsman.AddArg("-background-pow-workers=<n>", "Historical Yespower worker count (1-8, default: -parpow). Uses a separate background pool; lower this to leave CPU capacity for foreground validation", ArgsManager::ALLOW_ANY | ArgsManager::DISALLOW_NEGATION, OptionsCategory::OPTIONS);
     argsman.AddArg("-maxibdblocksinflight=<n>", strprintf("Maximum outstanding block requests per peer during IBD (%d-%d, default: %d)", DEFAULT_IBD_BLOCK_REQUEST_LIMIT, MAX_IBD_BLOCK_REQUEST_LIMIT, DEFAULT_IBD_BLOCK_REQUEST_LIMIT), ArgsManager::ALLOW_ANY, OptionsCategory::OPTIONS);
@@ -932,14 +932,14 @@ bool AppInitParameterInteraction(const ArgsManager& args)
 
     // also see: InitParameterInteraction()
 
-    const std::string fast_startup{args.GetArg("-fast-startup", "0")};
+    const auto fast_startup{args.GetArg("-fast-startup")};
     if (args.IsArgSet("-background-pow-workers") && (args.GetIntArg("-background-pow-workers", 0) < 1 || args.GetIntArg("-background-pow-workers", 0) > MAX_HEADER_POW_WORKERS)) {
         return InitError(Untranslated("-background-pow-workers must be between 1 and 8"));
     }
     if (args.GetIntArg("-background-pow-pause", 0) < 0 || args.GetIntArg("-background-pow-pause", 0) > 1000) {
         return InitError(Untranslated("-background-pow-pause must be between 0 and 1000 milliseconds"));
     }
-    if (fast_startup != "0" && fast_startup != "1") {
+    if (fast_startup && *fast_startup != "0" && *fast_startup != "1") {
         return InitError(Untranslated("-fast-startup must be 0 or 1"));
     }
     if (fast_startup == "1" && args.GetBoolArg("-reindex", false)) {
@@ -1370,6 +1370,7 @@ static ChainstateLoadResult InitAndLoadChainstate(
     Assert(ApplyArgsManOptions(args, blockman_opts)); // no error can happen, already checked in AppInitParameterInteraction
     // A GUI recovery retry wipes the old index; it must verify every rebuilt entry.
     if (do_reindex) blockman_opts.fast_startup = false;
+    LogInfo("Fast Startup: %s", blockman_opts.fast_startup ? "enabled" : "disabled");
 
     // Creating the chainstate manager internally creates a BlockManager, opens
     // the blocks tree db, and wipes existing block files in case of a reindex.

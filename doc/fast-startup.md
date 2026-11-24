@@ -1,12 +1,12 @@
 # Startup mode boundaries
 
-`-fast-startup=0` is the default: historical Yespower verification is retained.
-`-fast-startup=1` trusts eligible historical disk-index entries and skips their
+`-fast-startup=1` is the default for ordinary launches. It trusts eligible
+historical disk-index entries and skips their
 repeated Yespower calculation. Both modes now use all retained startup optimizations (items 1–19);
 selecting full verification does not select a deliberately slower index layout.
 Neither mode treats disk trust as actual proof evidence.
 
-| Stage | Default / `=0` | `=1` |
+| Stage | `=0` | Default / `=1` |
 |---|---|---|
 | Historical Yespower | Verify every loaded header through the PoW verifier | Trust eligible persisted non-genesis TREE-or-higher entries |
 | Disk iterator | Key-prefix checks, direct deserialization where supported | Same |
@@ -54,8 +54,10 @@ file detection (including side/invalid branches), chainwork reconstruction,
 snapshot handling, witness checks and shutdown interrupts. The optimized work
 formula is tested against the original formula; it does not approximate work.
 
-`-fast-startup=1 -reindex=1` is rejected. A GUI recovery retry that enables
-reindex constructs the block manager with fast startup disabled.
+Use `-fast-startup=0` to fully verify historical Yespower at startup. A full
+`-reindex` defaults to mode zero, including when the GUI retries with reindexing.
+`-fast-startup=0 -reindex` explicitly selects that recovery path.
+`-fast-startup=1 -reindex=1` is rejected.
 `-reindex-chainstate` can use either mode because it retains the index DB.
 
 ## Fast-mode memory tradeoff
