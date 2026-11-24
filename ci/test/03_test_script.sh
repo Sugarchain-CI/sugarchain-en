@@ -170,13 +170,14 @@ fi
 
 if [[ "$CI_OS_NAME" == "macos" && " ${GOAL} " == *" deploy "* ]]; then
   macos_archive=$(cat "${BASE_BUILD_DIR}/macos-archive-path.txt")
+  macos_app="${BASE_BUILD_DIR}/deploy/Sugarchain-Qt.app"
   unzip "${macos_archive}" -d "${BASE_BUILD_DIR}/deploy"
-  if ! ( codesign --verify "${BASE_BUILD_DIR}/deploy/Sugarchain En.app" ); then
+  if ! ( codesign --verify "${macos_app}" ); then
     echo "Codesigning failed."
     false
   fi
   python3 contrib/macdeploy/verify-native.py \
-    --app "${BASE_BUILD_DIR}/deploy/Sugarchain En.app" \
+    --app "${macos_app}" \
     --bindir "${BASE_OUTDIR}/bin" \
     --work-dir "${RUNNER_TEMP}/en-macos-app-smoke"
 elif [[ "$HOST" == *-apple-darwin* && " ${GOAL} " == *" deploy "* ]]; then

@@ -7,6 +7,7 @@ from copy import deepcopy
 from decimal import Decimal, ROUND_DOWN
 import os
 import random
+import struct
 import time
 
 from test_framework.messages import (
@@ -329,6 +330,16 @@ class EstimateFeeTest(BitcoinTestFramework):
 
         # Start node and ensure the fee_estimates.dat file was not read
         self.start_node(0)
+        assert_equal(self.nodes[0].estimatesmartfee(1)["errors"], ["Insufficient data or no feerate found"])
+
+        self.stop_node(0)
+        # Sugarchain 0.16.5 wrote the minimum reader and writer versions before the estimate data.
+        fee_dat.write_bytes(struct.pack("<ii", 149900, 160500) + fee_dat.read_bytes()[4:])
+        with self.nodes[0].assert_debug_log([
+            f"Fee estimates file {fee_dat} uses format version 149900 (expected 309900).",
+            "Fee estimates will be rebuilt as transactions confirm.",
+        ]):
+            self.start_node(0)
         assert_equal(self.nodes[0].estimatesmartfee(1)["errors"], ["Insufficient data or no feerate found"])
 
 

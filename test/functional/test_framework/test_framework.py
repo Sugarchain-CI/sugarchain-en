@@ -110,6 +110,8 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
         self.rpc_timeout = 60  # Wait for up to 60 seconds for the RPC server to respond
         self.supports_cli = True
         self.bind_to_localhost_only = True
+        # Existing Bitcoin Core scenarios use fixed regtest rewards and snapshots.
+        self.use_bitcoin_regtest = True
         self.parse_args(test_file)
         self.default_wallet_name = "default_wallet"
         self.wallet_data_filename = "wallet.dat"
@@ -481,6 +483,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                 timeout_factor=self.options.timeout_factor,
                 binaries=self.get_binaries(bin_dirs[i]),
                 version=versions[i],
+                bitcoin_regtest=self.use_bitcoin_regtest,
                 coverage_dir=self.options.coveragedir,
                 cwd=self.options.tmpdir,
                 extra_conf=extra_confs[i],
@@ -921,6 +924,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
                     coverage_dir=None,
                     cwd=self.options.tmpdir,
                     uses_wallet=self.uses_wallet,
+                    bitcoin_regtest=self.use_bitcoin_regtest,
                 ))
             self.start_node(CACHE_NODE_ID)
             cache_node = self.nodes[CACHE_NODE_ID]

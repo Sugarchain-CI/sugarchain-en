@@ -231,6 +231,9 @@ class Node:
         ]
         if self.chain == "regtest":
             command.append("-regtest")
+        else:
+            # The offline mainnet fixture never downloads the chain.
+            command.append("-prune=550")
         if self.gui:
             command += ["-splash=0", "-min", "-debug=qt"]
         self.debug_log = self.cookie.parent / ("restart-debug.log" if restart else "debug.log")
@@ -335,7 +338,7 @@ def check_node(binary, cli, datadir, chain, gui=False):
         node.rpc("createwallet", "smoke", False, False, "", False, True, False)
         node.wallet = "smoke"
         address = node.rpc("getnewaddress", "", "bech32")
-        assert address.startswith("sugar1q" if chain == "main" else "bcrt1q"), address
+        assert address.startswith("sugar1q" if chain == "main" else "rugar1q"), address
         assert node.rpc("getaddressinfo", address)["ismine"]
         legacy = node.rpc("getnewaddress", "", "legacy")
         if chain == "main":

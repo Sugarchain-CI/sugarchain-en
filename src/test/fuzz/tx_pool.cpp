@@ -227,13 +227,14 @@ FUZZ_TARGET(tx_pool_standard, .init = initialize_tx_pool)
     std::set<COutPoint> outpoints_rbf;
     // All outpoints counting toward the total supply (subset of outpoints_rbf)
     std::set<COutPoint> outpoints_supply;
+    const auto& consensus{node.chainman->GetParams().GetConsensus()};
+    CAmount supply_total{0};
+    int height{1};
     for (const auto& outpoint : g_outpoints_coinbase_init_mature) {
         Assert(outpoints_supply.insert(outpoint).second);
+        supply_total += GetBlockSubsidy(height++, consensus);
     }
     outpoints_rbf = outpoints_supply;
-
-    // The sum of the values of all spendable outpoints
-    constexpr CAmount SUPPLY_TOTAL{COINBASE_MATURITY * 50 * COIN};
 
     SetMempoolConstraints(*node.args, fuzzed_data_provider);
     auto tx_pool_{MakeMempool(fuzzed_data_provider, node)};
@@ -256,7 +257,7 @@ FUZZ_TARGET(tx_pool_standard, .init = initialize_tx_pool)
             for (const auto& op : outpoints_supply) {
                 supply_now += GetAmount(op);
             }
-            Assert(supply_now == SUPPLY_TOTAL);
+            Assert(supply_now == supply_total);
         }
         Assert(!outpoints_supply.empty());
 

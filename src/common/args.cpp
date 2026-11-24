@@ -19,7 +19,10 @@
 #include <util/string.h>
 
 #ifdef WIN32
+#include <windows.h>
 #include <shlobj.h>
+#elif defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
 #endif
 
 #include <algorithm>
@@ -28,6 +31,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -324,7 +328,8 @@ fs::path ArgsManager::GetDataDir(bool net_specific) const
             return path;
         }
     } else {
-        path = GetDefaultDataDir();
+        path = GetSavedDataDir();
+        if (!path.is_absolute()) path = GetDefaultDataDir();
     }
 
     if (net_specific && !BaseParams().DataDir().empty()) {
@@ -332,6 +337,15 @@ fs::path ArgsManager::GetDataDir(bool net_specific) const
     }
 
     return path;
+}
+
+fs::path ArgsManager::GetSavedDataDir() const
+{
+    LOCK(cs_args);
+    // Use the same GUI preference for locating the configuration file and
+    // resolving the data directory after parsing it.
+    if (!m_gui_datadir_preference) m_gui_datadir_preference = GetDataDirPreference();
+    return *m_gui_datadir_preference;
 }
 
 void ArgsManager::ClearPathCache()
@@ -744,6 +758,7 @@ const std::vector<std::string> TEST_OPTIONS_DOC{
     "addrman (use deterministic addrman)",
     "reindex_after_failure_noninteractive_yes (When asked for a reindex after failure interactively, simulate as-if answered with 'yes')",
     "bip94 (enforce BIP94 consensus rules)",
+    "bitcoinregtest (use the inherited Bitcoin regtest addresses, subsidy, and snapshot fixtures)",
 };
 
 bool HasTestOption(const ArgsManager& args, const std::string& test_option)
@@ -784,6 +799,63 @@ fs::path GetDefaultDataDir()
     return pathRet / ".sugarchain";
 #endif
 #endif
+}
+
+#ifdef WIN32
+static fs::path ReadDataDirPreference(const wchar_t* key)
+{
+    DWORD size{0};
+    if (RegGetValueW(HKEY_CURRENT_USER, key, L"strDataDir", RRF_RT_REG_SZ, nullptr, nullptr, &size) != ERROR_SUCCESS) return {};
+    std::wstring value(size / sizeof(wchar_t), L'\0');
+    if (RegGetValueW(HKEY_CURRENT_USER, key, L"strDataDir", RRF_RT_REG_SZ, nullptr, value.data(), &size) != ERROR_SUCCESS) return {};
+    return fs::path{value.c_str()};
+}
+#elif defined(__APPLE__)
+static fs::path ReadDataDirPreference(CFStringRef domain)
+{
+    std::unique_ptr<const void, decltype(&CFRelease)> value{
+        CFPreferencesCopyValue(CFSTR("strDataDir"), domain, kCFPreferencesCurrentUser, kCFPreferencesAnyHost), CFRelease};
+    if (!value || CFGetTypeID(value.get()) != CFStringGetTypeID()) return {};
+    const auto string{static_cast<CFStringRef>(value.get())};
+    const CFIndex capacity{CFStringGetMaximumSizeForEncoding(CFStringGetLength(string), kCFStringEncodingUTF8) + 1};
+    if (capacity <= 0) return {};
+    std::string utf8(capacity, '\0');
+    if (!CFStringGetCString(string, utf8.data(), capacity, kCFStringEncodingUTF8)) return {};
+    return fs::u8path(utf8.c_str());
+}
+#endif
+
+fs::path GetDataDirPreference()
+{
+    // These are the native user-scope QSettings profiles used by the current
+    // GUI and its predecessors. Only the base profile chooses a data directory.
+    fs::path path;
+#ifdef WIN32
+    for (const auto* key : {L"Software\\Sugarchain\\Sugarchain En", L"Software\\Sugarchain\\Sugarchain Komorebi", L"Software\\Sugarchain\\Sugarchain-Qt"}) {
+        path = ReadDataDirPreference(key);
+        if (!path.empty()) break;
+    }
+#elif defined(__APPLE__)
+    for (const auto domain : {CFSTR("org.sugarchain.Sugarchain En"), CFSTR("org.sugarchain.Sugarchain Komorebi"), CFSTR("org.sugarchain.Sugarchain-Qt")}) {
+        path = ReadDataDirPreference(domain);
+        if (!path.empty()) break;
+    }
+#endif
+    if (path.empty()) return {};
+    path = path.lexically_normal();
+    if (!path.has_filename()) path = path.parent_path();
+#ifdef WIN32
+    // A saved standard path is a default choice. Resolve it again so an
+    // existing Roaming directory still takes precedence over Local.
+    for (const auto folder : {CSIDL_APPDATA, CSIDL_LOCAL_APPDATA}) {
+        auto standard{GetSpecialFolderPath(folder) / "Sugarchain"};
+        standard.make_preferred();
+        if (CompareStringOrdinal(path.c_str(), -1, standard.c_str(), -1, TRUE) == CSTR_EQUAL) return {};
+    }
+#else
+    if (path == GetDefaultDataDir()) return {};
+#endif
+    return path;
 }
 
 bool CheckDataDirOption(const ArgsManager& args)

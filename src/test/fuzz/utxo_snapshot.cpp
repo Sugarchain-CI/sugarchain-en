@@ -48,7 +48,8 @@ void sanity_check_snapshot()
     Assert(g_chain && g_setup == nullptr);
 
     // Create a temporary chainstate manager to connect the chain to.
-    const auto tmp_setup{MakeNoLogFileContext<TestingSetup>(ChainType::REGTEST, TestOpts{.setup_net = false})};
+    const auto tmp_setup{MakeNoLogFileContext<TestingSetup>(
+        ChainType::REGTEST, TestOpts{.extra_args = {"-test=bitcoinregtest"}, .setup_net = false})};
     const auto& node{tmp_setup->m_node};
     for (auto& block: *g_chain) {
         ProcessBlock(node, block);
@@ -69,7 +70,7 @@ void sanity_check_snapshot()
 template <bool INVALID>
 void initialize_chain()
 {
-    const auto params{CreateChainParams(ArgsManager{}, ChainType::REGTEST)};
+    const auto params{CChainParams::RegTest({.bitcoin_regtest = true})};
     static const auto chain{CreateBlockChain(2 * COINBASE_MATURITY, *params)};
     g_chain = &chain;
     SetMockTime(chain.back()->Time());
@@ -80,6 +81,7 @@ void initialize_chain()
     static const auto setup{
         MakeNoLogFileContext<TestingSetup>(ChainType::REGTEST,
                                            TestOpts{
+                                               .extra_args = {"-test=bitcoinregtest"},
                                                .setup_net = false,
                                                .setup_validation_interface = false,
                                                .min_validation_cache = true,

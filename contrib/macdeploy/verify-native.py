@@ -18,7 +18,7 @@ import subprocess
 import sys
 import time
 
-from verify_bundle import check_metadata, require
+from verify_bundle import BUNDLE_NAME, check_metadata, require
 
 
 class Node:
@@ -40,6 +40,9 @@ class Node:
                 f"-rpcport={self.port}", "-dbcache=16", "-par=1", "-printtoconsole=0"]
         if chain == "regtest":
             args.append("-fallbackfee=0.0002")
+        else:
+            # This offline smoke test never downloads the mainnet chain.
+            args.append("-prune=550")
         if gui:
             args.append("-splash=0")
         env = dict(os.environ)
@@ -109,6 +112,8 @@ def check_chain(node, chain):
     info = node.rpc("getblockchaininfo")
     network = node.rpc("getnetworkinfo")
     require(info["chain"] == chain, "Wrong chain selected")
+    if chain == "main":
+        require(info["pruned"] is True, "Expected a pruned mainnet smoke node")
     require(network["networkactive"] is False and network["connections"] == 0,
             "Runtime verification must remain offline")
     return info
@@ -148,6 +153,7 @@ def main():
     work.mkdir()
 
     app = args.app.resolve()
+    require(app.name == BUNDLE_NAME, f"Expected bundle name {BUNDLE_NAME}")
     bindir = args.bindir.resolve()
     with (app / "Contents/Info.plist").open("rb") as source:
         info = plistlib.load(source)

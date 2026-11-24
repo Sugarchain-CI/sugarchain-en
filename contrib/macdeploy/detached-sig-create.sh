@@ -10,7 +10,7 @@ SIGNAPPLE=signapple
 TEMPDIR=sign.temp
 
 BUNDLE_ROOT=dist
-BUNDLE_NAME="Sugarchain En.app"
+BUNDLE_NAME="Sugarchain-Qt.app"
 UNSIGNED_BUNDLE="${BUNDLE_ROOT}/${BUNDLE_NAME}"
 UNSIGNED_BINARY="${UNSIGNED_BUNDLE}/Contents/MacOS/Sugarchain-Qt"
 

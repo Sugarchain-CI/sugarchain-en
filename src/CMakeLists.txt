@@ -146,6 +146,8 @@ target_link_libraries(bitcoin_common
     secp256k1
     Boost::headers
     $<TARGET_NAME_IF_EXISTS:USDT::headers>
+    $<$<PLATFORM_ID:Darwin>:-framework\ CoreFoundation>
+    $<$<PLATFORM_ID:Windows>:advapi32>
     $<$<PLATFORM_ID:Windows>:ws2_32>
 )
 

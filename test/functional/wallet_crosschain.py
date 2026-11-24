@@ -10,6 +10,7 @@ class WalletCrossChain(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 2
         self.setup_clean_chain = True
+        self.use_bitcoin_regtest = False
 
     def skip_test_if_missing_module(self):
         self.skip_if_no_wallet()

@@ -297,6 +297,8 @@ BASE_SCRIPTS = [
     'wallet_crosschain.py',
     'mining_basic.py',
     'mining_mainnet.py',
+    'mining_sugarchain_regtest.py',
+    'wallet_sugarchain_regtest_addresses.py',
     'feature_signet.py',
     'p2p_mutated_blocks.py',
     'rpc_named_arguments.py',

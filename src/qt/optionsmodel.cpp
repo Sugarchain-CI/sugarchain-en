@@ -231,8 +231,10 @@ bool OptionsModel::Init(bilingual_str& error)
     // If setting doesn't exist create it with defaults.
 
     // Main
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MACOS)
     if (!settings.contains("strDataDir"))
         settings.setValue("strDataDir", GUIUtil::getDefaultDataDirectory());
+#endif
 
     // Wallet
 #ifdef ENABLE_WALLET
@@ -289,14 +291,13 @@ void OptionsModel::Reset()
     BackupSettings(gArgs.GetDataDirNet() / "guisettings.ini.bak", settings);
 
     // Save the strDataDir setting
-    QString dataDir = GUIUtil::getDefaultDataDirectory();
-    dataDir = settings.value("strDataDir", dataDir).toString();
+    const auto dataDir = settings.value("strDataDir");
 
     // Remove all entries from our QSettings object
     settings.clear();
 
     // Set strDataDir
-    settings.setValue("strDataDir", dataDir);
+    if (dataDir.isValid()) settings.setValue("strDataDir", dataDir);
 
     // Set that this was reset
     settings.setValue("fReset", true);

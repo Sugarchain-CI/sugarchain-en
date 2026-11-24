@@ -33,7 +33,7 @@ class FastStartupTest(BitcoinTestFramework):
         expected = node.getblockchaininfo()
         self.stop_node(0)
 
-        for args, fast in [([], False), (["-fast-startup=0"], False),
+        for args, fast in [([], True), (["-fast-startup=0"], False),
                            (["-fast-startup=1"], True),
                            (["-fast-startup=1", "-reindex-chainstate=1"], True),
                            (["-fast-startup=0", "-reindex-chainstate=1"], False),
@@ -41,7 +41,8 @@ class FastStartupTest(BitcoinTestFramework):
             self.log.info(f"Startup mode: {args}")
             # Algorithms are shared; the flag selects only historical disk trust
             # (and the separately retained DB cache policy).
-            messages = ["Counting block index entries...", "202 / 202 (100%)",
+            mode = "enabled" if fast else "disabled"
+            messages = [f"Fast Startup: {mode}", "Counting block index entries...", "202 / 202 (100%)",
                         "Prepared block index during loading: 202 entries"]
             forbidden = ["Preparing block headers...", "Sorting block headers..."]
             with node.assert_debug_log(messages, unexpected_msgs=forbidden):
@@ -60,6 +61,13 @@ class FastStartupTest(BitcoinTestFramework):
         node.assert_start_raises_init_error(
             ["-fast-startup=1", "-reindex=1"],
             "-fast-startup=1 cannot be used with -reindex", match=ErrorMatch.PARTIAL_REGEX)
+
+        for args in [["-reindex"], ["-fast-startup=0", "-reindex"]]:
+            with node.assert_debug_log(["Fast Startup: disabled", "Reindexing finished"]):
+                self.start_node(0, args)
+                self.wait_until(lambda: node.getbestblockhash() == expected["bestblockhash"])
+            assert node.verifychain(3, 6)
+            self.stop_node(0)
 
         for workers in [0, 9, -1]:
             node.assert_start_raises_init_error(

@@ -17,13 +17,19 @@ the installation directory. The daemon, RPC client, wallet, transaction, and
 utility programs are in its daemon subdirectory. Test and benchmark programs
 are not part of the production installer.
 
+The default folder for a fresh installation is C:\Program Files\Sugarchain.
+Upgrades keep the registered installation folder, including the previous
+Sugarchain En default and custom locations.
+Select Run Sugarchain on the final installer page to open the installed GUI.
+
 Sugarchain En is based on Bitcoin Core v31.1 and implements Sugarchain mainnet
 networking and consensus. Its mainnet downloads and validates Sugarchain blocks
 and transactions, not the Bitcoin blockchain. Synchronization time and storage
 depend on the chain size, pruning settings, hardware, and network connection.
 Only Sugarchain mainnet and isolated regtest are supported. Public Bitcoin
-testnet, testnet4, and signet modes are rejected. The installer creates a
-mainnet shortcut; regtest can be selected explicitly with -regtest.
+testnet, testnet4, and signet modes are rejected. The installer creates mainnet
+and uninstall shortcuts in the Sugarchain Start Menu folder by default.
+Regtest can be selected explicitly with -regtest.
 
 Existing Data and Settings
 --------------------------

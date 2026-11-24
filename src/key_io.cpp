@@ -9,6 +9,7 @@
 #include <script/interpreter.h>
 #include <script/solver.h>
 #include <tinyformat.h>
+#include <util/chaintype.h>
 #include <util/strencodings.h>
 
 #include <algorithm>
@@ -81,14 +82,19 @@ public:
     std::string operator()(const PubKeyDestination& pk) const { return {}; }
 };
 
-CTxDestination DecodeDestination(const std::string& str, const CChainParams& params, std::string& error_str, std::vector<int>* error_locations)
+CTxDestination DecodeDestination(const std::string& str, const CChainParams& params, std::string& error_str,
+                                std::vector<int>* error_locations, std::string* legacy_regtest_address = nullptr)
 {
     std::vector<unsigned char> data;
     uint160 hash;
     error_str = "";
 
+    // Accept addresses stored by earlier En regtest wallets on that chain.
+    const bool regtest{params.GetChainType() == ChainType::REGTEST};
+    const bool legacy_bech32{regtest && ToLower(str.substr(0, 5)) == "bcrt1"};
+
     // Note this will be false if it is a valid Bech32 address for a different network
-    bool is_bech32 = (ToLower(str.substr(0, params.Bech32HRP().size())) == params.Bech32HRP());
+    const bool is_bech32{legacy_bech32 || ToLower(str.substr(0, params.Bech32HRP().size())) == params.Bech32HRP()};
 
     if (!is_bech32 && DecodeBase58Check(str, data, 21)) {
         // base58-encoded Bitcoin addresses.
@@ -104,6 +110,13 @@ CTxDestination DecodeDestination(const std::string& str, const CChainParams& par
         const std::vector<unsigned char>& script_prefix = params.Base58Prefix(CChainParams::SCRIPT_ADDRESS);
         if (data.size() == hash.size() + script_prefix.size() && std::equal(script_prefix.begin(), script_prefix.end(), data.begin())) {
             std::copy(data.begin() + script_prefix.size(), data.end(), hash.begin());
+            return ScriptHash(hash);
+        }
+
+        if (regtest && data.size() == hash.size() + 1 && (data[0] == 111 || data[0] == 196)) {
+            if (legacy_regtest_address) *legacy_regtest_address = EncodeBase58Check(data);
+            std::copy(data.begin() + 1, data.end(), hash.begin());
+            if (data[0] == 111) return PKHash(hash);
             return ScriptHash(hash);
         }
 
@@ -135,9 +148,12 @@ CTxDestination DecodeDestination(const std::string& str, const CChainParams& par
             return CNoDestination();
         }
         // Bech32 decoding
-        if (dec.hrp != params.Bech32HRP()) {
+        if (dec.hrp != params.Bech32HRP() && !(legacy_bech32 && dec.hrp == "bcrt")) {
             error_str = strprintf("Invalid or unsupported prefix for Segwit (Bech32) address (expected %s, got %s).", params.Bech32HRP(), dec.hrp);
             return CNoDestination();
+        }
+        if (legacy_regtest_address && dec.hrp != params.Bech32HRP()) {
+            *legacy_regtest_address = ToLower(str);
         }
         int version = dec.data[0]; // The first 5 bit symbol is the witness version (0-16)
         if (version == 0 && dec.encoding != bech32::Encoding::BECH32) {
@@ -296,9 +312,15 @@ std::string EncodeDestination(const CTxDestination& dest)
     return std::visit(DestinationEncoder(Params()), dest);
 }
 
-CTxDestination DecodeDestination(const std::string& str, std::string& error_msg, std::vector<int>* error_locations)
+CTxDestination DecodeDestination(const std::string& str, std::string& error_msg, std::vector<int>* error_locations,
+                                std::string* legacy_regtest_address)
 {
-    return DecodeDestination(str, Params(), error_msg, error_locations);
+    if (legacy_regtest_address) legacy_regtest_address->clear();
+    auto dest{DecodeDestination(str, Params(), error_msg, error_locations, legacy_regtest_address)};
+    if (legacy_regtest_address && !IsValidDestination(dest)) {
+        legacy_regtest_address->clear();
+    }
+    return dest;
 }
 
 CTxDestination DecodeDestination(const std::string& str)

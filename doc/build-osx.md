@@ -187,10 +187,12 @@ cmake --build build --target deploy
 ```
 
 The archive path is recorded in `build/macos-archive-path.txt`. It contains
-`Sugarchain En.app`; its executable is `Contents/MacOS/Sugarchain-Qt`.
-Native deployment bundles the Qt frameworks and platform plugins, then applies
-an ad hoc signature. This is a development package, not a notarized public
-release. Developer ID signing and notarization require separate credentials.
+`Sugarchain-Qt.app`, intended for `/Applications/Sugarchain-Qt.app`.
+Its executable is `Contents/MacOS/Sugarchain-Qt`.
+Native deployment bundles the Qt frameworks and platform plugins and applies
+an ad hoc signature for local testing. See
+[Developer ID release signing](../contrib/macdeploy/README.md#developer-id-release-signing)
+for notarizing static Qt release archives.
 
 The bundle does not force an Intel architecture preference. Launch Services
 selects the native architecture available in the executable.

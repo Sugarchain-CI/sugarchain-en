@@ -13,13 +13,21 @@ import subprocess
 import sys
 
 
-def nsis_command(program, install_dir, uninstall=False):
+def nsis_command(program, install_dir=None, uninstall=False):
     # NSIS consumes the entire final /D= or _?= suffix, including spaces.
     # Python's list2cmdline would quote this argument and change NSIS parsing.
     if '"' in str(program) or '"' in str(install_dir):
         raise ValueError("NSIS command paths must not contain quotes")
+    command = f'"{program}" /S'
+    if install_dir is None:
+        return command
     suffix = "_?=" if uninstall else "/D="
-    return f'"{program}" /S {suffix}{install_dir}'
+    return f"{command} {suffix}{install_dir}"
+
+
+def run_nsis(program, install_dir=None, uninstall=False, check=True):
+    return subprocess.run(nsis_command(program, install_dir, uninstall),
+                          check=check, timeout=180, shell=False)
 
 
 def main():
@@ -38,27 +46,79 @@ def main():
     workdir.mkdir(parents=True, exist_ok=False)
     install = workdir / "Sugarchain En install"
     keyname = r"SOFTWARE\Sugarchain En"
+    legacy_key = r"SOFTWARE\Sugarchain Komorebi"
+    registry_view = winreg.KEY_WOW64_64KEY
+    program_files = Path(os.environ.get("ProgramW6432", os.environ["ProgramFiles"]))
+    default_install = program_files / "Sugarchain"
+    previous_default = program_files / "Sugarchain En"
+    programs_menu = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs"
 
-    def registry_value(name):
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, keyname, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as key:
+    def registry_value(name, product_key=keyname):
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, product_key, 0, winreg.KEY_READ | registry_view) as key:
             return winreg.QueryValueEx(key, name)[0]
 
-    try:
-        registry_value("Path")
-    except FileNotFoundError:
-        pass
-    else:
-        raise AssertionError("Refusing to overwrite an existing registered installation")
+    def assert_not_registered(product_key):
+        try:
+            value = registry_value("Path", product_key)
+        except FileNotFoundError:
+            return
+        raise AssertionError(f"Unexpected installation registered under {product_key}: {value}")
 
-    command = nsis_command(installer, install)
-    subprocess.run(command, check=True, timeout=180, shell=False)
+    for product_key in (keyname, legacy_key, f"{legacy_key} (64-bit)"):
+        assert_not_registered(product_key)
+    for directory in (default_install, previous_default):
+        assert not directory.exists(), f"Unexpected files in {directory}"
+
+    run_nsis(installer)
+    assert Path(registry_value("Path")) == default_install
+    assert (default_install / "sugarchain-qt.exe").is_file()
+    assert registry_value("StartMenuGroup") == "Sugarchain"
+    shortcuts = {
+        programs_menu / "Sugarchain/Sugarchain En.lnk": default_install / "sugarchain-qt.exe",
+        programs_menu / "Sugarchain/Uninstall Sugarchain En.lnk": default_install / "uninstall.exe",
+    }
+    for shortcut, executable in shortcuts.items():
+        assert shortcut.is_file(), shortcut
+        target = subprocess.check_output([
+            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+            "(New-Object -ComObject WScript.Shell).CreateShortcut($env:SUGARCHAIN_TEST_SHORTCUT).TargetPath",
+        ], env={**os.environ, "SUGARCHAIN_TEST_SHORTCUT": str(shortcut)}, text=True, timeout=30)
+        assert Path(target.strip()) == executable, (shortcut, target)
+    run_nsis(default_install / "uninstall.exe", default_install, uninstall=True)
+    assert not any(shortcut.exists() for shortcut in shortcuts)
+    assert_not_registered(keyname)
+
+    # Reproduce the legacy registration and files that the upgrade recognizes.
+    default_install.mkdir(exist_ok=True)
+    for name in ("sugarchain-qt.exe", "uninstall.exe"):
+        (default_install / name).write_bytes(b"legacy installation fixture")
+    legacy_config = default_install / "sugarchain.conf"
+    legacy_config.write_bytes(b"# legacy configuration\r\nlisten=0\r\n")
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, legacy_key, 0, winreg.KEY_SET_VALUE | registry_view) as key:
+        winreg.SetValueEx(key, "Path", 0, winreg.REG_SZ, str(default_install))
+    ignored = workdir / "Ignored legacy override"
+    run_nsis(installer, ignored)
+    assert Path(registry_value("Path")) == default_install
+    assert not ignored.exists()
+    assert_not_registered(legacy_key)
+    run_nsis(default_install / "uninstall.exe", default_install, uninstall=True)
+    assert legacy_config.read_bytes() == b"# legacy configuration\r\nlisten=0\r\n"
+    assert_not_registered(keyname)
+
+    run_nsis(installer, previous_default)
+    run_nsis(installer)
+    assert Path(registry_value("Path")) == previous_default
+    run_nsis(previous_default / "uninstall.exe", previous_default, uninstall=True)
+    assert_not_registered(keyname)
+
+    run_nsis(installer, install)
     programs = [install / name for name in ("sugarchain.exe", "sugarchain-qt.exe")]
     programs += [install / "daemon" / name for name in ("sugarchaind.exe", "sugarchain-cli.exe", "sugarchain-wallet.exe", "sugarchain-tx.exe", "sugarchain-util.exe")]
     assert all(path.is_file() for path in programs), programs
     assert not list(install.rglob("test_bitcoin*.exe")), "Production installer contains test programs"
     assert not list(install.rglob("bench_*.exe")), "Production installer contains benchmarks"
     assert Path(registry_value("Path")) == install
-    startmenu = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs" / registry_value("StartMenuGroup")
+    startmenu = programs_menu / registry_value("StartMenuGroup")
     obsolete = [startmenu / f"Sugarchain En ({network}).lnk" for network in ("testnet", "testnet4", "test signet")]
     assert not any(path.exists() for path in obsolete)
 
@@ -70,7 +130,10 @@ def main():
     expected_extra = extra.read_bytes()
     for path in obsolete:
         path.write_text("Obsolete launcher sentinel\n")
-    subprocess.run(command, check=True, timeout=180, shell=False)
+    ignored = workdir / "Ignored En override"
+    run_nsis(installer, ignored)
+    assert Path(registry_value("Path")) == install
+    assert not ignored.exists()
     assert config.read_bytes() == expected_config
     assert extra.read_bytes() == expected_extra
     assert not any(path.exists() for path in obsolete)
@@ -83,11 +146,18 @@ def main():
     subprocess.run([*smoke_command, "--work-dir", str(workdir / "installed-runtime")], check=True, timeout=300)
     # Use no shell; all paths belong to this fresh runner-specific workspace.
     uninstaller = install / "uninstall.exe"
-    subprocess.run(nsis_command(uninstaller, install, uninstall=True), check=True, timeout=180, shell=False)
+    assert run_nsis(uninstaller, workdir, uninstall=True, check=False).returncode != 0
+    assert Path(registry_value("Path")) == install
+    assert all(path.is_file() for path in programs)
+    run_nsis(uninstaller, install, uninstall=True)
+    assert_not_registered(keyname)
     assert not any(path.exists() for path in programs), "Uninstaller left packaged production programs"
     assert config.read_bytes() == expected_config
     assert extra.read_bytes() == expected_extra
-    report = {"production_binaries": len(programs), "install": "passed", "upgrade": "passed", "native_runtime": "passed", "uninstall_preserves_user_files": "passed"}
+    report = {"production_binaries": len(programs), "default_install": "passed", "start_menu_shortcuts": "passed",
+              "legacy_upgrade": "passed",
+              "previous_default_upgrade": "passed", "custom_path_upgrade": "passed", "native_runtime": "passed",
+              "uninstall_preserves_user_files": "passed"}
     if args.with_wallet_restart:
         report["gui_wallet_restart"] = "passed"
     (workdir / "installer-results.json").write_text(json.dumps(report, indent=2) + "\n")

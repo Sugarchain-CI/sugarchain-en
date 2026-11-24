@@ -24,6 +24,7 @@
 #include <index/coinstatsindex.h>
 #include <interfaces/mining.h>
 #include <kernel/coinstats.h>
+#include <key_io.h>
 #include <logging/timer.h>
 #include <net.h>
 #include <net_processing.h>
@@ -2531,6 +2532,9 @@ static bool CheckBlockFilterMatches(BlockManager& blockman, const CBlockIndex& b
 
 static RPCHelpMan scanblocks()
 {
+    using util::hex_literals::operator""_hex_u8;
+    constexpr uint160 EXAMPLE_KEY_HASH{"af2b3822dae21f000bc388e45592d230e1f79095"_hex_u8};
+    const std::string scan_example{"[\"addr(" + EncodeDestination(WitnessV0KeyHash{EXAMPLE_KEY_HASH}) + ")\"]"};
     return RPCHelpMan{
         "scanblocks",
         "Return relevant blockhashes for given descriptors (requires blockfilterindex).\n"
@@ -2565,11 +2569,11 @@ static RPCHelpMan scanblocks()
             scan_result_abort,
         },
         RPCExamples{
-            HelpExampleCli("scanblocks", "start '[\"addr(bcrt1q4u4nsgk6ug0sqz7r3rj9tykjxrsl0yy4d0wwte)\"]' 300000") +
-            HelpExampleCli("scanblocks", "start '[\"addr(bcrt1q4u4nsgk6ug0sqz7r3rj9tykjxrsl0yy4d0wwte)\"]' 100 150 basic") +
+            HelpExampleCli("scanblocks", "start '" + scan_example + "' 300000") +
+            HelpExampleCli("scanblocks", "start '" + scan_example + "' 100 150 basic") +
             HelpExampleCli("scanblocks", "status") +
-            HelpExampleRpc("scanblocks", "\"start\", [\"addr(bcrt1q4u4nsgk6ug0sqz7r3rj9tykjxrsl0yy4d0wwte)\"], 300000") +
-            HelpExampleRpc("scanblocks", "\"start\", [\"addr(bcrt1q4u4nsgk6ug0sqz7r3rj9tykjxrsl0yy4d0wwte)\"], 100, 150, \"basic\"") +
+            HelpExampleRpc("scanblocks", "\"start\", " + scan_example + ", 300000") +
+            HelpExampleRpc("scanblocks", "\"start\", " + scan_example + ", 100, 150, \"basic\"") +
             HelpExampleRpc("scanblocks", "\"status\"")
         },
         [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue

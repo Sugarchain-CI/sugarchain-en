@@ -20,6 +20,7 @@ from test_framework import util
 class ConfArgsTest(BitcoinTestFramework):
     def set_test_params(self):
         self.setup_clean_chain = True
+        self.use_bitcoin_regtest = False
         self.num_nodes = 1
         # Prune to prevent disk space warning on CI systems with limited space,
         # when using networks other than regtest.
