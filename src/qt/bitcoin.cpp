@@ -521,6 +521,14 @@ int GuiMain(int argc, char* argv[])
     QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
 #endif
 
+#if defined(Q_OS_LINUX) && defined(QT_STATIC)
+    // The portable Qt build includes XCB. In a Wayland desktop, use XWayland
+    // when available instead of selecting a backend absent from the package.
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM") && !qEnvironmentVariableIsEmpty("DISPLAY")) {
+        qputenv("QT_QPA_PLATFORM", "xcb");
+    }
+#endif
+
     // Keep the GUI log handler installed through QApplication destruction.
     std::optional<QtMessageHandler> previous_message_handler;
     const auto finish_gui_logging = qScopeGuard([&] {
