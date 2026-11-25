@@ -1,0 +1,40 @@
+name: Apple Silicon native paired source comparison
+on:
+  push:
+    branches: [automation/en7-arm-native]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          repository: decryp2kanon/sugarchain-en
+          ref: 8400a011d8d4879fb606d50c263b6e4801213605
+          path: source
+          persist-credentials: false
+      - uses: actions/cache/restore@v5
+        with:
+          path: ${{ runner.temp }}/macos-subsecond-ccache
+          key: macos-subsecond-arm64-${{ github.run_id }}
+          restore-keys: macos-subsecond-arm64-
+      - name: Compile and compare baseline and candidate on the same host
+        run: bash diagnostics/run-native-compare.sh "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/candidate.patch" "$RUNNER_TEMP/arm-native-comparison"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: arm-native-comparison
+          path: ${{ runner.temp }}/arm-native-comparison/evidence
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/cache/save@v5
+        if: always()
+        with:
+          path: ${{ runner.temp }}/macos-subsecond-ccache
+          key: macos-subsecond-arm64-${{ github.run_id }}
