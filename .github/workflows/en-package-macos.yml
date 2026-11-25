@@ -27,7 +27,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: b2806aef599cc7853d26271bded571d804bd8790
+        ref: 13a5822c27a5097f72f97262413c243d7db57708
         persist-credentials: false
     - name: Verify pinned source revision
       shell: bash
@@ -35,9 +35,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "b2806aef599cc7853d26271bded571d804bd8790"
+        test "$actual" = "13a5822c27a5097f72f97262413c243d7db57708"
 
-        test "$(git rev-parse HEAD^{tree})" = "bfd39d1ac40e3676a1d26417e865e0827ddfefb8"
+        test "$(git rev-parse HEAD^{tree})" = "47cc721fc17d72059be9d9f532576a20fd8a1111"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - uses: ./.github/actions/configure-environment
@@ -50,7 +50,7 @@ jobs:
         provider: gha
     - name: Cross-build with the repository's Darwin depends toolchain
       shell: bash
-      run: "test \"$(git rev-parse HEAD)\" = b2806aef599cc7853d26271bded571d804bd8790\nsource ./ci/test/00_setup_env.sh\nexport GOAL=\"install deploy\"\nexport BASE_OUTDIR=\"$BASE_BUILD_DIR/installed\"\nexport BITCOIN_CONFIG=\"\n  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON\n  -DBUILD_GUI=ON -DENABLE_WALLET=ON -DENABLE_IPC=OFF\n  -DBUILD_TESTS=OFF -DBUILD_GUI_TESTS=OFF -DBUILD_BENCH=OFF -DBUILD_FUZZ_BINARY=OFF\n  -DBUILD_TX=ON -DBUILD_UTIL=ON -DBUILD_WALLET_TOOL=ON\n  -DINSTALL_MAN=ON -DWITH_USDT=OFF\"\n# The container receives its configuration in a line-oriented Docker env file.\nexport BITCOIN_CONFIG=\"$(echo \"$BITCOIN_CONFIG\" | xargs)\"\npython3 ./ci/test/02_run_container.py\n"
+      run: "test \"$(git rev-parse HEAD)\" = 13a5822c27a5097f72f97262413c243d7db57708\nsource ./ci/test/00_setup_env.sh\nexport GOAL=\"install deploy\"\nexport BASE_OUTDIR=\"$BASE_BUILD_DIR/installed\"\nexport BITCOIN_CONFIG=\"\n  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON\n  -DBUILD_GUI=ON -DENABLE_WALLET=ON -DENABLE_IPC=OFF\n  -DBUILD_TESTS=OFF -DBUILD_GUI_TESTS=OFF -DBUILD_BENCH=OFF -DBUILD_FUZZ_BINARY=OFF\n  -DBUILD_TX=ON -DBUILD_UTIL=ON -DBUILD_WALLET_TOOL=ON\n  -DINSTALL_MAN=ON -DWITH_USDT=OFF\"\n# The container receives its configuration in a line-oriented Docker env file.\nexport BITCOIN_CONFIG=\"$(echo \"$BITCOIN_CONFIG\" | xargs)\"\npython3 ./ci/test/02_run_container.py\n"
     - name: Collect the cross-built GUI and command-line programs
       shell: bash
       run: "mkdir -p transfer/cli/bin transfer/cli/share/man/man1\ncp \"$(cat \"$BASE_BUILD_DIR/macos-archive-path.txt\")\" transfer/app.zip\npython3 contrib/macdeploy/verify_bundle.py transfer/app.zip \"${{ matrix.arch }}\"\nfor exe in sugarchain sugarchaind sugarchain-cli sugarchain-wallet sugarchain-tx sugarchain-util; do\n  install -m755 \"$BASE_BUILD_DIR/installed/bin/$exe\" \"transfer/cli/bin/$exe\"\n  install -m644 \"doc/man/$exe.1\" \"transfer/cli/share/man/man1/$exe.1\"\ndone\ncp COPYING contrib/debian/copyright transfer/cli/\ntar -czf transfer/cli.tar.gz -C transfer cli\ngit rev-parse HEAD > transfer/release-source-sha.txt\ngit rev-parse HEAD^{tree} > transfer/release-source-tree.txt\n(\n  cd transfer\n  sha256sum app.zip cli.tar.gz release-source-sha.txt release-source-tree.txt > input.sha256\n)\n"
@@ -79,7 +79,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: b2806aef599cc7853d26271bded571d804bd8790
+        ref: 13a5822c27a5097f72f97262413c243d7db57708
         persist-credentials: false
     - name: Verify pinned source revision
       shell: bash
@@ -87,9 +87,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "b2806aef599cc7853d26271bded571d804bd8790"
+        test "$actual" = "13a5822c27a5097f72f97262413c243d7db57708"
 
-        test "$(git rev-parse HEAD^{tree})" = "bfd39d1ac40e3676a1d26417e865e0827ddfefb8"
+        test "$(git rev-parse HEAD^{tree})" = "47cc721fc17d72059be9d9f532576a20fd8a1111"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - uses: actions/download-artifact@v8
