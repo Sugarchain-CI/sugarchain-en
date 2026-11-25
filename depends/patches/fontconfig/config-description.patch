@@ -1,0 +1,31 @@
+Recognize the description metadata used by newer Fontconfig configurations.
+
+The bundled parser does not expose rule-set descriptions. Consume the
+optional translation domain and let the parser discard the text.
+
+Reference: https://fontconfig.pages.freedesktop.org/fontconfig/fontconfig-user.html
+
+--- a/src/fcxml.c
++++ b/src/fcxml.c
+@@ -344,6 +344,7 @@
+ typedef enum _FcElement {
+     FcElementNone,
+     FcElementFontconfig,
++    FcElementDescription,
+     FcElementDir,
+     FcElementCacheDir,
+     FcElementCache,
+@@ -407,6 +408,7 @@
+     FcElement   element;
+ } fcElementMap[] = {
+     { "fontconfig",	FcElementFontconfig },
++    { "description",	FcElementDescription },
+     { "dir",		FcElementDir },
+     { "cachedir",	FcElementCacheDir },
+     { "cache",		FcElementCache },
+@@ -2911 +2913,5 @@ FcEndElement(void *userData, const XML_Char *name FC_UNUSED)
++    case FcElementDescription:
++	/* Description text and its translation domain do not affect font rules. */
++	(void) FcConfigGetAttribute (parse, "domain");
++	break;
+     case FcElementDir:

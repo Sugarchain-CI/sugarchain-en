@@ -81,7 +81,8 @@ NetworkStyle::NetworkStyle(const QString &_appName, const int iconColorHueShift,
 
 const NetworkStyle* NetworkStyle::instantiate(const ChainType networkId)
 {
-    std::string titleAddText = networkId == ChainType::MAIN ? "" : strprintf("[%s]", ChainTypeToString(networkId));
+    const std::string network_name = networkId == ChainType::TESTNET ? "testnet7" : ChainTypeToString(networkId);
+    std::string titleAddText = networkId == ChainType::MAIN ? "" : strprintf("[%s]", network_name);
     for (const auto& network_style : network_styles) {
         if (networkId == network_style.networkId) {
             return new NetworkStyle(

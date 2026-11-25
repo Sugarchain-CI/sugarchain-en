@@ -71,18 +71,22 @@ std::string FormatSubVersion(const std::string& name, int nClientVersion, const 
     return strprintf("/%s:%s%s/", name, FormatVersion(nClientVersion), comments_str);
 }
 
-std::string CopyrightHolders(const std::string& strPrefix)
+std::string CopyrightHolders(bool use_symbol)
 {
+    const auto format_years = [use_symbol](int first_year) {
+        return use_symbol ? strprintf("\xc2\xa9 %i-%i", first_year, COPYRIGHT_YEAR)
+                          : strprintf(_("Copyright (C) %i-%i"), first_year, COPYRIGHT_YEAR).translated;
+    };
     const std::string en_developers = _("The Sugarchain En developers");
     const auto upstream_developers = strprintf(_(COPYRIGHT_HOLDERS), COPYRIGHT_HOLDERS_SUBSTITUTION).translated;
-    return strPrefix + en_developers + "\n" + strPrefix + upstream_developers;
+    return format_years(2019) + " " + en_developers + "\n" + format_years(2009) + " " + upstream_developers;
 }
 
 std::string LicenseInfo()
 {
     const std::string URL_SOURCE_CODE = "<https://github.com/decryp2kanon/sugarchain-en>";
 
-    return CopyrightHolders(strprintf(_("Copyright (C) %i-%i"), 2009, COPYRIGHT_YEAR).translated + " ") + "\n" +
+    return CopyrightHolders(/*use_symbol=*/false) + "\n" +
            "\n" +
            strprintf(_("Please contribute if you find %s useful. "
                        "Visit %s for further information about the software."),
