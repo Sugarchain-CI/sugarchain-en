@@ -65,13 +65,13 @@ jobs:
           for variant in cli gui; do
             if [[ "$variant" == cli ]]; then
               archive="$CLI_ARCHIVE"
-              flags=()
+              set --
             else
               archive="$GUI_ARCHIVE"
-              flags=(--gui "$GUI")
+              set -- --gui "$GUI"
             fi
             hash=$(awk -v asset="$archive" '$2 == asset {print $1}' benchmark-SHA256SUMS)
-            python3 regtest-sync-macos.py --cli "$CLI" "${flags[@]}" --runner "$BENCH_RUNNER" \
+            python3 regtest-sync-macos.py --cli "$CLI" "$@" --runner "$BENCH_RUNNER" \
               --asset-sha256 "$hash" --work-dir "$RUNNER_TEMP/regtest-$variant" \
               --blocks 10000 --repeats 3
             cp "$RUNNER_TEMP/regtest-$variant/result.json" "$result/$variant.json"
@@ -85,45 +85,5 @@ jobs:
           path: |
             ${{ runner.temp }}/regtest-evidence/
             ${{ runner.temp }}/regtest-gui/*/console.log
-          if-no-files-found: warn
-          retention-days: 7
-
-  linux-arm64:
-    name: Linux ARM64 (native)
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 15
-    steps:
-      - name: Check out benchmark
-        uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-
-      - name: Verify and measure the published ARM64 archive
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(uname -m)" = aarch64
-          name=sugarchain-en-31.1.2-aarch64-linux-gnu
-          archive="$name.tar.gz"
-          result="$RUNNER_TEMP/regtest-evidence"
-          mkdir "$result"
-          curl --retry 4 --retry-all-errors --connect-timeout 20 -fsSL \
-            "https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.3/$archive" \
-            -o "$RUNNER_TEMP/$archive"
-          hash=$(awk -v asset="$archive" '$2 == asset {print $1}' benchmark-SHA256SUMS)
-          printf '%s  %s\n' "$hash" "$RUNNER_TEMP/$archive" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
-          lscpu > "$result/linux.txt"
-          python3 regtest-sync-macos.py --cli "$RUNNER_TEMP/$name/bin/sugarchaind" \
-            --runner ubuntu-24.04-arm --asset-sha256 "$hash" --work-dir "$RUNNER_TEMP/regtest-cli" \
-            --blocks 10000 --repeats 3
-          cp "$RUNNER_TEMP/regtest-cli/result.json" "$result/cli.json"
-
-      - name: Retain benchmark results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: regtest-en3-linux-aarch64-native
-          path: ${{ runner.temp }}/regtest-evidence/
           if-no-files-found: warn
           retention-days: 7
