@@ -51,14 +51,15 @@ jobs:
       with:
         path: ${{ env.CCACHE_DIR }}
         key: ccache-${{ env.CONTAINER_NAME }}-${{ github.run_id }}
+      if: ${{ !cancelled() }}
     - name: Save depends sources for release-branch followups
-      if: ${{ success() && env['depends-sources-cache-hit'] != 'true' }}
+      if: ${{ !cancelled() && env['depends-sources-cache-hit'] != 'true' }}
       uses: actions/cache/save@v5
       with:
         path: ${{ env.SOURCES_PATH }}
         key: depends-sources-${{ env.CONTAINER_NAME }}-${{ env.DEPENDS_HASH }}
     - name: Save built depends for release-branch followups
-      if: ${{ success() && env['depends-built-cache-hit'] != 'true' }}
+      if: ${{ !cancelled() && env['depends-built-cache-hit'] != 'true' }}
       uses: actions/cache/save@v5
       with:
         path: ${{ env.BASE_CACHE }}
@@ -68,9 +69,10 @@ jobs:
       with:
         name: intel-cross-lto-daemons
         path: ${{ env.BASE_BUILD_DIR }}/profile-transfer/
-        if-no-files-found: error
+        if-no-files-found: warn
         compression-level: 0
         retention-days: 7
+      if: ${{ always() }}
   intel-profile:
     name: Measure on standard Intel macOS
     if: github.ref == 'refs/heads/release-packaging/31.1.2-en.6-macos'

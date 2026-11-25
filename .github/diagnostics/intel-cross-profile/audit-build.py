@@ -107,17 +107,26 @@ def main():
     # Record the actual daemon link command and driver expansion without relinking.
     if cache['CMAKE_GENERATOR'] == 'Ninja':
         commands = subprocess.check_output([cache['CMAKE_MAKE_PROGRAM'], '-C', str(build), '-t', 'commands', 'bitcoind'], text=True).splitlines()
-        links = [c for c in commands if re.search(r'-o\s+(?:\S*/)?sugarchaind(?:\s|$)', c)]
+        links = [(c, build) for c in commands if re.search(r'-o\s+(?:\S*/)?sugarchaind(?:\s|$)', c)]
     else:
-        links = [p.read_text().strip() for p in build.rglob('bitcoind.dir/link.txt')]
+        links = [(p.read_text().strip(), p.parent.parent.parent) for p in build.rglob('bitcoind.dir/link.txt')]
     assert len(links) == 1, len(links)
-    link = links[0]
+    link, link_directory = links[0]
     chunks = re.split(r'\s+&&\s+', link)
-    driver = next(shlex.split(c) for c in chunks if re.search(r'-o\s+(?:\S*/)?sugarchaind(?:\s|$)', c))
+    for chunk in chunks:
+        words = shlex.split(chunk)
+        if words and words[0] == 'cd':
+            assert len(words) == 2, words
+            link_directory = (link_directory / words[1]).resolve()
+        if re.search(r'-o\s+(?:\S*/)?sugarchaind(?:\s|$)', chunk):
+            driver = words
+            break
+    else:
+        raise AssertionError('Daemon link command not found')
     if driver and driver[0] == ':':
         driver = driver[1:]
     assert driver and 'clang' in Path(driver[0]).name, driver[:1]
-    replay = subprocess.run([driver[0], '-###', *driver[1:]], cwd=build, text=True, capture_output=True)
+    replay = subprocess.run([driver[0], '-###', *driver[1:]], cwd=link_directory, text=True, capture_output=True)
     assert replay.returncode == 0, replay.stderr[-1000:]
     assert len(replay.stderr) < 131072
     linker_arguments = set(shlex.split(replay.stderr))
@@ -131,7 +140,7 @@ def main():
     cxx_version = subprocess.check_output([driver[0], '--version'], text=True).splitlines()[0]
     save(output / 'compiler-flags.json', {
         'compiler_id': compiler_id, 'compiler_version': version, 'compiler_version_text': cxx_version,
-        'linker_version': linker_version, 'daemon_link_command': link, 'driver_link_expansion': replay.stderr,
+        'linker_version': linker_version, 'daemon_link_command': link, 'daemon_link_working_directory': str(link_directory), 'driver_link_expansion': replay.stderr,
         'core_translation_units': entries,
         'cmake_options': {key: cache[key] for key in expected},
         'generated_header_sha256': digest(headers[0]), 'generated_macros': macros,
