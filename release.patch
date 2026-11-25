@@ -937,6 +937,22 @@ index c106eca69c..cea3a44d07 100644
  BOOST_AUTO_TEST_CASE(mockforward)
  {
      CScheduler scheduler;
+diff --git a/src/test/util/net.h b/src/test/util/net.h
+index fd29792193..0dfd1f7d90 100644
+--- a/src/test/util/net.h
++++ b/src/test/util/net.h
+@@ -35,6 +35,11 @@ class FastRandomContext;
+ struct ConnmanTestMsg : public CConnman {
+     using CConnman::CConnman;
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++    void ResetMessageHandlerWake() { WITH_LOCK(mutexMsgProc, fMsgProcWake = false); }
++    bool MessageHandlerWakePending() { return WITH_LOCK(mutexMsgProc, return fMsgProcWake); }
++#endif
++
+     void SetMsgProc(NetEventsInterface* msgproc)
+     {
+         m_msgproc = msgproc;
 diff --git a/src/util/task_runner.h b/src/util/task_runner.h
 index 951381823b..448119aa06 100644
 --- a/src/util/task_runner.h
