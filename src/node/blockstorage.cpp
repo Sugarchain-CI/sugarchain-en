@@ -967,6 +967,14 @@ void BlockManager::WriteBlockIndexDB()
 
 bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash, std::vector<CBlockIndex*>* sorted_indices)
 {
+#ifdef WIN32
+    {
+        LOCK(cs_LastBlockFile);
+        const bool block_closed{m_block_writer.Close()};
+        const bool undo_closed{m_undo_writer.Close()};
+        if (!block_closed || !undo_closed) return false;
+    }
+#endif
     // Per-load output avoids retaining stale references across reload/pruning.
     std::set<int> setBlkDataFiles;
     std::vector<CBlockIndex*> loaded_indices;
@@ -1179,8 +1187,13 @@ bool BlockManager::ReadBlockUndo(CBlockUndo& blockundo, const CBlockIndex& index
 
 bool BlockManager::FlushUndoFile(int block_file, bool finalize)
 {
+    bool closed{true};
+#ifdef WIN32
+    LOCK(cs_LastBlockFile);
+    closed = m_undo_writer.Close(block_file);
+#endif
     FlatFilePos undo_pos_old(block_file, m_blockfile_info[block_file].nUndoSize);
-    if (!m_undo_file_seq.Flush(undo_pos_old, finalize)) {
+    if (!m_undo_file_seq.Flush(undo_pos_old, finalize) || !closed) {
         m_opts.notifications.flushError(_("Flushing undo file to disk failed. This is likely the result of an I/O error."));
         return false;
     }
@@ -1202,7 +1215,11 @@ bool BlockManager::FlushBlockFile(int blockfile_num, bool fFinalize, bool finali
     assert(static_cast<int>(m_blockfile_info.size()) > blockfile_num);
 
     FlatFilePos block_pos_old(blockfile_num, m_blockfile_info[blockfile_num].nSize);
-    if (!m_block_file_seq.Flush(block_pos_old, fFinalize)) {
+    bool closed{true};
+#ifdef WIN32
+    closed = m_block_writer.Close(blockfile_num);
+#endif
+    if (!m_block_file_seq.Flush(block_pos_old, fFinalize) || !closed) {
         m_opts.notifications.flushError(_("Flushing block file to disk failed. This is likely the result of an I/O error."));
         success = false;
     }
@@ -1251,8 +1268,16 @@ uint64_t BlockManager::CalculateCurrentUsage()
 
 void BlockManager::UnlinkPrunedFiles(const std::set<int>& setFilesToPrune) const
 {
+#ifdef WIN32
+    LOCK(cs_LastBlockFile);
+#endif
     std::error_code ec;
     for (std::set<int>::iterator it = setFilesToPrune.begin(); it != setFilesToPrune.end(); ++it) {
+#ifdef WIN32
+        const bool block_closed{m_block_writer.Close(*it)};
+        const bool undo_closed{m_undo_writer.Close(*it)};
+        if (!block_closed || !undo_closed) continue;
+#endif
         FlatFilePos pos(*it, 0);
         const bool removed_blockfile{fs::remove(m_block_file_seq.FileName(pos), ec)};
         const bool removed_undofile{fs::remove(m_undo_file_seq.FileName(pos), ec)};
@@ -1261,6 +1286,52 @@ void BlockManager::UnlinkPrunedFiles(const std::set<int>& setFilesToPrune) const
         }
     }
 }
+
+#ifdef WIN32
+BlockManager::WriteFileCache::~WriteFileCache()
+{
+    (void)Close();
+}
+
+bool BlockManager::WriteFileCache::Close(int file_num)
+{
+    if (!m_file || (file_num != -1 && file_num != m_file_num)) return true;
+    if (std::fclose(std::exchange(m_file, nullptr)) != 0) {
+        LogError("Failed to close cached block storage file %05d: %s", m_file_num, SysErrorString(errno));
+        return false;
+    }
+    return true;
+}
+
+AutoFile BlockManager::WriteFileCache::Open(const FlatFileSeq& sequence, const FlatFilePos& pos, const Obfuscation& obfuscation)
+{
+    if (m_file && pos.nFile == m_file_num) {
+        // Use the absolute offset so AutoFile starts with the correct XOR position.
+        if (std::fseek(m_file, pos.nPos, SEEK_SET) == 0) {
+            return AutoFile{std::exchange(m_file, nullptr), obfuscation};
+        }
+        LogError("Failed to seek cached block storage file to %s: %s", pos.ToString(), SysErrorString(errno));
+        (void)Close();
+        return AutoFile{nullptr};
+    }
+    if (!Close()) return AutoFile{nullptr};
+    return AutoFile{sequence.Open(pos), obfuscation};
+}
+
+bool BlockManager::WriteFileCache::Keep(AutoFile& file, int file_num)
+{
+    assert(!m_file);
+    m_file = file.release();
+    m_file_num = file_num;
+    // Publish bytes to other handles before exposing the record's index.
+    // The block manager still commits them to disk at the usual flush points.
+    if (std::fflush(m_file) == 0) return true;
+    const int write_error{errno};
+    (void)Close();
+    errno = write_error;
+    return false;
+}
+#endif
 
 AutoFile BlockManager::OpenBlockFile(const FlatFilePos& pos, bool fReadOnly) const
 {
@@ -1415,6 +1486,9 @@ bool BlockManager::FindUndoPos(BlockValidationState& state, int nFile, FlatFileP
 bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationState& state, CBlockIndex& block)
 {
     AssertLockHeld(::cs_main);
+#ifdef WIN32
+    LOCK(cs_LastBlockFile);
+#endif
     const BlockfileType type = BlockfileTypeForHeight(block.nHeight);
     auto& cursor = *Assert(WITH_LOCK(cs_LastBlockFile, return m_blockfile_cursors[type]));
 
@@ -1428,7 +1502,11 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
         }
 
         // Open history file to append
+#ifdef WIN32
+        AutoFile file{m_undo_writer.Open(m_undo_file_seq, pos, m_obfuscation)};
+#else
         AutoFile file{OpenUndoFile(pos)};
+#endif
         if (file.IsNull()) {
             LogError("OpenUndoFile failed for %s while writing block undo", pos.ToString());
             return FatalError(m_opts.notifications, state, _("Failed to write undo data."));
@@ -1449,11 +1527,18 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
             // BufferedWriter will flush pending data to file when fileout goes out of scope.
         }
 
+#ifdef WIN32
+        if (!m_undo_writer.Keep(file, pos.nFile)) {
+            LogError("Failed to flush block undo file %s: %s", pos.ToString(), SysErrorString(errno));
+            return FatalError(m_opts.notifications, state, _("Failed to write undo data."));
+        }
+#else
         // Make sure that the file is closed before we call `FlushUndoFile`.
         if (file.fclose() != 0) {
             LogError("Failed to close block undo file %s: %s", pos.ToString(), SysErrorString(errno));
             return FatalError(m_opts.notifications, state, _("Failed to close block undo file."));
         }
+#endif
 
         // rev files are written in block height order, whereas blk files are written as blocks come in (often out of order)
         // we want to flush the rev (undo) file once we've written the last block, which is indicated by the last height
@@ -1586,13 +1671,20 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
 
 FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
 {
+#ifdef WIN32
+    LOCK(cs_LastBlockFile);
+#endif
     const unsigned int block_size{static_cast<unsigned int>(GetSerializeSize(TX_WITH_WITNESS(block)))};
     FlatFilePos pos{FindNextBlockPos(block_size + STORAGE_HEADER_BYTES, nHeight, block.GetBlockTime())};
     if (pos.IsNull()) {
         LogError("FindNextBlockPos failed for %s while writing block", pos.ToString());
         return FlatFilePos();
     }
+#ifdef WIN32
+    AutoFile file{m_block_writer.Open(m_block_file_seq, pos, m_obfuscation)};
+#else
     AutoFile file{OpenBlockFile(pos, /*fReadOnly=*/false)};
+#endif
     if (file.IsNull()) {
         LogError("OpenBlockFile failed for %s while writing block", pos.ToString());
         m_opts.notifications.fatalError(_("Failed to write block."));
@@ -1608,11 +1700,19 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
         fileout << TX_WITH_WITNESS(block);
     }
 
+#ifdef WIN32
+    if (!m_block_writer.Keep(file, pos.nFile)) {
+        LogError("Failed to flush block file %s: %s", pos.ToString(), SysErrorString(errno));
+        m_opts.notifications.fatalError(_("Failed to write block."));
+        return FlatFilePos();
+    }
+#else
     if (file.fclose() != 0) {
         LogError("Failed to close block file %s: %s", pos.ToString(), SysErrorString(errno));
         m_opts.notifications.fatalError(_("Failed to close file when writing block."));
         return FlatFilePos();
     }
+#endif
 
     return pos;
 }
