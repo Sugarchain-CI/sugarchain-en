@@ -1860,6 +1860,12 @@ void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock>&& sock,
         LOCK(m_nodes_mutex);
         m_nodes.push_back(pnode);
     }
+#if defined(__APPLE__) && defined(__x86_64__)
+    // A new peer can have outbound handshake work before its first received
+    // message. Process it promptly when the node joins the socket set.
+    WakeMessageHandler();
+#endif
+
     LogDebug(BCLog::NET, "connection from %s accepted\n", addr.ToStringAddrPort());
     TRACEPOINT(net, inbound_connection,
         pnode->GetId(),
@@ -3073,6 +3079,12 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect,
         // update connection count by network
         if (pnode->IsManualOrFullOutboundConn()) ++m_network_conn_counts[pnode->addr.GetNetwork()];
     }
+
+#if defined(__APPLE__) && defined(__x86_64__)
+    // A new peer can have outbound handshake work before its first received
+    // message. Process it promptly when the node joins the socket set.
+    WakeMessageHandler();
+#endif
 
     TRACEPOINT(net, outbound_connection,
         pnode->GetId(),

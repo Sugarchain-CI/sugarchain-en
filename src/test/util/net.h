@@ -35,6 +35,11 @@ class FastRandomContext;
 struct ConnmanTestMsg : public CConnman {
     using CConnman::CConnman;
 
+#if defined(__APPLE__) && defined(__x86_64__)
+    void ResetMessageHandlerWake() { WITH_LOCK(mutexMsgProc, fMsgProcWake = false); }
+    bool MessageHandlerWakePending() { return WITH_LOCK(mutexMsgProc, return fMsgProcWake); }
+#endif
+
     void SetMsgProc(NetEventsInterface* msgproc)
     {
         m_msgproc = msgproc;

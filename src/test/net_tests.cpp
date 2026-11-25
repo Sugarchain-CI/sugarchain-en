@@ -102,6 +102,41 @@ BOOST_AUTO_TEST_CASE(message_batches_bound_work_and_respect_termination)
     }
 }
 
+
+#if defined(__APPLE__) && defined(__x86_64__)
+BOOST_AUTO_TEST_CASE(accepted_peer_wakes_message_handler)
+{
+    struct Events : NetEventsInterface {
+        unsigned initialized{0};
+        void InitializeNode(const CNode&, ServiceFlags) override { ++initialized; }
+        void FinalizeNode(const CNode&) override {}
+        bool HasAllDesirableServiceFlags(ServiceFlags) const override { return true; }
+        bool ProcessMessages(CNode&, std::atomic<bool>&) override { return false; }
+        bool SendMessages(CNode&) override { return true; }
+    } events;
+    ConnmanTestMsg connman{0, 0, *m_node.addrman, *m_node.netgroupman, Params()};
+    CConnman::Options options;
+    options.m_max_automatic_connections = 32;
+    options.m_msgproc = &events;
+    connman.Init(options);
+    connman.ResetMessageHandlerWake();
+
+    const CAddress addr{LookupNumeric("127.0.0.1:12345"), NODE_NONE};
+    // A selectable mock exercises accepted-node initialization without host networking.
+    connman.SetNetworkActive(false);
+    connman.CreateNodeFromAcceptedSocketPublic(std::make_unique<ZeroSock>(),
+                                               NetPermissionFlags::None, addr, addr);
+    BOOST_CHECK_EQUAL(events.initialized, 0U);
+    BOOST_CHECK(!connman.MessageHandlerWakePending());
+    connman.SetNetworkActive(true);
+    connman.CreateNodeFromAcceptedSocketPublic(std::make_unique<ZeroSock>(),
+                                               NetPermissionFlags::None, addr, addr);
+    BOOST_CHECK_EQUAL(events.initialized, 1U);
+    BOOST_CHECK_EQUAL(connman.GetNodeCount(ConnectionDirection::In), 1U);
+    BOOST_CHECK(connman.MessageHandlerWakePending());
+}
+#endif
+
 BOOST_AUTO_TEST_CASE(cnode_listen_port)
 {
     // test default
