@@ -178,6 +178,11 @@ public:
     /** Call any remaining callbacks on the calling thread */
     void FlushBackgroundCallbacks();
 
+#if defined(__APPLE__) && defined(__aarch64__)
+    /** Stop the background dispatcher before tearing down validation subscribers. */
+    void StopBackgroundCallbacks();
+#endif
+
     size_t CallbacksPending();
 
     /** Register subscriber */

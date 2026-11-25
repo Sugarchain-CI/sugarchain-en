@@ -97,7 +97,19 @@ public:
 ValidationSignals::ValidationSignals(std::unique_ptr<util::TaskRunnerInterface> task_runner)
     : m_internals{std::make_unique<ValidationSignalsImpl>(std::move(task_runner))} {}
 
+#if defined(__APPLE__) && defined(__aarch64__)
+ValidationSignals::~ValidationSignals()
+{
+    StopBackgroundCallbacks();
+}
+
+void ValidationSignals::StopBackgroundCallbacks()
+{
+    m_internals->m_task_runner->stop();
+}
+#else
 ValidationSignals::~ValidationSignals() = default;
+#endif
 
 void ValidationSignals::FlushBackgroundCallbacks()
 {

@@ -21,6 +21,11 @@ class TaskRunnerInterface
 public:
     virtual ~TaskRunnerInterface() = default;
 
+#if defined(__APPLE__) && defined(__aarch64__)
+    /** Stop the background worker before the caller flushes remaining tasks. */
+    virtual void stop() {}
+#endif
+
 #ifdef __APPLE__
     /** Wait for the pending count to fall to the limit if supported by this live task runner. */
     virtual bool waitForPendingAtMost(size_t) { return false; }

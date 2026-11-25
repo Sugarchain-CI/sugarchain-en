@@ -239,3 +239,83 @@ bool SerialTaskRunner::waitForPendingAtMost(size_t limit)
     return true;
 }
 #endif
+
+#if defined(__APPLE__) && defined(__aarch64__)
+ValidationTaskRunner::ValidationTaskRunner() : m_worker{[this] { Run(/*drain=*/false); }} {}
+
+ValidationTaskRunner::~ValidationTaskRunner()
+{
+    stop();
+}
+
+void ValidationTaskRunner::Run(bool drain)
+{
+    WAIT_LOCK(m_mutex, lock);
+    while (drain || !m_stopped) {
+        if (m_pending.empty()) {
+            if (drain) return;
+            m_available.wait(lock);
+            continue;
+        }
+
+        auto callback{std::move(m_pending.front())};
+        m_pending.pop_front();
+        if (m_capacity_waiters != 0 && m_pending.size() <= m_capacity_wait_limit) {
+            m_capacity.notify_all();
+        }
+        {
+            REVERSE_LOCK(lock, m_mutex);
+            auto task{std::move(callback)};
+            task();
+        }
+    }
+}
+
+void ValidationTaskRunner::insert(std::function<void()> func)
+{
+    bool wake;
+    {
+        LOCK(m_mutex);
+        wake = m_pending.empty() && !m_stopped;
+        m_pending.emplace_back(std::move(func));
+    }
+    if (wake) m_available.notify_one();
+}
+
+void ValidationTaskRunner::stop()
+{
+    {
+        LOCK(m_mutex);
+        m_stopped = true;
+    }
+    m_available.notify_one();
+    m_capacity.notify_all();
+    if (m_worker.joinable()) m_worker.join();
+}
+
+void ValidationTaskRunner::flush()
+{
+    assert(!m_worker.joinable());
+    Run(/*drain=*/true);
+}
+
+size_t ValidationTaskRunner::size()
+{
+    LOCK(m_mutex);
+    return m_pending.size();
+}
+
+bool ValidationTaskRunner::waitForPendingAtMost(size_t limit)
+{
+    WAIT_LOCK(m_mutex, lock);
+    if (m_stopped || m_pending.size() <= limit) return true;
+
+    ++m_capacity_waiters;
+    m_capacity_wait_limit = std::max(m_capacity_wait_limit, limit);
+    m_capacity.wait(lock, [this, limit]() EXCLUSIVE_LOCKS_REQUIRED(m_mutex) {
+        return m_stopped || m_pending.size() <= limit;
+    });
+    if (--m_capacity_waiters == 0) m_capacity_wait_limit = 0;
+    return true;
+}
+#endif

@@ -166,4 +166,31 @@ public:
 #endif
 };
 
+#if defined(__APPLE__) && defined(__aarch64__)
+/** A single background worker for the ordered validation callback queue. */
+class ValidationTaskRunner final : public util::TaskRunnerInterface
+{
+    Mutex m_mutex;
+    std::condition_variable m_available;
+    std::condition_variable m_capacity;
+    size_t m_capacity_waiters GUARDED_BY(m_mutex){0};
+    size_t m_capacity_wait_limit GUARDED_BY(m_mutex){0};
+    std::list<std::function<void()>> m_pending GUARDED_BY(m_mutex);
+    bool m_stopped GUARDED_BY(m_mutex){false};
+    std::thread m_worker;
+
+    void Run(bool drain) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+public:
+    ValidationTaskRunner();
+    ~ValidationTaskRunner() override;
+
+    void insert(std::function<void()> func) override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void stop() override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void flush() override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    size_t size() override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    bool waitForPendingAtMost(size_t limit) override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+};
+#endif
+
 #endif // BITCOIN_SCHEDULER_H
