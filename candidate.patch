@@ -1013,7 +1013,7 @@ index f70adcf74a..8c387cd087 100644
  
      void write(std::span<const std::byte> src)
 diff --git a/src/test/blockmanager_tests.cpp b/src/test/blockmanager_tests.cpp
-index dfaf9ac880..b348b26753 100644
+index dfaf9ac880..649950abb1 100644
 --- a/src/test/blockmanager_tests.cpp
 +++ b/src/test/blockmanager_tests.cpp
 @@ -15,6 +15,11 @@
@@ -1172,9 +1172,9 @@ index dfaf9ac880..b348b26753 100644
 +    node::BlockManagerTestAccess::MakeReadOnly(blockman, blockman.GetBlockPosFilename(first));
 +    CMutableTransaction tx;
 +    tx.vin.resize(1);
-+    tx.vin[0].scriptSig.resize(70 * 1024);
++    tx.vin[0].scriptSig.resize(16 * 1024);
 +    block.vtx.push_back(MakeTransactionRef(tx));
-+    // A full serialization buffer forces a real failed fwrite before Keep().
++    // A large explicit serialization flush fails before Keep(), without rotating.
 +    BOOST_CHECK_THROW(blockman.WriteBlock(block, 2), std::ios_base::failure);
 +    LOCK(cs_main);
 +    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
