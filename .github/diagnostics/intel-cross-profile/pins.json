@@ -1,0 +1,16 @@
+{
+  "source_repository": "decryp2kanon/sugarchain-en",
+  "source_commit": "8400a011d8d4879fb606d50c263b6e4801213605",
+  "source_tree": "5f379fc7f32383077053a5d4cb47414ce53af5f2",
+  "original_repository": "Sugarchain-CI/sugarchain-en",
+  "original_run_id": 45677529513,
+  "original_artifact": "release-mac-x86_64",
+  "original_archive": "sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz",
+  "original_archive_sha256": "57de3c41d12818c4c4cd491b87b0d1d4f8f2be6862ddab63643d875c8e9a00bc",
+  "original_daemon_sha256": "dbeaded1222b46af40b534122c06d27d79e6dfaa3871ff3e151a46061a142972",
+  "profile_patch_sha256": "cdfe6839435aa98f476431b0baf21e9b446acfdb415754c0b3927645d2e1e9bb",
+  "benchmark_sha256": "96ddfe01a2c55e066d7750b7593bcb2683c1e29f8ee60b45a7469122bdedb8dc",
+  "fixture_sha256": "e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9",
+  "fixture_utxo_sha256": "63208d710cf03c30de2660b77a5434181b20fd1c5e70460b256ea4f4e798cb84",
+  "fixture_tip": "634c6ae57600a991a51009c92cba732d9ed96504d0e636df534bc45cdd3a8e28"
+}
