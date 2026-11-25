@@ -181,6 +181,7 @@ def main():
     parser.add_argument("--work-dir", type=Path, required=True)
     parser.add_argument("--blocks", type=int, default=3000)
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--sender", choices=("baseline", "candidate"), default="baseline")
     args = parser.parse_args()
     if not 1 <= args.blocks <= 30_000 or not 1 <= args.repeats <= 5:
         parser.error("Specify 1–30,000 blocks and 1–5 repetitions")
@@ -198,7 +199,7 @@ def main():
         variants[label] = {"binary_sha256": binary_digest, "samples": []}
     out = args.work_dir.resolve()
     out.mkdir(exist_ok=False, parents=True)
-    with Node(executables["baseline"], out / "sender", listening=True) as sender:
+    with Node(executables[args.sender], out / "sender", listening=True) as sender:
         started = time.perf_counter()
         hashes = sender.rpc("generatetodescriptor", args.blocks, DESCRIPTOR, 1_000_000, timeout=180)
         fixture_seconds = time.perf_counter() - started
@@ -243,6 +244,7 @@ def main():
         "fixture_utxo_sha256": expected_utxo, "sender_time": MOCKTIME,
         "receiver_time": RECEIVER_TIME, "max_tip_age": MAX_TIP_AGE, "dbcache_mib": 256,
         "checkblockindex": 0, "sample_order": sample_order, "variants": variants,
+        "sender_variant": args.sender, "sender_binary_sha256": variants[args.sender]["binary_sha256"],
         "baseline_over_candidate": variants["baseline"]["median_sync_seconds"]
         / variants["candidate"]["median_sync_seconds"],
     }
