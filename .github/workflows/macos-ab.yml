@@ -2,7 +2,7 @@ name: Intel macOS ordered sync comparison
 'on':
   push:
     branches:
-    - automation/en6-intel-sync-round2
+    - automation/en6-intel-sync-round2-fixed
 permissions:
   contents: read
 jobs:
@@ -52,8 +52,8 @@ jobs:
         \ --parallel \"$jobs\"\n  cp \"$build/bin/sugarchaind\" \"$workspace/$variant/sugarchaind\"\
         \n  git -C source apply --reverse \"$GITHUB_WORKSPACE/$variant.patch\"\n \
         \ git -C source diff --exit-code\ndone\ngit -C source apply \"$GITHUB_WORKSPACE/candidate.patch\"\
-        \nshasum -a 256 \"$workspace/\"{reference,release,candidate}/sugarchaind\n\
-        \nmkdir \"$workspace/profile\"\ngit -C source apply \"$GITHUB_WORKSPACE/timing.patch\"\
+        \nshasum -a 256 \"$workspace/\"{release,candidate}/sugarchaind\n\nmkdir \"\
+        $workspace/profile\"\ngit -C source apply \"$GITHUB_WORKSPACE/timing.patch\"\
         \ncmake --build \"$build\" --target bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\"\
         \ \"$workspace/profile/sugarchaind\"\ngit -C source apply --reverse \"$GITHUB_WORKSPACE/timing.patch\"\
         \n"

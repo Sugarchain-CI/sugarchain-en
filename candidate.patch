@@ -691,6 +691,53 @@ index f70adcf74a..e7c03e057a 100644
  
      ~AutoFile()
      {
+diff --git a/src/test/net_tests.cpp b/src/test/net_tests.cpp
+index 188c975d9c..2fe71db94c 100644
+--- a/src/test/net_tests.cpp
++++ b/src/test/net_tests.cpp
+@@ -102,6 +102,42 @@ BOOST_AUTO_TEST_CASE(message_batches_bound_work_and_respect_termination)
+     }
+ }
+ 
++
++#if defined(__APPLE__) && defined(__x86_64__)
++BOOST_AUTO_TEST_CASE(accepted_peer_wakes_message_handler)
++{
++    struct Events : NetEventsInterface {
++        unsigned initialized{0};
++        void InitializeNode(const CNode&, ServiceFlags) override { ++initialized; }
++        void FinalizeNode(const CNode&) override {}
++        bool HasAllDesirableServiceFlags(ServiceFlags) const override { return true; }
++        bool ProcessMessages(CNode&, std::atomic<bool>&) override { return false; }
++        bool SendMessages(CNode&) override { return true; }
++    } events;
++    ConnmanTestMsg connman{0, 0, *m_node.addrman, *m_node.netgroupman, Params()};
++    CConnman::Options options;
++    options.m_max_automatic_connections = 32;
++    options.m_msgproc = &events;
++    connman.Init(options);
++    connman.ResetMessageHandlerWake();
++
++    const CAddress addr{LookupNumeric("127.0.0.1:12345"), NODE_NONE};
++    // An invalid test socket needs no host networking. Failure to set TCP_NODELAY
++    // is permitted by the accepted-node initialization path.
++    connman.SetNetworkActive(false);
++    connman.CreateNodeFromAcceptedSocketPublic(std::make_unique<Sock>(INVALID_SOCKET),
++                                               NetPermissionFlags::None, addr, addr);
++    BOOST_CHECK_EQUAL(events.initialized, 0U);
++    BOOST_CHECK(!connman.MessageHandlerWakePending());
++    connman.SetNetworkActive(true);
++    connman.CreateNodeFromAcceptedSocketPublic(std::make_unique<Sock>(INVALID_SOCKET),
++                                               NetPermissionFlags::None, addr, addr);
++    BOOST_CHECK_EQUAL(events.initialized, 1U);
++    BOOST_CHECK_EQUAL(connman.GetNodeCount(ConnectionDirection::In), 1U);
++    BOOST_CHECK(connman.MessageHandlerWakePending());
++}
++#endif
++
+ BOOST_AUTO_TEST_CASE(cnode_listen_port)
+ {
+     // test default
 diff --git a/src/test/policyestimator_tests.cpp b/src/test/policyestimator_tests.cpp
 index d13a0d1ebf..05687021d4 100644
 --- a/src/test/policyestimator_tests.cpp
@@ -890,6 +937,22 @@ index c106eca69c..cea3a44d07 100644
  BOOST_AUTO_TEST_CASE(mockforward)
  {
      CScheduler scheduler;
+diff --git a/src/test/util/net.h b/src/test/util/net.h
+index fd29792193..0dfd1f7d90 100644
+--- a/src/test/util/net.h
++++ b/src/test/util/net.h
+@@ -35,6 +35,11 @@ class FastRandomContext;
+ struct ConnmanTestMsg : public CConnman {
+     using CConnman::CConnman;
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++    void ResetMessageHandlerWake() { WITH_LOCK(mutexMsgProc, fMsgProcWake = false); }
++    bool MessageHandlerWakePending() { return WITH_LOCK(mutexMsgProc, return fMsgProcWake); }
++#endif
++
+     void SetMsgProc(NetEventsInterface* msgproc)
+     {
+         m_msgproc = msgproc;
 diff --git a/src/util/task_runner.h b/src/util/task_runner.h
 index 951381823b..448119aa06 100644
 --- a/src/util/task_runner.h
