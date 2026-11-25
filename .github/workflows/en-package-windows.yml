@@ -2,97 +2,21 @@ name: En release packages (Windows)
 'on':
   push:
     branches:
-    - release-packaging/31.1.2-en.1
+    - release-packaging/31.1.2-en.1-windows-review
     paths:
     - .github/workflows/en-package-windows.yml
 permissions:
   contents: read
+  actions: read
 defaults:
   run:
     shell: bash
 env:
   CI_FAILFAST_TEST_LEAVE_DANGLING: 1
 jobs:
-  windows-cross:
-    name: Windows-cross to x86_64, ${{ matrix.crt }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        crt:
-        - msvcrt
-        - ucrt
-        include:
-        - crt: msvcrt
-          file-env: ./ci/test/00_setup_env_win64_msvcrt.sh
-          artifact-name: x86_64-w64-mingw32-executables
-        - crt: ucrt
-          file-env: ./ci/test/00_setup_env_win64.sh
-          artifact-name: x86_64-w64-mingw32ucrt-executables
-    env:
-      FILE_ENV: ${{ matrix.file-env }}
-      DANGER_CI_ON_HOST_FOLDERS: 1
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v6
-      with:
-        ref: d68b443c027b1f962be73f715643fcafce4f51f1
-        persist-credentials: false
-    - name: Verify pinned source revision
-      shell: bash
-      run: 'set -euo pipefail
-
-        actual=$(git rev-parse HEAD)
-
-        test "$actual" = "d68b443c027b1f962be73f715643fcafce4f51f1"
-
-        test "$(git rev-parse HEAD^{tree})" = "dafe8fad7cab941a149a9f7d9176c4eedd9b390d"
-
-        printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
-    - name: Configure environment
-      uses: ./.github/actions/configure-environment
-    - name: Restore caches
-      id: restore-cache
-      uses: ./.github/actions/cache/restore
-      with:
-        provider: gha
-    - name: Configure Docker
-      uses: ./.github/actions/configure-docker
-      with:
-        provider: gha
-    - name: CI script
-      run: ./ci/test_run_all.sh
-    - name: Save caches
-      uses: ./.github/actions/cache/save
-      with:
-        provider: gha
-    - name: Record package inputs
-      run: git rev-parse HEAD > "$BASE_BUILD_DIR/release-source-sha.txt"
-    - name: Upload built executables
-      uses: actions/upload-artifact@v7
-      with:
-        name: ${{ matrix.artifact-name }}-${{ github.run_id }}
-        path: '${{ env.BASE_BUILD_DIR }}/bin/*.dll
-
-          ${{ env.BASE_BUILD_DIR }}/bin/*.exe
-
-          ${{ env.BASE_BUILD_DIR }}/src/secp256k1/bin/*.exe
-
-          ${{ env.BASE_BUILD_DIR }}/src/univalue/*.exe
-
-          ${{ env.BASE_BUILD_DIR }}/test/config.ini
-
-          ${{ env.BASE_BUILD_DIR }}/*-win64-setup.exe
-
-          ${{ env.BASE_BUILD_DIR }}/windows-installer-path.txt
-
-          ${{ env.BASE_BUILD_DIR }}/release-source-sha.txt
-
-          '
   windows-native-test:
     name: Windows, ${{ matrix.crt }}, test cross-built
     runs-on: windows-2022
-    needs: windows-cross
     strategy:
       fail-fast: false
       matrix:
@@ -127,7 +51,9 @@ jobs:
     - name: Download built executables
       uses: actions/download-artifact@v8
       with:
-        name: ${{ matrix.artifact-name }}-${{ github.run_id }}
+        name: ${{ matrix.artifact-name }}-45541371909
+        run-id: 45541371909
+        github-token: ${{ github.token }}
     - name: Verify downloaded package provenance
       shell: bash
       run: test "$(cat release-source-sha.txt)" = "d68b443c027b1f962be73f715643fcafce4f51f1"
@@ -139,19 +65,17 @@ jobs:
       run: py -3 .github/ci-windows.py "standard" github_import_vs_env
     - name: Check executable manifests
       run: py -3 .github/ci-windows-cross.py check_manifests
-    - name: Prepare Windows test environment
-      run: py -3 .github/ci-windows-cross.py prepare_tests
+    - name: Check out Testnet7 smoke tooling
+      uses: actions/checkout@v6
+      with:
+        ref: ${{ github.sha }}
+        path: release-tools
+        sparse-checkout: .github/ci-windows-smoke.py
+        sparse-checkout-cone-mode: false
+        persist-credentials: false
     - name: Run native network, GUI and wallet smoke checks
-      run: py -3 .github/ci-windows-smoke.py --bindir bin --work-dir "${RUNNER_TEMP}/en-cross-smoke-${{ matrix.crt }}"
+      run: py -3 release-tools/.github/ci-windows-smoke.py --bindir bin --work-dir "${RUNNER_TEMP}/en-cross-smoke-${{ matrix.crt }}"
     - name: Reopen a saved wallet in the native GUI
-      run: py -3 .github/ci-windows-smoke.py --verify-wallet-restart --bindir bin --work-dir "${RUNNER_TEMP}/en-cross-wallet-restart-${{ matrix.crt }}"
+      run: py -3 release-tools/.github/ci-windows-smoke.py --verify-wallet-restart --bindir bin --work-dir "${RUNNER_TEMP}/en-cross-wallet-restart-${{ matrix.crt }}"
     - name: Verify installed applications and installer lifecycle
       run: "py -3 .github/ci-windows-installer.py --with-wallet-restart \\\n  --installer \"$(basename \"$(cat windows-installer-path.txt)\")\" \\\n  --work-dir \"${RUNNER_TEMP}/en-installer-${{ matrix.crt }}\"\n"
-    - name: Run unit tests
-      run: py -3 .github/ci-windows-cross.py run_unit_tests
-    - name: Run functional tests
-      env:
-        TEST_RUNNER_EXTRA: --timeout-factor=${{ env.TEST_RUNNER_TIMEOUT_FACTOR }} ${{ case(github.event_name == 'pull_request', '', '--extended') }}
-      run: 'py -3 .github/ci-windows-cross.py run_functional_tests
-
-        '
