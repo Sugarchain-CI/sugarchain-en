@@ -240,7 +240,7 @@ private:
 
     AutoFile OpenUndoFile(const FlatFilePos& pos, bool fReadOnly = false) const;
 
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
     /** Keep one writable handle per sequence. Each record is flushed before publication. */
     class WriteFileCache
     {
