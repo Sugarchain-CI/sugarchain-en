@@ -29,6 +29,7 @@ jobs:
       with:
         ref: 13a5822c27a5097f72f97262413c243d7db57708
         persist-credentials: false
+        repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
       shell: bash
       run: 'set -euo pipefail
@@ -50,10 +51,28 @@ jobs:
         provider: gha
     - name: Cross-build with the repository's Darwin depends toolchain
       shell: bash
-      run: "test \"$(git rev-parse HEAD)\" = 13a5822c27a5097f72f97262413c243d7db57708\nsource ./ci/test/00_setup_env.sh\nexport GOAL=\"install deploy\"\nexport BASE_OUTDIR=\"$BASE_BUILD_DIR/installed\"\nexport BITCOIN_CONFIG=\"\n  -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON\n  -DBUILD_GUI=ON -DENABLE_WALLET=ON -DENABLE_IPC=OFF\n  -DBUILD_TESTS=OFF -DBUILD_GUI_TESTS=OFF -DBUILD_BENCH=OFF -DBUILD_FUZZ_BINARY=OFF\n  -DBUILD_TX=ON -DBUILD_UTIL=ON -DBUILD_WALLET_TOOL=ON\n  -DINSTALL_MAN=ON -DWITH_USDT=OFF\"\n# The container receives its configuration in a line-oriented Docker env file.\nexport BITCOIN_CONFIG=\"$(echo \"$BITCOIN_CONFIG\" | xargs)\"\npython3 ./ci/test/02_run_container.py\n"
+      run: "test \"$(git rev-parse HEAD)\" = 13a5822c27a5097f72f97262413c243d7db57708\n\
+        source ./ci/test/00_setup_env.sh\nexport GOAL=\"install deploy\"\nexport BASE_OUTDIR=\"\
+        $BASE_BUILD_DIR/installed\"\nexport BITCOIN_CONFIG=\"\n  -DCMAKE_BUILD_TYPE=Release\
+        \ -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON\n  -DBUILD_GUI=ON -DENABLE_WALLET=ON\
+        \ -DENABLE_IPC=OFF\n  -DBUILD_TESTS=OFF -DBUILD_GUI_TESTS=OFF -DBUILD_BENCH=OFF\
+        \ -DBUILD_FUZZ_BINARY=OFF\n  -DBUILD_TX=ON -DBUILD_UTIL=ON -DBUILD_WALLET_TOOL=ON\n\
+        \  -DINSTALL_MAN=ON -DWITH_USDT=OFF\"\n# The container receives its configuration\
+        \ in a line-oriented Docker env file.\nexport BITCOIN_CONFIG=\"$(echo \"$BITCOIN_CONFIG\"\
+        \ | xargs)\"\npython3 ./ci/test/02_run_container.py\n"
     - name: Collect the cross-built GUI and command-line programs
       shell: bash
-      run: "mkdir -p transfer/cli/bin transfer/cli/share/man/man1\ncp \"$(cat \"$BASE_BUILD_DIR/macos-archive-path.txt\")\" transfer/app.zip\npython3 contrib/macdeploy/verify_bundle.py transfer/app.zip \"${{ matrix.arch }}\"\nfor exe in sugarchain sugarchaind sugarchain-cli sugarchain-wallet sugarchain-tx sugarchain-util; do\n  install -m755 \"$BASE_BUILD_DIR/installed/bin/$exe\" \"transfer/cli/bin/$exe\"\n  install -m644 \"doc/man/$exe.1\" \"transfer/cli/share/man/man1/$exe.1\"\ndone\ncp COPYING contrib/debian/copyright transfer/cli/\ntar -czf transfer/cli.tar.gz -C transfer cli\ngit rev-parse HEAD > transfer/release-source-sha.txt\ngit rev-parse HEAD^{tree} > transfer/release-source-tree.txt\n(\n  cd transfer\n  sha256sum app.zip cli.tar.gz release-source-sha.txt release-source-tree.txt > input.sha256\n)\n"
+      run: "mkdir -p transfer/cli/bin transfer/cli/share/man/man1\ncp \"$(cat \"$BASE_BUILD_DIR/macos-archive-path.txt\"\
+        )\" transfer/app.zip\npython3 contrib/macdeploy/verify_bundle.py transfer/app.zip\
+        \ \"${{ matrix.arch }}\"\nfor exe in sugarchain sugarchaind sugarchain-cli\
+        \ sugarchain-wallet sugarchain-tx sugarchain-util; do\n  install -m755 \"\
+        $BASE_BUILD_DIR/installed/bin/$exe\" \"transfer/cli/bin/$exe\"\n  install\
+        \ -m644 \"doc/man/$exe.1\" \"transfer/cli/share/man/man1/$exe.1\"\ndone\n\
+        cp COPYING contrib/debian/copyright transfer/cli/\ntar -czf transfer/cli.tar.gz\
+        \ -C transfer cli\ngit rev-parse HEAD > transfer/release-source-sha.txt\n\
+        git rev-parse HEAD^{tree} > transfer/release-source-tree.txt\n(\n  cd transfer\n\
+        \  sha256sum app.zip cli.tar.gz release-source-sha.txt release-source-tree.txt\
+        \ > input.sha256\n)\n"
     - uses: actions/upload-artifact@v7
       with:
         name: cross-macos-${{ matrix.arch }}
@@ -81,6 +100,7 @@ jobs:
       with:
         ref: 13a5822c27a5097f72f97262413c243d7db57708
         persist-credentials: false
+        repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
       shell: bash
       run: 'set -euo pipefail
@@ -98,16 +118,250 @@ jobs:
         path: incoming
     - name: Ad-hoc sign and archive the platform binaries
       shell: bash
-      run: "set -euo pipefail\ntest \"$(cat incoming/release-source-sha.txt)\" = \"$(git rev-parse HEAD)\"\ntest \"$(cat incoming/release-source-tree.txt)\" = \"$(git rev-parse HEAD^{tree})\"\n(cd incoming && shasum -a 256 -c input.sha256)\ntest \"$(uname -m)\" = \"$ARCH\"\nprefix=\"sugarchain-en-31.1.2-macos-$ARCH\"\nmkdir -p staged release\ntar -xzf incoming/cli.tar.gz -C staged\nmv staged/cli \"staged/$prefix-cli\"\nditto -x -k incoming/app.zip staged\napp=\"staged/Sugarchain-Qt.app\"\ncp COPYING contrib/debian/copyright \"$app/Contents/Resources/\"\nfor exe in \"staged/$prefix-cli/bin\"/* \"$app/Contents/MacOS/Sugarchain-Qt\"; do\n  test \"$(lipo -archs \"$exe\")\" = \"$ARCH\"\n  dylibs=$(otool -L \"$exe\" | sed -n '2,$p' | awk '{print $1}')\n  test -n \"$dylibs\"\n  if echo \"$dylibs\" | grep -Ev '^(/usr/lib/|/System/Library/)'; then\n    echo \"::error::Non-system shared library in $exe\"\n    exit 1\n  fi\ndone\nfor exe in \"staged/$prefix-cli/bin\"/*; do\n  strip -S \"$exe\"\n  codesign --force --sign - --timestamp=none \"$exe\"\ndone\ncodesign --force --sign - --timestamp=none \"$app\"\nditto -c -k --norsrc --keepParent \"$app\" \"release/$prefix.zip\"\nCOPYFILE_DISABLE=1 tar -czf \"release/$prefix-cli.tar.gz\" -C staged \"$prefix-cli\"\n"
+      run: "set -euo pipefail\ntest \"$(cat incoming/release-source-sha.txt)\" = \"\
+        $(git rev-parse HEAD)\"\ntest \"$(cat incoming/release-source-tree.txt)\"\
+        \ = \"$(git rev-parse HEAD^{tree})\"\n(cd incoming && shasum -a 256 -c input.sha256)\n\
+        test \"$(uname -m)\" = \"$ARCH\"\nprefix=\"sugarchain-en-31.1.2-macos-$ARCH\"\
+        \nmkdir -p staged release\ntar -xzf incoming/cli.tar.gz -C staged\nmv staged/cli\
+        \ \"staged/$prefix-cli\"\nditto -x -k incoming/app.zip staged\napp=\"staged/Sugarchain-Qt.app\"\
+        \ncp COPYING contrib/debian/copyright \"$app/Contents/Resources/\"\nfor exe\
+        \ in \"staged/$prefix-cli/bin\"/* \"$app/Contents/MacOS/Sugarchain-Qt\"; do\n\
+        \  test \"$(lipo -archs \"$exe\")\" = \"$ARCH\"\n  dylibs=$(otool -L \"$exe\"\
+        \ | sed -n '2,$p' | awk '{print $1}')\n  test -n \"$dylibs\"\n  if echo \"\
+        $dylibs\" | grep -Ev '^(/usr/lib/|/System/Library/)'; then\n    echo \"::error::Non-system\
+        \ shared library in $exe\"\n    exit 1\n  fi\ndone\nfor exe in \"staged/$prefix-cli/bin\"\
+        /*; do\n  strip -S \"$exe\"\n  codesign --force --sign - --timestamp=none\
+        \ \"$exe\"\ndone\ncodesign --force --sign - --timestamp=none \"$app\"\nditto\
+        \ -c -k --norsrc --keepParent \"$app\" \"release/$prefix.zip\"\nCOPYFILE_DISABLE=1\
+        \ tar -czf \"release/$prefix-cli.tar.gz\" -C staged \"$prefix-cli\"\n"
     - name: Run the final signed archives on matching hardware
       shell: bash
-      run: "prefix=\"sugarchain-en-31.1.2-macos-$ARCH\"\nmkdir checked\nditto -x -k \"release/$prefix.zip\" checked\ntar -xzf \"release/$prefix-cli.tar.gz\" -C checked\npython3 contrib/macdeploy/verify_bundle.py \"release/$prefix.zip\" \"$ARCH\"\ncodesign --verify --deep --strict \"checked/Sugarchain-Qt.app\"\nfor exe in \"checked/$prefix-cli/bin\"/*; do codesign --verify --strict \"$exe\"; done\npython3 .github/ci-native-datadir.py --daemon \"checked/$prefix-cli/bin/sugarchaind\" --gui \"checked/Sugarchain-Qt.app/Contents/MacOS/Sugarchain-Qt\" --cli \"checked/$prefix-cli/bin/sugarchain-cli\" --workdir \"$RUNNER_TEMP/en-native-datadir\"\npython3 - <<'PY'\nimport os, runpy, subprocess, sys\nfrom pathlib import Path\nverify = Path(\"contrib/macdeploy\").resolve()\nsys.path.insert(0, str(verify))\nhelpers = runpy.run_path(str(verify / \"verify-native.py\"))\nwork = Path(os.environ[\"RUNNER_TEMP\"]) / \"en-release-runtime\"\nwork.mkdir()\nroot = Path(\"checked\").resolve()\nbindir = next(root.glob(\"*-cli/bin\"))\nfor program in sorted(bindir.iterdir()):\n    helpers[\"check_version\"](program, work / \"versions\")\ndaemon = bindir / \"sugarchaind\"\ngui = root / \"Sugarchain-Qt.app/Contents/MacOS/Sugarchain-Qt\"\nfor program, chain in ((daemon, \"main\"), (gui, \"regtest\")):\n    folder = work / chain\n    with helpers[\"Node\"](program, folder, chain, gui=program == gui) as node:\n        info = helpers[\"check_chain\"](node, chain)\n        assert info[\"blocks\"] == 0\n        out = subprocess.check_output([str(bindir / \"sugarchain-cli\"), f\"-datadir={folder}\",\n                                       f\"-chain={chain}\", f\"-rpcport={node.port}\", \"getblockcount\"], text=True)\n        assert out.strip() == \"0\"\n        node.rpc(\"createwallet\", \"release-test\")\n        address = node.rpc(\"getnewaddress\", \"\", \"bech32\")\n        if chain == \"main\":\n            assert address.startswith(\"sugar1q\")\n        else:\n            assert len(node.rpc(\"generatetoaddress\", 1, address)) == 1\nPY\n"
+      run: "prefix=\"sugarchain-en-31.1.2-macos-$ARCH\"\nmkdir checked\nditto -x -k\
+        \ \"release/$prefix.zip\" checked\ntar -xzf \"release/$prefix-cli.tar.gz\"\
+        \ -C checked\npython3 contrib/macdeploy/verify_bundle.py \"release/$prefix.zip\"\
+        \ \"$ARCH\"\ncodesign --verify --deep --strict \"checked/Sugarchain-Qt.app\"\
+        \nfor exe in \"checked/$prefix-cli/bin\"/*; do codesign --verify --strict\
+        \ \"$exe\"; done\npython3 .github/ci-native-datadir.py --daemon \"checked/$prefix-cli/bin/sugarchaind\"\
+        \ --gui \"checked/Sugarchain-Qt.app/Contents/MacOS/Sugarchain-Qt\" --cli \"\
+        checked/$prefix-cli/bin/sugarchain-cli\" --workdir \"$RUNNER_TEMP/en-native-datadir\"\
+        \npython3 - <<'PY'\nimport os, runpy, subprocess, sys\nfrom pathlib import\
+        \ Path\nverify = Path(\"contrib/macdeploy\").resolve()\nsys.path.insert(0,\
+        \ str(verify))\nhelpers = runpy.run_path(str(verify / \"verify-native.py\"\
+        ))\nwork = Path(os.environ[\"RUNNER_TEMP\"]) / \"en-release-runtime\"\nwork.mkdir()\n\
+        root = Path(\"checked\").resolve()\nbindir = next(root.glob(\"*-cli/bin\"\
+        ))\nfor program in sorted(bindir.iterdir()):\n    helpers[\"check_version\"\
+        ](program, work / \"versions\")\ndaemon = bindir / \"sugarchaind\"\ngui =\
+        \ root / \"Sugarchain-Qt.app/Contents/MacOS/Sugarchain-Qt\"\nfor program,\
+        \ chain in ((daemon, \"main\"), (gui, \"regtest\")):\n    folder = work /\
+        \ chain\n    with helpers[\"Node\"](program, folder, chain, gui=program ==\
+        \ gui) as node:\n        info = helpers[\"check_chain\"](node, chain)\n  \
+        \      assert info[\"blocks\"] == 0\n        out = subprocess.check_output([str(bindir\
+        \ / \"sugarchain-cli\"), f\"-datadir={folder}\",\n                       \
+        \                f\"-chain={chain}\", f\"-rpcport={node.port}\", \"getblockcount\"\
+        ], text=True)\n        assert out.strip() == \"0\"\n        node.rpc(\"createwallet\"\
+        , \"release-test\")\n        address = node.rpc(\"getnewaddress\", \"\", \"\
+        bech32\")\n        if chain == \"main\":\n            assert address.startswith(\"\
+        sugar1q\")\n        else:\n            assert len(node.rpc(\"generatetoaddress\"\
+        , 1, address)) == 1\nPY\n"
     - name: Compare signed Regtest synchronization on matching hardware
       shell: bash
-      run: "set -euo pipefail\ncase \"$ARCH\" in\n  arm64) baseline_sha=4f848bf7edc19cd15de9e5d8ff3d4c7882244a5ba58b14711f0957893e2102e5 ;;\n  x86_64) baseline_sha=d694e7fa15c097e0ed3689a6629e38fe0fcc1e08fc56849115ee67209b0e4c03 ;;\n  *) exit 1 ;;\nesac\nprefix=\"sugarchain-en-31.1.2-macos-$ARCH\"\nbaseline_archive=\"$RUNNER_TEMP/$prefix-cli.tar.gz\"\nbaseline_dir=\"$RUNNER_TEMP/en3-baseline\"\nmkdir \"$baseline_dir\"\ncurl --retry 4 --retry-all-errors --connect-timeout 20 -fsSL \\\n  \"https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.3/$prefix-cli.tar.gz\" \\\n  -o \"$baseline_archive\"\nprintf '%s  %s\\n' \"$baseline_sha\" \"$baseline_archive\" | shasum -a 256 -c -\ntar -xzf \"$baseline_archive\" -C \"$baseline_dir\"\ncat > \"$RUNNER_TEMP/regtest-en4-macos.py\" <<'PYHELPER'\n#!/usr/bin/env python3\n\"\"\"Compare previous and new release binaries on a native macOS host.\"\"\"\n\nimport argparse\nimport base64\nimport hashlib\nimport http.client\nimport json\nimport os\nfrom pathlib import Path\nimport platform\nimport socket\nimport statistics\nimport subprocess\nimport time\n\n\nMOCKTIME = 1795584000\nMAX_TIP_AGE = 24 * 60 * 60\nRECEIVER_TIME = MOCKTIME + 2 * MAX_TIP_AGE\nDESCRIPTOR = \"raw(51)\"\nGENESIS = \"0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206\"\n\n\ndef available_port():\n    with socket.socket() as sock:\n        sock.bind((\"127.0.0.1\", 0))\n        return sock.getsockname()[1]\n\n\nclass RpcError(RuntimeError):\n    pass\n\n\nclass Node:\n    def __init__(self, executable, data_dir, *, listening=False, reopen=False):\n        self.data_dir = data_dir\n        self.executable = executable\n        self.rpc_port = available_port()\n        self.p2p_port = available_port()\n        while self.p2p_port == self.rpc_port:\n            self.p2p_port = available_port()\n        self.listening = listening\n        self.reopen = reopen\n        self.cookie = data_dir / \"regtest/.cookie\"\n        self.proc = None\n        self.log = None\n        self.auth = None\n\n    def __enter__(self):\n        self.data_dir.mkdir(exist_ok=self.reopen)\n        try:\n            self.startup_seconds = self.start()\n        except BaseException:\n            self.close()\n            raise\n        return self\n\n    def __exit__(self, kind, value, traceback):\n        self.close()\n\n    def start(self):\n        command = [\n            str(self.executable), \"-regtest\", f\"-datadir={self.data_dir}\", \"-server=1\",\n            \"-rpcbind=127.0.0.1\", f\"-rpcport={self.rpc_port}\", \"-rpcallowip=127.0.0.1\",\n            \"-connect=0\", \"-discover=0\", \"-dnsseed=0\", \"-fixedseeds=0\", \"-listenonion=0\",\n            \"-disablewallet=1\", \"-dbcache=256\", \"-par=1\", \"-parpow=1\",\n            \"-checkblockindex=0\", f\"-maxtipage={MAX_TIP_AGE}\",\n            f\"-mocktime={MOCKTIME if self.listening else RECEIVER_TIME}\",\n            \"-printtoconsole=0\", \"-blocksxor=0\",\n            f\"-listen={int(self.listening)}\",\n        ]\n        if self.listening:\n            command.append(f\"-bind=127.0.0.1:{self.p2p_port}\")\n        if self.executable.name == \"Sugarchain-Qt\":\n            command.extend([\"-min\", \"-splash=0\"])\n        self.log = (self.data_dir / \"console.log\").open(\"ab\")\n        flags = subprocess.CREATE_NO_WINDOW if os.name == \"nt\" else 0\n        start = time.perf_counter()\n        self.proc = subprocess.Popen(command, stdout=self.log, stderr=self.log, creationflags=flags)\n        deadline = start + 60\n        while time.perf_counter() < deadline:\n            if self.proc.poll() is not None:\n                raise RuntimeError(f\"Node exited during startup. See {self.log.name}\")\n            try:\n                if self.rpc(\"getblockhash\", 0) != GENESIS:\n                    raise RuntimeError(\"Unexpected Regtest genesis\")\n                return time.perf_counter() - start\n            except (OSError, http.client.HTTPException, RpcError):\n                time.sleep(0.02)\n        raise TimeoutError(f\"Node startup timed out. See {self.log.name}\")\n\n    def rpc(self, method, *params, timeout=4):\n        if self.auth is None:\n            self.auth = base64.b64encode(self.cookie.read_bytes().strip()).decode(\"ascii\")\n        connection = http.client.HTTPConnection(\"127.0.0.1\", self.rpc_port, timeout=timeout)\n        payload = json.dumps({\"jsonrpc\": \"2.0\", \"id\": 1, \"method\": method, \"params\": params})\n        try:\n            connection.request(\"POST\", \"/\", payload, {\n                \"Authorization\": f\"Basic {self.auth}\", \"Content-Type\": \"application/json\",\n            })\n            response = connection.getresponse()\n            if response.status == 401:\n                self.auth = None\n                raise RpcError(f\"{method}: RPC cookie was rejected\")\n            try:\n                body = json.loads(response.read())\n            except (ValueError, UnicodeError) as exc:\n                raise RpcError(f\"{method}: invalid RPC response, HTTP {response.status}\") from exc\n            if body.get(\"error\") is not None:\n                raise RpcError(f\"{method}: {body['error']['message']}\")\n            return body[\"result\"]\n        finally:\n            connection.close()\n\n    def close(self):\n        start = time.perf_counter()\n        if self.proc is not None and self.proc.poll() is None:\n            try:\n                self.rpc(\"stop\", timeout=3)\n                if self.proc.wait(timeout=25) != 0:\n                    raise RuntimeError(f\"Node shutdown failed. See {self.log.name}\")\n            except (OSError, http.client.HTTPException, RpcError, subprocess.TimeoutExpired):\n                if self.proc.poll() is None:\n                    self.proc.terminate()\n                    try:\n                        self.proc.wait(timeout=5)\n                    except subprocess.TimeoutExpired:\n                        self.proc.kill()\n                        self.proc.wait(timeout=5)\n                raise\n            finally:\n                self.log.close()\n        elif self.log is not None:\n            self.log.close()\n        self.shutdown_seconds = time.perf_counter() - start\n\n\ndef sync(receiver, sender, blocks, expected_tip):\n    initial = receiver.rpc(\"getblockchaininfo\")\n    if initial[\"blocks\"] != 0 or not initial[\"initialblockdownload\"]:\n        raise RuntimeError(\"The receiver must start fresh in IBD\")\n    start = time.perf_counter()\n    receiver.rpc(\"addnode\", f\"127.0.0.1:{sender.p2p_port}\", \"onetry\")\n    deadline = start + 300\n    headers_ready = None\n    while time.perf_counter() < deadline:\n        info = receiver.rpc(\"getblockchaininfo\")\n        now = time.perf_counter()\n        if not info[\"initialblockdownload\"]:\n            raise RuntimeError(\"Receiver exited IBD during historical sync\")\n        if info[\"headers\"] == blocks and headers_ready is None:\n            headers_ready = now - start\n        if info[\"blocks\"] == blocks:\n            if info[\"bestblockhash\"] != expected_tip:\n                raise RuntimeError(\"Receiver tip does not match the deterministic fixture\")\n            peers = receiver.rpc(\"getpeerinfo\")\n            if len(peers) != 1 or not peers[0][\"addr\"].startswith(\"127.0.0.1:\"):\n                raise RuntimeError(\"Expected only the isolated loopback peer\")\n            return {\"headers_seconds\": headers_ready, \"sync_seconds\": now - start,\n                    \"blocks_per_second\": blocks / (now - start)}\n        time.sleep(0.025)\n    raise TimeoutError(f\"Sync stopped before reaching height {blocks}: {info['blocks']}\")\n\n\ndef verify_reload(node, blocks, expected_tip, expected_utxo):\n    info = node.rpc(\"getblockchaininfo\")\n    if info[\"blocks\"] != blocks or info[\"bestblockhash\"] != expected_tip:\n        raise RuntimeError(\"Unexpected block index after receiver restart\")\n    if not info[\"initialblockdownload\"]:\n        raise RuntimeError(\"Reloaded receiver exited historical IBD\")\n    if not node.rpc(\"verifychain\", 4, 0, timeout=300):\n        raise RuntimeError(\"On-disk block and undo verification failed\")\n    utxo = node.rpc(\"gettxoutsetinfo\", \"hash_serialized_3\", timeout=60)\n    if utxo[\"bestblock\"] != expected_tip or utxo[\"hash_serialized_3\"] != expected_utxo:\n        raise RuntimeError(\"Unexpected UTXO state after receiver restart\")\n\n\ndef main():\n    parser = argparse.ArgumentParser(description=__doc__)\n    parser.add_argument(\"--baseline-bin-dir\", type=Path, required=True)\n    parser.add_argument(\"--candidate-bin-dir\", type=Path, required=True)\n    parser.add_argument(\"--work-dir\", type=Path, required=True)\n    parser.add_argument(\"--baseline-archive\", type=Path, required=True)\n    parser.add_argument(\"--candidate-archive\", type=Path, required=True)\n    parser.add_argument(\"--gui\", type=Path)\n    parser.add_argument(\"--gui-archive\", type=Path)\n    parser.add_argument(\"--blocks\", type=int, default=10_000)\n    parser.add_argument(\"--repeats\", type=int, default=3)\n    args = parser.parse_args()\n    if not 1 <= args.blocks <= 30_000 or not 1 <= args.repeats <= 5:\n        parser.error(\"Specify 1\u201330,000 blocks and 1\u20135 repetitions\")\n    if bool(args.gui) != bool(args.gui_archive):\n        parser.error(\"Specify both --gui and --gui-archive\")\n    exe_name = \"sugarchaind\"\n    executables = {\n        \"baseline\": args.baseline_bin_dir.resolve() / exe_name,\n        \"candidate\": args.candidate_bin_dir.resolve() / exe_name,\n    }\n    archives = {\"baseline\": args.baseline_archive, \"candidate\": args.candidate_archive}\n    if args.gui:\n        executables[\"gui\"] = args.gui.resolve()\n        archives[\"gui\"] = args.gui_archive\n    variants = {}\n    for label, executable in executables.items():\n        if not executable.is_file():\n            parser.error(f\"Missing {label} daemon: {executable}\")\n        with executable.open(\"rb\") as binary:\n            binary_digest = hashlib.file_digest(binary, \"sha256\").hexdigest()\n        with archives[label].open(\"rb\") as archive:\n            archive_digest = hashlib.file_digest(archive, \"sha256\").hexdigest()\n        variants[label] = {\n            \"archive_sha256\": archive_digest, \"binary_sha256\": binary_digest, \"samples\": []\n        }\n    out = args.work_dir.resolve()\n    out.mkdir(exist_ok=False, parents=True)\n    with Node(executables[\"baseline\"], out / \"sender\", listening=True) as sender:\n        started = time.perf_counter()\n        hashes = sender.rpc(\"generatetodescriptor\", args.blocks, DESCRIPTOR, 1_000_000, timeout=180)\n        fixture_seconds = time.perf_counter() - started\n        if len(hashes) != args.blocks:\n            raise RuntimeError(\"Sender did not generate the expected number of blocks\")\n        tip = hashes[-1]\n        fixture_sha256 = hashlib.sha256(\"\".join(hashes).encode(\"ascii\")).hexdigest()\n        source_info = sender.rpc(\"getblockchaininfo\")\n        if source_info[\"time\"] >= RECEIVER_TIME - MAX_TIP_AGE:\n            raise RuntimeError(\"Fixture tip is too recent for historical IBD\")\n        source_utxo = sender.rpc(\"gettxoutsetinfo\", \"hash_serialized_3\", timeout=60)\n        if source_utxo[\"bestblock\"] != tip:\n            raise RuntimeError(\"Sender UTXO head does not match the fixture\")\n        expected_utxo = source_utxo[\"hash_serialized_3\"]\n        if args.blocks == 10_000:\n            expected_fixture = (\n                \"e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9\",\n                \"63208d710cf03c30de2660b77a5434181b20fd1c5e70460b256ea4f4e798cb84\",\n                \"634c6ae57600a991a51009c92cba732d9ed96504d0e636df534bc45cdd3a8e28\",\n            )\n            if (fixture_sha256, expected_utxo, tip) != expected_fixture:\n                raise RuntimeError(\"Fixture differs from the En.3 loopback comparison\")\n        sample_order = []\n        for i in range(args.repeats):\n            order = list(executables)\n            if i % 2:\n                order.reverse()\n            for label in order:\n                data_dir = out / f\"{label}-{i+1}\"\n                executable = executables[label]\n                with Node(executable, data_dir) as receiver:\n                    version = receiver.rpc(\"getnetworkinfo\")[\"version\"]\n                    sample = sync(receiver, sender, args.blocks, tip)\n                sample.update(startup_seconds=receiver.startup_seconds,\n                              shutdown_seconds=receiver.shutdown_seconds)\n                with Node(executable, data_dir, reopen=True) as reloaded:\n                    verify_reload(reloaded, args.blocks, tip, expected_utxo)\n                sample[\"reload_verified\"] = True\n                variants[label][\"node_version\"] = version\n                variants[label][\"samples\"].append(sample)\n                sample_order.append(label)\n    for variant in variants.values():\n        samples = variant[\"samples\"]\n        variant[\"median_sync_seconds\"] = statistics.median(s[\"sync_seconds\"] for s in samples)\n        variant[\"median_blocks_per_second\"] = statistics.median(s[\"blocks_per_second\"] for s in samples)\n    result = {\n        \"platform\": platform.platform(), \"machine\": platform.machine(), \"logical_cpus\": os.cpu_count(),\n        \"genesis\": GENESIS, \"blocks\": args.blocks,\n        \"fixture_tip\": tip, \"fixture_sha256\": fixture_sha256, \"fixture_seconds\": fixture_seconds,\n        \"fixture_utxo_sha256\": expected_utxo, \"sender_time\": MOCKTIME,\n        \"receiver_time\": RECEIVER_TIME, \"max_tip_age\": MAX_TIP_AGE, \"dbcache_mib\": 256,\n        \"checkblockindex\": 0, \"sample_order\": sample_order, \"variants\": variants,\n        \"baseline_over_candidate\": variants[\"baseline\"][\"median_sync_seconds\"]\n        / variants[\"candidate\"][\"median_sync_seconds\"],\n    }\n    (out / \"result.json\").write_text(json.dumps(result, indent=2) + \"\\n\", encoding=\"utf-8\")\n    for label, variant in variants.items():\n        print(f\"{label}: {variant['median_sync_seconds']:.3f} s median, \"\n              f\"{variant['median_blocks_per_second']:.1f} blocks/s\")\n    print(f\"Baseline/candidate time ratio: {result['baseline_over_candidate']:.3f}\")\n    print(f\"Full result: {out / 'result.json'}\")\n\n\nif __name__ == \"__main__\":\n    main()\nPYHELPER\npython3 \"$RUNNER_TEMP/regtest-en4-macos.py\" \\\n  --baseline-bin-dir \"$baseline_dir/$prefix-cli/bin\" --baseline-archive \"$baseline_archive\" \\\n  --candidate-bin-dir \"checked/$prefix-cli/bin\" --candidate-archive \"release/$prefix-cli.tar.gz\" \\\n  --gui \"checked/Sugarchain-Qt.app/Contents/MacOS/Sugarchain-Qt\" --gui-archive \"release/$prefix.zip\" \\\n  --work-dir \"$RUNNER_TEMP/en4-regtest\" --blocks 10000 --repeats 3\ncp \"$RUNNER_TEMP/en4-regtest/result.json\" release/regtest-benchmark.json\n"
+      run: "set -euo pipefail\ncase \"$ARCH\" in\n  arm64) baseline_sha=4f848bf7edc19cd15de9e5d8ff3d4c7882244a5ba58b14711f0957893e2102e5\
+        \ ;;\n  x86_64) baseline_sha=d694e7fa15c097e0ed3689a6629e38fe0fcc1e08fc56849115ee67209b0e4c03\
+        \ ;;\n  *) exit 1 ;;\nesac\nprefix=\"sugarchain-en-31.1.2-macos-$ARCH\"\n\
+        baseline_archive=\"$RUNNER_TEMP/$prefix-cli.tar.gz\"\nbaseline_dir=\"$RUNNER_TEMP/en3-baseline\"\
+        \nmkdir \"$baseline_dir\"\ncurl --retry 4 --retry-all-errors --connect-timeout\
+        \ 20 -fsSL \\\n  \"https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.3/$prefix-cli.tar.gz\"\
+        \ \\\n  -o \"$baseline_archive\"\nprintf '%s  %s\\n' \"$baseline_sha\" \"\
+        $baseline_archive\" | shasum -a 256 -c -\ntar -xzf \"$baseline_archive\" -C\
+        \ \"$baseline_dir\"\ncat > \"$RUNNER_TEMP/regtest-en4-macos.py\" <<'PYHELPER'\n\
+        #!/usr/bin/env python3\n\"\"\"Compare previous and new release binaries on\
+        \ a native macOS host.\"\"\"\n\nimport argparse\nimport base64\nimport hashlib\n\
+        import http.client\nimport json\nimport os\nfrom pathlib import Path\nimport\
+        \ platform\nimport socket\nimport statistics\nimport subprocess\nimport time\n\
+        \n\nMOCKTIME = 1795584000\nMAX_TIP_AGE = 24 * 60 * 60\nRECEIVER_TIME = MOCKTIME\
+        \ + 2 * MAX_TIP_AGE\nDESCRIPTOR = \"raw(51)\"\nGENESIS = \"0f9188f13cb7b2c71f2a335e3a4fc328bf5beb436012afca590b1a11466e2206\"\
+        \n\n\ndef available_port():\n    with socket.socket() as sock:\n        sock.bind((\"\
+        127.0.0.1\", 0))\n        return sock.getsockname()[1]\n\n\nclass RpcError(RuntimeError):\n\
+        \    pass\n\n\nclass Node:\n    def __init__(self, executable, data_dir, *,\
+        \ listening=False, reopen=False):\n        self.data_dir = data_dir\n    \
+        \    self.executable = executable\n        self.rpc_port = available_port()\n\
+        \        self.p2p_port = available_port()\n        while self.p2p_port ==\
+        \ self.rpc_port:\n            self.p2p_port = available_port()\n        self.listening\
+        \ = listening\n        self.reopen = reopen\n        self.cookie = data_dir\
+        \ / \"regtest/.cookie\"\n        self.proc = None\n        self.log = None\n\
+        \        self.auth = None\n\n    def __enter__(self):\n        self.data_dir.mkdir(exist_ok=self.reopen)\n\
+        \        try:\n            self.startup_seconds = self.start()\n        except\
+        \ BaseException:\n            self.close()\n            raise\n        return\
+        \ self\n\n    def __exit__(self, kind, value, traceback):\n        self.close()\n\
+        \n    def start(self):\n        command = [\n            str(self.executable),\
+        \ \"-regtest\", f\"-datadir={self.data_dir}\", \"-server=1\",\n          \
+        \  \"-rpcbind=127.0.0.1\", f\"-rpcport={self.rpc_port}\", \"-rpcallowip=127.0.0.1\"\
+        ,\n            \"-connect=0\", \"-discover=0\", \"-dnsseed=0\", \"-fixedseeds=0\"\
+        , \"-listenonion=0\",\n            \"-disablewallet=1\", \"-dbcache=256\"\
+        , \"-par=1\", \"-parpow=1\",\n            \"-checkblockindex=0\", f\"-maxtipage={MAX_TIP_AGE}\"\
+        ,\n            f\"-mocktime={MOCKTIME if self.listening else RECEIVER_TIME}\"\
+        ,\n            \"-printtoconsole=0\", \"-blocksxor=0\",\n            f\"-listen={int(self.listening)}\"\
+        ,\n        ]\n        if self.listening:\n            command.append(f\"-bind=127.0.0.1:{self.p2p_port}\"\
+        )\n        if self.executable.name == \"Sugarchain-Qt\":\n            command.extend([\"\
+        -min\", \"-splash=0\"])\n        self.log = (self.data_dir / \"console.log\"\
+        ).open(\"ab\")\n        flags = subprocess.CREATE_NO_WINDOW if os.name ==\
+        \ \"nt\" else 0\n        start = time.perf_counter()\n        self.proc =\
+        \ subprocess.Popen(command, stdout=self.log, stderr=self.log, creationflags=flags)\n\
+        \        deadline = start + 60\n        while time.perf_counter() < deadline:\n\
+        \            if self.proc.poll() is not None:\n                raise RuntimeError(f\"\
+        Node exited during startup. See {self.log.name}\")\n            try:\n   \
+        \             if self.rpc(\"getblockhash\", 0) != GENESIS:\n             \
+        \       raise RuntimeError(\"Unexpected Regtest genesis\")\n             \
+        \   return time.perf_counter() - start\n            except (OSError, http.client.HTTPException,\
+        \ RpcError):\n                time.sleep(0.02)\n        raise TimeoutError(f\"\
+        Node startup timed out. See {self.log.name}\")\n\n    def rpc(self, method,\
+        \ *params, timeout=4):\n        if self.auth is None:\n            self.auth\
+        \ = base64.b64encode(self.cookie.read_bytes().strip()).decode(\"ascii\")\n\
+        \        connection = http.client.HTTPConnection(\"127.0.0.1\", self.rpc_port,\
+        \ timeout=timeout)\n        payload = json.dumps({\"jsonrpc\": \"2.0\", \"\
+        id\": 1, \"method\": method, \"params\": params})\n        try:\n        \
+        \    connection.request(\"POST\", \"/\", payload, {\n                \"Authorization\"\
+        : f\"Basic {self.auth}\", \"Content-Type\": \"application/json\",\n      \
+        \      })\n            response = connection.getresponse()\n            if\
+        \ response.status == 401:\n                self.auth = None\n            \
+        \    raise RpcError(f\"{method}: RPC cookie was rejected\")\n            try:\n\
+        \                body = json.loads(response.read())\n            except (ValueError,\
+        \ UnicodeError) as exc:\n                raise RpcError(f\"{method}: invalid\
+        \ RPC response, HTTP {response.status}\") from exc\n            if body.get(\"\
+        error\") is not None:\n                raise RpcError(f\"{method}: {body['error']['message']}\"\
+        )\n            return body[\"result\"]\n        finally:\n            connection.close()\n\
+        \n    def close(self):\n        start = time.perf_counter()\n        if self.proc\
+        \ is not None and self.proc.poll() is None:\n            try:\n          \
+        \      self.rpc(\"stop\", timeout=3)\n                if self.proc.wait(timeout=25)\
+        \ != 0:\n                    raise RuntimeError(f\"Node shutdown failed. See\
+        \ {self.log.name}\")\n            except (OSError, http.client.HTTPException,\
+        \ RpcError, subprocess.TimeoutExpired):\n                if self.proc.poll()\
+        \ is None:\n                    self.proc.terminate()\n                  \
+        \  try:\n                        self.proc.wait(timeout=5)\n             \
+        \       except subprocess.TimeoutExpired:\n                        self.proc.kill()\n\
+        \                        self.proc.wait(timeout=5)\n                raise\n\
+        \            finally:\n                self.log.close()\n        elif self.log\
+        \ is not None:\n            self.log.close()\n        self.shutdown_seconds\
+        \ = time.perf_counter() - start\n\n\ndef sync(receiver, sender, blocks, expected_tip):\n\
+        \    initial = receiver.rpc(\"getblockchaininfo\")\n    if initial[\"blocks\"\
+        ] != 0 or not initial[\"initialblockdownload\"]:\n        raise RuntimeError(\"\
+        The receiver must start fresh in IBD\")\n    start = time.perf_counter()\n\
+        \    receiver.rpc(\"addnode\", f\"127.0.0.1:{sender.p2p_port}\", \"onetry\"\
+        )\n    deadline = start + 300\n    headers_ready = None\n    while time.perf_counter()\
+        \ < deadline:\n        info = receiver.rpc(\"getblockchaininfo\")\n      \
+        \  now = time.perf_counter()\n        if not info[\"initialblockdownload\"\
+        ]:\n            raise RuntimeError(\"Receiver exited IBD during historical\
+        \ sync\")\n        if info[\"headers\"] == blocks and headers_ready is None:\n\
+        \            headers_ready = now - start\n        if info[\"blocks\"] == blocks:\n\
+        \            if info[\"bestblockhash\"] != expected_tip:\n               \
+        \ raise RuntimeError(\"Receiver tip does not match the deterministic fixture\"\
+        )\n            peers = receiver.rpc(\"getpeerinfo\")\n            if len(peers)\
+        \ != 1 or not peers[0][\"addr\"].startswith(\"127.0.0.1:\"):\n           \
+        \     raise RuntimeError(\"Expected only the isolated loopback peer\")\n \
+        \           return {\"headers_seconds\": headers_ready, \"sync_seconds\":\
+        \ now - start,\n                    \"blocks_per_second\": blocks / (now -\
+        \ start)}\n        time.sleep(0.025)\n    raise TimeoutError(f\"Sync stopped\
+        \ before reaching height {blocks}: {info['blocks']}\")\n\n\ndef verify_reload(node,\
+        \ blocks, expected_tip, expected_utxo):\n    info = node.rpc(\"getblockchaininfo\"\
+        )\n    if info[\"blocks\"] != blocks or info[\"bestblockhash\"] != expected_tip:\n\
+        \        raise RuntimeError(\"Unexpected block index after receiver restart\"\
+        )\n    if not info[\"initialblockdownload\"]:\n        raise RuntimeError(\"\
+        Reloaded receiver exited historical IBD\")\n    if not node.rpc(\"verifychain\"\
+        , 4, 0, timeout=300):\n        raise RuntimeError(\"On-disk block and undo\
+        \ verification failed\")\n    utxo = node.rpc(\"gettxoutsetinfo\", \"hash_serialized_3\"\
+        , timeout=60)\n    if utxo[\"bestblock\"] != expected_tip or utxo[\"hash_serialized_3\"\
+        ] != expected_utxo:\n        raise RuntimeError(\"Unexpected UTXO state after\
+        \ receiver restart\")\n\n\ndef main():\n    parser = argparse.ArgumentParser(description=__doc__)\n\
+        \    parser.add_argument(\"--baseline-bin-dir\", type=Path, required=True)\n\
+        \    parser.add_argument(\"--candidate-bin-dir\", type=Path, required=True)\n\
+        \    parser.add_argument(\"--work-dir\", type=Path, required=True)\n    parser.add_argument(\"\
+        --baseline-archive\", type=Path, required=True)\n    parser.add_argument(\"\
+        --candidate-archive\", type=Path, required=True)\n    parser.add_argument(\"\
+        --gui\", type=Path)\n    parser.add_argument(\"--gui-archive\", type=Path)\n\
+        \    parser.add_argument(\"--blocks\", type=int, default=10_000)\n    parser.add_argument(\"\
+        --repeats\", type=int, default=3)\n    args = parser.parse_args()\n    if\
+        \ not 1 <= args.blocks <= 30_000 or not 1 <= args.repeats <= 5:\n        parser.error(\"\
+        Specify 1\u201330,000 blocks and 1\u20135 repetitions\")\n    if bool(args.gui)\
+        \ != bool(args.gui_archive):\n        parser.error(\"Specify both --gui and\
+        \ --gui-archive\")\n    exe_name = \"sugarchaind\"\n    executables = {\n\
+        \        \"baseline\": args.baseline_bin_dir.resolve() / exe_name,\n     \
+        \   \"candidate\": args.candidate_bin_dir.resolve() / exe_name,\n    }\n \
+        \   archives = {\"baseline\": args.baseline_archive, \"candidate\": args.candidate_archive}\n\
+        \    if args.gui:\n        executables[\"gui\"] = args.gui.resolve()\n   \
+        \     archives[\"gui\"] = args.gui_archive\n    variants = {}\n    for label,\
+        \ executable in executables.items():\n        if not executable.is_file():\n\
+        \            parser.error(f\"Missing {label} daemon: {executable}\")\n   \
+        \     with executable.open(\"rb\") as binary:\n            binary_digest =\
+        \ hashlib.file_digest(binary, \"sha256\").hexdigest()\n        with archives[label].open(\"\
+        rb\") as archive:\n            archive_digest = hashlib.file_digest(archive,\
+        \ \"sha256\").hexdigest()\n        variants[label] = {\n            \"archive_sha256\"\
+        : archive_digest, \"binary_sha256\": binary_digest, \"samples\": []\n    \
+        \    }\n    out = args.work_dir.resolve()\n    out.mkdir(exist_ok=False, parents=True)\n\
+        \    with Node(executables[\"baseline\"], out / \"sender\", listening=True)\
+        \ as sender:\n        started = time.perf_counter()\n        hashes = sender.rpc(\"\
+        generatetodescriptor\", args.blocks, DESCRIPTOR, 1_000_000, timeout=180)\n\
+        \        fixture_seconds = time.perf_counter() - started\n        if len(hashes)\
+        \ != args.blocks:\n            raise RuntimeError(\"Sender did not generate\
+        \ the expected number of blocks\")\n        tip = hashes[-1]\n        fixture_sha256\
+        \ = hashlib.sha256(\"\".join(hashes).encode(\"ascii\")).hexdigest()\n    \
+        \    source_info = sender.rpc(\"getblockchaininfo\")\n        if source_info[\"\
+        time\"] >= RECEIVER_TIME - MAX_TIP_AGE:\n            raise RuntimeError(\"\
+        Fixture tip is too recent for historical IBD\")\n        source_utxo = sender.rpc(\"\
+        gettxoutsetinfo\", \"hash_serialized_3\", timeout=60)\n        if source_utxo[\"\
+        bestblock\"] != tip:\n            raise RuntimeError(\"Sender UTXO head does\
+        \ not match the fixture\")\n        expected_utxo = source_utxo[\"hash_serialized_3\"\
+        ]\n        if args.blocks == 10_000:\n            expected_fixture = (\n \
+        \               \"e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9\"\
+        ,\n                \"63208d710cf03c30de2660b77a5434181b20fd1c5e70460b256ea4f4e798cb84\"\
+        ,\n                \"634c6ae57600a991a51009c92cba732d9ed96504d0e636df534bc45cdd3a8e28\"\
+        ,\n            )\n            if (fixture_sha256, expected_utxo, tip) != expected_fixture:\n\
+        \                raise RuntimeError(\"Fixture differs from the En.3 loopback\
+        \ comparison\")\n        sample_order = []\n        for i in range(args.repeats):\n\
+        \            order = list(executables)\n            if i % 2:\n          \
+        \      order.reverse()\n            for label in order:\n                data_dir\
+        \ = out / f\"{label}-{i+1}\"\n                executable = executables[label]\n\
+        \                with Node(executable, data_dir) as receiver:\n          \
+        \          version = receiver.rpc(\"getnetworkinfo\")[\"version\"]\n     \
+        \               sample = sync(receiver, sender, args.blocks, tip)\n      \
+        \          sample.update(startup_seconds=receiver.startup_seconds,\n     \
+        \                         shutdown_seconds=receiver.shutdown_seconds)\n  \
+        \              with Node(executable, data_dir, reopen=True) as reloaded:\n\
+        \                    verify_reload(reloaded, args.blocks, tip, expected_utxo)\n\
+        \                sample[\"reload_verified\"] = True\n                variants[label][\"\
+        node_version\"] = version\n                variants[label][\"samples\"].append(sample)\n\
+        \                sample_order.append(label)\n    for variant in variants.values():\n\
+        \        samples = variant[\"samples\"]\n        variant[\"median_sync_seconds\"\
+        ] = statistics.median(s[\"sync_seconds\"] for s in samples)\n        variant[\"\
+        median_blocks_per_second\"] = statistics.median(s[\"blocks_per_second\"] for\
+        \ s in samples)\n    result = {\n        \"platform\": platform.platform(),\
+        \ \"machine\": platform.machine(), \"logical_cpus\": os.cpu_count(),\n   \
+        \     \"genesis\": GENESIS, \"blocks\": args.blocks,\n        \"fixture_tip\"\
+        : tip, \"fixture_sha256\": fixture_sha256, \"fixture_seconds\": fixture_seconds,\n\
+        \        \"fixture_utxo_sha256\": expected_utxo, \"sender_time\": MOCKTIME,\n\
+        \        \"receiver_time\": RECEIVER_TIME, \"max_tip_age\": MAX_TIP_AGE, \"\
+        dbcache_mib\": 256,\n        \"checkblockindex\": 0, \"sample_order\": sample_order,\
+        \ \"variants\": variants,\n        \"baseline_over_candidate\": variants[\"\
+        baseline\"][\"median_sync_seconds\"]\n        / variants[\"candidate\"][\"\
+        median_sync_seconds\"],\n    }\n    (out / \"result.json\").write_text(json.dumps(result,\
+        \ indent=2) + \"\\n\", encoding=\"utf-8\")\n    for label, variant in variants.items():\n\
+        \        print(f\"{label}: {variant['median_sync_seconds']:.3f} s median,\
+        \ \"\n              f\"{variant['median_blocks_per_second']:.1f} blocks/s\"\
+        )\n    print(f\"Baseline/candidate time ratio: {result['baseline_over_candidate']:.3f}\"\
+        )\n    print(f\"Full result: {out / 'result.json'}\")\n\n\nif __name__ ==\
+        \ \"__main__\":\n    main()\nPYHELPER\npython3 \"$RUNNER_TEMP/regtest-en4-macos.py\"\
+        \ \\\n  --baseline-bin-dir \"$baseline_dir/$prefix-cli/bin\" --baseline-archive\
+        \ \"$baseline_archive\" \\\n  --candidate-bin-dir \"checked/$prefix-cli/bin\"\
+        \ --candidate-archive \"release/$prefix-cli.tar.gz\" \\\n  --gui \"checked/Sugarchain-Qt.app/Contents/MacOS/Sugarchain-Qt\"\
+        \ --gui-archive \"release/$prefix.zip\" \\\n  --work-dir \"$RUNNER_TEMP/en4-regtest\"\
+        \ --blocks 10000 --repeats 3\ncp \"$RUNNER_TEMP/en4-regtest/result.json\"\
+        \ release/regtest-benchmark.json\n"
     - name: Record package inputs
       shell: bash
-      run: "set -euo pipefail\ngit rev-parse HEAD > release/release-source-sha.txt\ngit rev-parse HEAD^{tree} > release/release-source-tree.txt\n(\n  cd release\n  shasum -a 256 \"sugarchain-en-31.1.2-macos-$ARCH.zip\" \\\n    \"sugarchain-en-31.1.2-macos-$ARCH-cli.tar.gz\" release-source-sha.txt release-source-tree.txt \\\n    regtest-benchmark.json > package.sha256\n)\n"
+      run: "set -euo pipefail\ngit rev-parse HEAD > release/release-source-sha.txt\n\
+        git rev-parse HEAD^{tree} > release/release-source-tree.txt\n(\n  cd release\n\
+        \  shasum -a 256 \"sugarchain-en-31.1.2-macos-$ARCH.zip\" \\\n    \"sugarchain-en-31.1.2-macos-$ARCH-cli.tar.gz\"\
+        \ release-source-sha.txt release-source-tree.txt \\\n    regtest-benchmark.json\
+        \ > package.sha256\n)\n"
     - uses: actions/upload-artifact@v7
       with:
         name: release-mac-${{ matrix.arch }}
