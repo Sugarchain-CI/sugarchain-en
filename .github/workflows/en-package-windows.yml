@@ -1,0 +1,237 @@
+name: En release packages (Windows)
+'on':
+  push:
+    branches:
+    - release-packaging/31.1.2-en.3-windows
+    paths:
+    - .github/workflows/en-package-windows.yml
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+env:
+  CI_FAILFAST_TEST_LEAVE_DANGLING: 1
+jobs:
+  windows-cross:
+    name: Windows-cross to x86_64, ${{ matrix.crt }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crt:
+        - msvcrt
+        - ucrt
+        include:
+        - crt: msvcrt
+          file-env: ./ci/test/00_setup_env_win64_msvcrt.sh
+          artifact-name: x86_64-w64-mingw32-executables
+        - crt: ucrt
+          file-env: ./ci/test/00_setup_env_win64.sh
+          artifact-name: x86_64-w64-mingw32ucrt-executables
+    env:
+      FILE_ENV: ${{ matrix.file-env }}
+      DANGER_CI_ON_HOST_FOLDERS: 1
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        ref: 692f7f6c91450d3bc707e2ad85dd99d993a7b3b5
+        persist-credentials: false
+    - name: Verify pinned source revision
+      shell: bash
+      run: 'set -euo pipefail
+
+        actual=$(git rev-parse HEAD)
+
+        test "$actual" = "692f7f6c91450d3bc707e2ad85dd99d993a7b3b5"
+
+        test "$(git rev-parse HEAD^{tree})" = "931421ea1825d78b9c5592cf4321d9faa05dce65"
+
+        printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"
+
+        '
+    - name: Configure environment
+      uses: ./.github/actions/configure-environment
+    - name: Restore caches
+      id: restore-cache
+      uses: ./.github/actions/cache/restore
+      with:
+        provider: gha
+    - name: Configure Docker
+      uses: ./.github/actions/configure-docker
+      with:
+        provider: gha
+    - name: CI script
+      run: ./ci/test_run_all.sh
+    - name: Record package inputs
+      run: 'set -euo pipefail
+
+        git rev-parse HEAD > "$BASE_BUILD_DIR/release-source-sha.txt"
+
+        git rev-parse "HEAD^{tree}" > "$BASE_BUILD_DIR/release-source-tree.txt"
+
+        cd "$BASE_BUILD_DIR"
+
+        test "$(basename "$(cat windows-installer-path.txt)")" = "Sugarchain-En-31.1.2-win64-setup.exe"
+
+        sha256sum -- bin/sugarchain.exe bin/sugarchain-qt.exe bin/sugarchaind.exe bin/sugarchain-cli.exe bin/sugarchain-wallet.exe bin/sugarchain-tx.exe bin/sugarchain-util.exe
+        Sugarchain-En-31.1.2-win64-setup.exe windows-installer-path.txt release-source-sha.txt release-source-tree.txt > SHA256SUMS.release-inputs
+
+        '
+    - name: Retain Windows release inputs
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ matrix.artifact-name }}-release-${{ github.run_id }}
+        path: '${{ env.BASE_BUILD_DIR }}/bin/sugarchain.exe
+
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchain-qt.exe
+
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchaind.exe
+
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchain-cli.exe
+
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchain-wallet.exe
+
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchain-tx.exe
+
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchain-util.exe
+
+          ${{ env.BASE_BUILD_DIR }}/Sugarchain-En-31.1.2-win64-setup.exe
+
+          ${{ env.BASE_BUILD_DIR }}/windows-installer-path.txt
+
+          ${{ env.BASE_BUILD_DIR }}/release-source-sha.txt
+
+          ${{ env.BASE_BUILD_DIR }}/release-source-tree.txt
+
+          ${{ env.BASE_BUILD_DIR }}/SHA256SUMS.release-inputs'
+        if-no-files-found: error
+        retention-days: 14
+    - name: Retain Windows test inputs
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ matrix.artifact-name }}-test-${{ github.run_id }}
+        path: '${{ env.BASE_BUILD_DIR }}/bin/*.dll
+
+          ${{ env.BASE_BUILD_DIR }}/bin/*.exe
+
+          ${{ env.BASE_BUILD_DIR }}/src/secp256k1/bin/*.exe
+
+          ${{ env.BASE_BUILD_DIR }}/src/univalue/*.exe
+
+          ${{ env.BASE_BUILD_DIR }}/test/config.ini
+
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchain.exe
+
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchain-qt.exe
+
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchaind.exe
+
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchain-cli.exe
+
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchain-wallet.exe
+
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchain-tx.exe
+
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchain-util.exe'
+        if-no-files-found: error
+        retention-days: 7
+    - name: Save caches
+      uses: ./.github/actions/cache/save
+      with:
+        provider: gha
+  windows-native-test:
+    name: Windows, ${{ matrix.crt }}, test cross-built
+    runs-on: windows-2022
+    needs: windows-cross
+    strategy:
+      fail-fast: false
+      matrix:
+        crt:
+        - msvcrt
+        - ucrt
+        include:
+        - crt: msvcrt
+          artifact-name: x86_64-w64-mingw32-executables
+        - crt: ucrt
+          artifact-name: x86_64-w64-mingw32ucrt-executables
+    env:
+      PYTHONUTF8: 1
+      TEST_RUNNER_TIMEOUT_FACTOR: 40
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        ref: 692f7f6c91450d3bc707e2ad85dd99d993a7b3b5
+        persist-credentials: false
+    - name: Verify pinned source revision
+      shell: bash
+      run: 'set -euo pipefail
+
+        actual=$(git rev-parse HEAD)
+
+        test "$actual" = "692f7f6c91450d3bc707e2ad85dd99d993a7b3b5"
+
+        test "$(git rev-parse HEAD^{tree})" = "931421ea1825d78b9c5592cf4321d9faa05dce65"
+
+        printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"
+
+        '
+    - name: Download retained Windows release inputs
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ matrix.artifact-name }}-release-${{ github.run_id }}
+    - name: Verify downloaded package provenance
+      shell: bash
+      run: 'set -euo pipefail
+
+        test "$(cat release-source-sha.txt)" = "692f7f6c91450d3bc707e2ad85dd99d993a7b3b5"
+
+        test "$(cat release-source-tree.txt)" = "931421ea1825d78b9c5592cf4321d9faa05dce65"
+
+        sha256sum --check --strict SHA256SUMS.release-inputs
+
+        '
+    - name: Download retained Windows test inputs
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ matrix.artifact-name }}-test-${{ github.run_id }}
+    - name: Verify shared Windows GUI and daemon data paths
+      run: py -3 .github/ci-native-datadir.py --daemon bin/sugarchaind.exe --gui bin/sugarchain-qt.exe --cli bin/sugarchain-cli.exe --workdir "$RUNNER_TEMP/en-native-datadir"
+    - name: Run sugarchaind.exe
+      run: py -3 .github/ci-windows-cross.py print_version
+    - name: Import Visual Studio env vars
+      run: py -3 .github/ci-windows.py "standard" github_import_vs_env
+    - name: Check executable manifests
+      run: py -3 .github/ci-windows-cross.py check_manifests
+    - name: Prepare Windows test environment
+      run: py -3 .github/ci-windows-cross.py prepare_tests
+    - name: Run native network, GUI and wallet smoke checks
+      run: py -3 .github/ci-windows-smoke.py --bindir bin --work-dir "${RUNNER_TEMP}/en-cross-smoke-${{ matrix.crt }}"
+    - name: Reopen a saved wallet in the native GUI
+      run: py -3 .github/ci-windows-smoke.py --verify-wallet-restart --bindir bin --work-dir "${RUNNER_TEMP}/en-cross-wallet-restart-${{ matrix.crt }}"
+    - name: Verify installed applications and installer lifecycle
+      run: "py -3 .github/ci-windows-installer.py --with-wallet-restart \\\n  --installer \"$(basename \"$(cat windows-installer-path.txt)\")\" \\\n  --work-dir \"\
+        ${RUNNER_TEMP}/en-installer-${{ matrix.crt }}\"\n"
+    - name: Compare Windows synchronization against the published build
+      run: "set -euo pipefail\nscript=\"$RUNNER_TEMP/en-windows-benchmark.py\"\ncurl --fail --silent --show-error --location --retry 3 -o \"$script\" \"https://raw.githubusercontent.com/Sugarchain-CI/sugarchain-en/${{\
+        \ github.sha }}/.github/release-test-tools/regtest-sync.py\"\nprintf \"%s  %s\\n\" 748ec293781c5ff60a7b467e7b559f534a9740fcfed202aa1553650e328cfa27 \"$script\"\
+        \ | sha256sum --check --strict\ncrt=\"${{ matrix.crt }}\"\ncase \"$crt\" in\n  msvcrt) sha=3a45f6698e33e5c85822e7dd708dce5ba0ceabecbce14b8c27958f0f086c54c9\
+        \ ;;\n  ucrt) sha=458f44d9ecd91324a9fc9b420c60a95d5ae140c29afe86f51bc790894b092346 ;;\n  *) exit 1 ;;\nesac\nbase=\"sugarchain-en-31.1.2-windows-x86_64-$crt-portable\"\
+        \ncurl --fail --silent --show-error --location --retry 3 -o \"$RUNNER_TEMP/$base.zip\" \"https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.2/$base.zip\"\
+        \nprintf \"%s  %s\\n\" \"$sha\" \"$RUNNER_TEMP/$base.zip\" | sha256sum --check --strict\npy -3 -m zipfile -e \"$RUNNER_TEMP/$base.zip\" \"$RUNNER_TEMP/en-benchmark-baseline\"\
+        \npy -3 \"$script\" --baseline-bin-dir \"$RUNNER_TEMP/en-benchmark-baseline/$base/daemon\" --candidate-bin-dir bin --work-dir \"$RUNNER_TEMP/en-regtest-benchmark\"\
+        \ --blocks 3000 --repeats 3\n"
+    - name: Retain Regtest benchmark evidence
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ matrix.artifact-name }}-regtest-evidence-${{ github.run_id }}
+        path: ${{ runner.temp }}/en-regtest-benchmark/result.json
+        if-no-files-found: error
+        retention-days: 14
+    - name: Run Windows block storage and scheduler unit tests
+      run: bin/test_bitcoin.exe --run_test=blockmanager_tests,wallet_tests,scheduler_tests,validationinterface_tests --log_level=test_suite
+    - name: Run Windows block storage functional tests
+      run: py -3 test/functional/test_runner.py -j 2 --timeout-factor=8 --tmpdirprefix="$RUNNER_TEMP" feature_blocksdir.py feature_blocksxor.py feature_fastprune.py
+        feature_reindex_readonly.py mining_sugarchain_regtest.py
