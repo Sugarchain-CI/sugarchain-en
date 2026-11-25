@@ -125,10 +125,18 @@ index 96a171736e..041f63d6e5 100644
      /**
       * Cap on the size of `m_unused_i2p_sessions`, to ensure it does not
 diff --git a/src/node/blockstorage.cpp b/src/node/blockstorage.cpp
-index 80d356384c..15fb396739 100644
+index 80d356384c..6768e0ced6 100644
 --- a/src/node/blockstorage.cpp
 +++ b/src/node/blockstorage.cpp
-@@ -68,6 +68,10 @@
+@@ -31,6 +31,7 @@
+ #include <util/check.h>
+ #include <util/expected.h>
+ #include <util/fs.h>
++#include <util/fs_helpers.h>
+ #include <util/log.h>
+ #include <util/obfuscation.h>
+ #include <util/overflow.h>
+@@ -68,6 +69,10 @@
  #include <unordered_map>
  #include <utility>
  
@@ -139,7 +147,27 @@ index 80d356384c..15fb396739 100644
  namespace kernel {
  namespace {
  std::string FormatGroupedCount(uint64_t count)
-@@ -972,6 +976,9 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
+@@ -954,6 +959,19 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
+ void BlockManager::WriteBlockIndexDB()
+ {
+     AssertLockHeld(::cs_main);
++#if defined(__APPLE__) && defined(__x86_64__)
++    {
++        LOCK(cs_LastBlockFile);
++        // Cover both normal and snapshot cursors, including header-triggered
++        // writes. Never consume dirty indexes before their records are durable.
++        const bool blocks_flushed{m_block_writer.Flush(-1, /*commit=*/true)};
++        const bool undo_flushed{m_undo_writer.Flush(-1, /*commit=*/true)};
++        if (!blocks_flushed || !undo_flushed) {
++            throw std::runtime_error("Failed to commit buffered block or undo data before writing block index");
++        }
++        DirectoryCommit(m_opts.blocks_dir);
++    }
++#endif
+     std::vector<std::pair<int, const CBlockFileInfo*>> vFiles;
+     vFiles.reserve(m_dirty_fileinfo.size());
+     for (std::set<int>::iterator it = m_dirty_fileinfo.begin(); it != m_dirty_fileinfo.end();) {
+@@ -972,6 +990,9 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
          LOCK(cs_LastBlockFile);
          const bool block_closed{m_block_writer.Close()};
          const bool undo_closed{m_undo_writer.Close()};
@@ -149,42 +177,228 @@ index 80d356384c..15fb396739 100644
          if (!block_closed || !undo_closed) return false;
      }
  #endif
-@@ -1277,6 +1284,9 @@ void BlockManager::UnlinkPrunedFiles(const std::set<int>& setFilesToPrune) const
+@@ -1194,6 +1215,9 @@ bool BlockManager::FlushUndoFile(int block_file, bool finalize)
+ #endif
+     FlatFilePos undo_pos_old(block_file, m_blockfile_info[block_file].nUndoSize);
+     if (!m_undo_file_seq.Flush(undo_pos_old, finalize) || !closed) {
++#if defined(__APPLE__) && defined(__x86_64__)
++        m_undo_writer.RecordError();
++#endif
+         m_opts.notifications.flushError(_("Flushing undo file to disk failed. This is likely the result of an I/O error."));
+         return false;
+     }
+@@ -1220,6 +1244,9 @@ bool BlockManager::FlushBlockFile(int blockfile_num, bool fFinalize, bool finali
+     closed = m_block_writer.Close(blockfile_num);
+ #endif
+     if (!m_block_file_seq.Flush(block_pos_old, fFinalize) || !closed) {
++#if defined(__APPLE__) && defined(__x86_64__)
++        m_block_writer.RecordError();
++#endif
+         m_opts.notifications.flushError(_("Flushing block file to disk failed. This is likely the result of an I/O error."));
+         success = false;
+     }
+@@ -1276,7 +1303,16 @@ void BlockManager::UnlinkPrunedFiles(const std::set<int>& setFilesToPrune) const
+ #if defined(WIN32) || defined(__APPLE__)
          const bool block_closed{m_block_writer.Close(*it)};
          const bool undo_closed{m_undo_writer.Close(*it)};
-         if (!block_closed || !undo_closed) continue;
+-        if (!block_closed || !undo_closed) continue;
++        if (!block_closed || !undo_closed) {
++#if defined(__APPLE__) && defined(__x86_64__)
++            throw std::runtime_error("Failed to flush block data before pruning");
++#else
++            continue;
++#endif
++        }
 +#endif
 +#ifdef __APPLE__
 +        if (m_block_read_file_num == *it) m_block_read_file.reset();
  #endif
          FlatFilePos pos(*it, 0);
          const bool removed_blockfile{fs::remove(m_block_file_seq.FileName(pos), ec)};
-@@ -1306,6 +1316,12 @@ bool BlockManager::WriteFileCache::Close(int file_num)
+@@ -1293,36 +1329,128 @@ BlockManager::WriteFileCache::~WriteFileCache()
+     (void)Close();
+ }
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++void BlockManager::WriteFileCache::RecordError()
++{
++    if (!m_write_error) m_write_error = errno ? errno : EIO;
++    errno = m_write_error;
++}
++
++bool BlockManager::WriteFileCache::Flush(int file_num, bool commit)
++{
++    if (m_write_error) {
++        errno = m_write_error;
++        return false;
++    }
++    if (!m_file || (file_num != -1 && file_num != m_file_num)) return true;
++    if (std::ferror(m_file) || (m_pending_bytes && std::fflush(m_file) != 0)) {
++        RecordError();
++        return false;
++    }
++    m_pending_bytes = 0;
++    if (commit && m_needs_commit) {
++        if (!FileCommit(m_file)) {
++            RecordError();
++            return false;
++        }
++        m_needs_commit = false;
++    }
++    return true;
++}
++
++void BlockManager::WriteFileCache::Abort(AutoFile& file)
++{
++    // A failed serialization may already have attempted to flush earlier records.
++    // Reclaim the stream before unwinding so the failure cannot be forgotten.
++    RecordError();
++    assert(!m_file);
++    m_file = file.release();
++    (void)Close();
++}
++#endif
++
+ bool BlockManager::WriteFileCache::Close(int file_num)
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (!m_file || (file_num != -1 && file_num != m_file_num)) return !m_write_error;
++    bool success{Flush(file_num, /*commit=*/true)};
++    if (std::fclose(std::exchange(m_file, nullptr)) != 0) {
++        RecordError();
++        success = false;
++    }
++    m_file_pos.reset();
++    m_pending_bytes = 0;
++    m_needs_commit = false;
++    return success && !m_write_error;
++#else
+     if (!m_file || (file_num != -1 && file_num != m_file_num)) return true;
+     if (std::fclose(std::exchange(m_file, nullptr)) != 0) {
+         LogError("Failed to close cached block storage file %05d: %s", m_file_num, SysErrorString(errno));
+         return false;
+     }
+     return true;
++#endif
+ }
+ 
  AutoFile BlockManager::WriteFileCache::Open(const FlatFileSeq& sequence, const FlatFilePos& pos, const Obfuscation& obfuscation)
  {
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (m_write_error) {
++        errno = m_write_error;
++        return AutoFile{nullptr};
++    }
++#endif
      if (m_file && pos.nFile == m_file_num) {
 +#ifdef __APPLE__
-+        // Keep flushed the previous record, so the stream is ready for an append.
++        // Continue from the logical offset without forcing buffered appends out.
 +        if (m_file_pos && *m_file_pos == pos.nPos) {
 +            return AutoFile{std::exchange(m_file, nullptr), obfuscation, *m_file_pos};
 +        }
 +#endif
++#if defined(__APPLE__) && defined(__x86_64__)
++        if (!Flush()) return AutoFile{nullptr};
++#endif
          // Use the absolute offset so AutoFile starts with the correct XOR position.
          if (std::fseek(m_file, pos.nPos, SEEK_SET) == 0) {
++#if defined(__APPLE__) && defined(__x86_64__)
++            m_file_pos = pos.nPos;
++#endif
              return AutoFile{std::exchange(m_file, nullptr), obfuscation};
-@@ -1321,6 +1337,9 @@ AutoFile BlockManager::WriteFileCache::Open(const FlatFileSeq& sequence, const F
+         }
++#if defined(__APPLE__) && defined(__x86_64__)
++        RecordError();
++#endif
+         LogError("Failed to seek cached block storage file to %s: %s", pos.ToString(), SysErrorString(errno));
+         (void)Close();
+         return AutoFile{nullptr};
+     }
+     if (!Close()) return AutoFile{nullptr};
++#if defined(__APPLE__) && defined(__x86_64__)
++    m_file_pos = pos.nPos;
++#endif
+     return AutoFile{sequence.Open(pos), obfuscation};
+ }
+ 
  bool BlockManager::WriteFileCache::Keep(AutoFile& file, int file_num)
  {
      assert(!m_file);
++#if defined(__APPLE__) && defined(__x86_64__)
++    const auto next_pos{file.GetPosition()};
++    const uint64_t added{next_pos && m_file_pos && *next_pos >= *m_file_pos ?
++        static_cast<uint64_t>(*next_pos - *m_file_pos) : MAX_PENDING_BYTES};
++    m_pending_bytes += std::min<uint64_t>(added, MAX_PENDING_BYTES - m_pending_bytes);
++    m_needs_commit = true;
++#endif
 +#ifdef __APPLE__
 +    m_file_pos = file.GetPosition();
 +#endif
      m_file = file.release();
      m_file_num = file_num;
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (std::ferror(m_file)) RecordError();
++    if (m_write_error || m_pending_bytes >= MAX_PENDING_BYTES) return Flush();
++    return true;
++#else
      // Publish bytes to other handles before exposing the record's index.
-@@ -1514,7 +1533,12 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+     // The block manager still commits them to disk at the usual flush points.
+     if (std::fflush(m_file) == 0) return true;
+@@ -1330,17 +1458,36 @@ bool BlockManager::WriteFileCache::Keep(AutoFile& file, int file_num)
+     (void)Close();
+     errno = write_error;
+     return false;
++#endif
+ }
+ #endif
+ 
+ AutoFile BlockManager::OpenBlockFile(const FlatFilePos& pos, bool fReadOnly) const
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (fReadOnly) {
++        LOCK(cs_LastBlockFile);
++        if (!m_block_writer.Flush(pos.nFile)) {
++            m_opts.notifications.fatalError(_("Failed to flush buffered block data before reading."));
++            return AutoFile{nullptr};
++        }
++    }
++#endif
+     return AutoFile{m_block_file_seq.Open(pos, fReadOnly), m_obfuscation};
+ }
+ 
+ /** Open an undo file (rev?????.dat) */
+ AutoFile BlockManager::OpenUndoFile(const FlatFilePos& pos, bool fReadOnly) const
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (fReadOnly) {
++        LOCK(cs_LastBlockFile);
++        if (!m_undo_writer.Flush(pos.nFile)) {
++            m_opts.notifications.fatalError(_("Failed to flush buffered undo data before reading."));
++            return AutoFile{nullptr};
++        }
++    }
++#endif
+     return AutoFile{m_undo_file_seq.Open(pos, fReadOnly), m_obfuscation};
+ }
+ 
+@@ -1417,6 +1564,10 @@ FlatFilePos BlockManager::FindNextBlockPos(unsigned int nAddSize, unsigned int n
+             LogWarning(
+                           "Failed to flush previous block file %05i (finalize=1, finalize_undo=%i) before opening new block file %05i\n",
+                           last_blockfile, finalize_undo, nFile);
++#if defined(__APPLE__) && defined(__x86_64__)
++            m_opts.notifications.fatalError(_("Failed to flush block data before opening a new block file."));
++            return {};
++#endif
+         }
+         // No undo data yet in the new file, so reset our undo-height tracking.
+         m_blockfile_cursors[chain_type] = BlockfileCursor{nFile};
+@@ -1513,8 +1664,16 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+             LogError("OpenUndoFile failed for %s while writing block undo", pos.ToString());
              return FatalError(m_opts.notifications, state, _("Failed to write undo data."));
          }
++#if defined(__APPLE__) && defined(__x86_64__)
++        try
++#endif
          {
 +#ifdef __APPLE__
 +            // A spare byte keeps smaller records on the scope-exit flush path.
@@ -195,7 +409,37 @@ index 80d356384c..15fb396739 100644
  
              // Write index header
              fileout << GetParams().MessageStart() << blockundo_size;
-@@ -1629,17 +1653,64 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
+@@ -1526,9 +1685,19 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+                 // Write undo data & checksum
+                 fileout << blockundo << hasher.GetHash();
+             }
++#if defined(__APPLE__) && defined(__x86_64__)
++            fileout.flush();
++#endif
+             // BufferedWriter will flush pending data to file when fileout goes out of scope.
+         }
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++        catch (...) {
++            m_undo_writer.Abort(file);
++            throw;
++        }
++#endif
++
+ #if defined(WIN32) || defined(__APPLE__)
+         if (!m_undo_writer.Keep(file, pos.nFile)) {
+             LogError("Failed to flush block undo file %s: %s", pos.ToString(), SysErrorString(errno));
+@@ -1555,6 +1724,9 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+             // file untrimmed.
+             if (!FlushUndoFile(pos.nFile, true)) {
+                 LogWarning("Failed to flush undo file %05i\n", pos.nFile);
++#if defined(__APPLE__) && defined(__x86_64__)
++                return FatalError(m_opts.notifications, state, _("Failed to flush undo data."));
++#endif
+             }
+         } else if (pos.nFile == cursor.file_num && block.nHeight > cursor.undo_height) {
+             cursor.undo_height = block.nHeight;
+@@ -1629,17 +1801,70 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
          LogError("Failed for %s while reading raw block storage header", pos.ToString());
          return util::Unexpected{ReadRawError::IO};
      }
@@ -203,6 +447,12 @@ index 80d356384c..15fb396739 100644
 +    std::shared_ptr<std::FILE> read_handle;
 +    {
 +        LOCK(cs_LastBlockFile);
++#if defined(__x86_64__)
++        if (!m_block_writer.Flush(pos.nFile)) {
++            m_opts.notifications.fatalError(_("Failed to flush buffered block data before reading."));
++            return util::Unexpected{ReadRawError::IO};
++        }
++#endif
 +        if (!m_block_read_file || m_block_read_file_num != pos.nFile) {
 +            auto* opened{m_block_file_seq.Open({pos.nFile, 0}, /*read_only=*/true)};
 +            if (!opened) {
@@ -260,7 +510,7 @@ index 80d356384c..15fb396739 100644
  
          if (blk_start != GetParams().MessageStart()) {
              LogError("Block magic mismatch for %s: %s versus expected %s while reading raw block",
-@@ -1658,12 +1729,20 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
+@@ -1658,12 +1883,20 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
              if (size == 0 || SaturatingAdd(offset, size) > blk_size) {
                  return util::Unexpected{ReadRawError::BadPartRange}; // Avoid logging - offset/size come from untrusted REST input
              }
@@ -281,9 +531,13 @@ index 80d356384c..15fb396739 100644
          return data;
      } catch (const std::exception& e) {
          LogError("Read from block file failed: %s for %s while reading raw block", e.what(), pos.ToString());
-@@ -1693,7 +1772,11 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
+@@ -1692,16 +1925,33 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
+         m_opts.notifications.fatalError(_("Failed to write block."));
          return FlatFilePos();
      }
++#if defined(__APPLE__) && defined(__x86_64__)
++    try
++#endif
      {
 +#ifdef __APPLE__
 +        BufferedWriter fileout{file, std::min<size_t>(size_t{block_size} + STORAGE_HEADER_BYTES + 1, 64 * 1024)};
@@ -293,21 +547,73 @@ index 80d356384c..15fb396739 100644
  
          // Write index header
          fileout << GetParams().MessageStart() << block_size;
+         pos.nPos += STORAGE_HEADER_BYTES;
+         // Write block
+         fileout << TX_WITH_WITNESS(block);
++#if defined(__APPLE__) && defined(__x86_64__)
++        fileout.flush();
++#endif
+     }
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++    catch (...) {
++        m_block_writer.Abort(file);
++        throw;
++    }
++#endif
++
+ #if defined(WIN32) || defined(__APPLE__)
+     if (!m_block_writer.Keep(file, pos.nFile)) {
+         LogError("Failed to flush block file %s: %s", pos.ToString(), SysErrorString(errno));
 diff --git a/src/node/blockstorage.h b/src/node/blockstorage.h
-index 21d11decc0..91ef0b0601 100644
+index 21d11decc0..ffa91c041c 100644
 --- a/src/node/blockstorage.h
 +++ b/src/node/blockstorage.h
-@@ -246,6 +246,9 @@ private:
+@@ -207,6 +207,9 @@ class BlockManager
+ {
+     friend Chainstate;
+     friend ChainstateManager;
++#if defined(__APPLE__) && defined(__x86_64__)
++    friend struct BlockManagerTestAccess;
++#endif
+ 
+ private:
+     const CChainParams& GetParams() const { return m_opts.chainparams; }
+@@ -241,11 +244,21 @@ private:
+     AutoFile OpenUndoFile(const FlatFilePos& pos, bool fReadOnly = false) const;
+ 
+ #if defined(WIN32) || defined(__APPLE__)
+-    /** Keep one writable handle per sequence. Each record is flushed before publication. */
++    /** Keep one writable handle per sequence, checking writes before reads and persistence. */
+     class WriteFileCache
      {
          std::FILE* m_file{nullptr};
          int m_file_num{-1};
 +#ifdef __APPLE__
 +        std::optional<int64_t> m_file_pos;
 +#endif
++#if defined(__APPLE__) && defined(__x86_64__)
++        friend struct BlockManagerTestAccess;
++        static constexpr size_t MAX_PENDING_BYTES{64 * 1024};
++        size_t m_pending_bytes{0};
++        bool m_needs_commit{false};
++        int m_write_error{0};
++#endif
  
      public:
          WriteFileCache() = default;
-@@ -261,6 +264,12 @@ private:
+@@ -255,12 +268,23 @@ private:
+         AutoFile Open(const FlatFileSeq& sequence, const FlatFilePos& pos, const Obfuscation& obfuscation);
+         [[nodiscard]] bool Keep(AutoFile& file, int file_num);
+         [[nodiscard]] bool Close(int file_num = -1);
++#if defined(__APPLE__) && defined(__x86_64__)
++        [[nodiscard]] bool Flush(int file_num = -1, bool commit = false);
++        void RecordError();
++        void Abort(AutoFile& file);
++#endif
+     };
+ 
+     mutable WriteFileCache m_block_writer GUARDED_BY(cs_LastBlockFile);
      mutable WriteFileCache m_undo_writer GUARDED_BY(cs_LastBlockFile);
  #endif
  
@@ -671,7 +977,7 @@ index 79b8afd2ad..6ab66665fe 100644
  
  #endif // BITCOIN_SCHEDULER_H
 diff --git a/src/streams.h b/src/streams.h
-index f70adcf74a..e7c03e057a 100644
+index f70adcf74a..8c387cd087 100644
 --- a/src/streams.h
 +++ b/src/streams.h
 @@ -379,6 +379,16 @@ protected:
@@ -691,6 +997,252 @@ index f70adcf74a..e7c03e057a 100644
  
      ~AutoFile()
      {
+@@ -681,8 +691,14 @@ public:
+ 
+     void flush()
+     {
++#if defined(__APPLE__) && defined(__x86_64__)
++        // A checked explicit flush must not retry failed writes in the destructor.
++        const size_t count{std::exchange(m_buf_pos, 0)};
++        if (count) m_dst.write_buffer(std::span{m_buf}.first(count));
++#else
+         if (m_buf_pos) m_dst.write_buffer(std::span{m_buf}.first(m_buf_pos));
+         m_buf_pos = 0;
++#endif
+     }
+ 
+     void write(std::span<const std::byte> src)
+diff --git a/src/test/blockmanager_tests.cpp b/src/test/blockmanager_tests.cpp
+index dfaf9ac880..649950abb1 100644
+--- a/src/test/blockmanager_tests.cpp
++++ b/src/test/blockmanager_tests.cpp
+@@ -15,6 +15,11 @@
+ #include <util/chaintype.h>
+ #include <util/fs.h>
+ #include <validation.h>
++#include <streams.h>
++#include <undo.h>
++#if defined(__APPLE__) && defined(__x86_64__)
++#include <unistd.h>
++#endif
+ 
+ #include <algorithm>
+ #include <array>
+@@ -34,6 +39,49 @@ using node::BlockManager;
+ using node::KernelNotifications;
+ using node::MAX_BLOCKFILE_SIZE;
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++namespace node {
++struct BlockManagerTestAccess {
++    static size_t Pending(BlockManager& manager, bool undo = false)
++    {
++        LOCK(manager.cs_LastBlockFile);
++        return (undo ? manager.m_undo_writer : manager.m_block_writer).m_pending_bytes;
++    }
++    static size_t DirtyFiles(BlockManager& manager) { return manager.m_dirty_fileinfo.size(); }
++    static size_t DirtyIndexes(BlockManager& manager) { return manager.m_dirty_blockindex.size(); }
++    static bool Close(BlockManager& manager, int file_num = -1)
++    {
++        LOCK(manager.cs_LastBlockFile);
++        return manager.m_block_writer.Close(file_num);
++    }
++    static void MakeReadOnly(BlockManager& manager, const fs::path& path)
++    {
++        LOCK(manager.cs_LastBlockFile);
++        FILE* reader{fsbridge::fopen(path, "rb")};
++        BOOST_REQUIRE(reader);
++        BOOST_REQUIRE(manager.m_block_writer.m_file);
++        BOOST_REQUIRE(::dup2(::fileno(reader), ::fileno(manager.m_block_writer.m_file)) >= 0);
++        BOOST_REQUIRE_EQUAL(std::fclose(reader), 0);
++    }
++    static bool WriteUndo(BlockManager& manager, const CBlockUndo& undo, BlockValidationState& state, CBlockIndex& index) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
++    {
++        return manager.WriteBlockUndo(undo, state, index);
++    }
++};
++} // namespace node
++
++struct BufferedBlockStorageSetup : BasicTestingSetup {
++    KernelNotifications notifications{Assert(m_node.shutdown_request), m_node.exit_status, *Assert(m_node.warnings)};
++    BlockManager blockman{*Assert(m_node.shutdown_signal), {
++        .chainparams = Params(),
++        .fast_prune = true,
++        .blocks_dir = m_args.GetBlocksDirPath(),
++        .notifications = notifications,
++        .block_tree_db_params = {.path = m_args.GetDataDirNet() / "buffered-index", .cache_bytes = 0},
++    }};
++};
++#endif
++
+ // use BasicTestingSetup here for the data directory configuration, setup, and cleanup
+ BOOST_FIXTURE_TEST_SUITE(blockmanager_tests, BasicTestingSetup)
+ 
+@@ -629,4 +677,164 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file)
+     }
+ }
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++BOOST_FIXTURE_TEST_CASE(buffered_block_read_visibility, BufferedBlockStorageSetup)
++{
++    CBlock block;
++    block.nVersion = 7;
++    const auto first{blockman.WriteBlock(block, 1)};
++    BOOST_REQUIRE(!first.IsNull());
++    BOOST_REQUIRE_GT(node::BlockManagerTestAccess::Pending(blockman), 0U);
++    // The independent indexed reader must see the pending, XOR-obfuscated record.
++    auto file{blockman.OpenBlockFile(first, true)};
++    BOOST_REQUIRE(!file.IsNull());
++    CBlock read;
++    file >> TX_WITH_WITNESS(read);
++    BOOST_CHECK_EQUAL(read.nVersion, 7);
++    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::Pending(blockman), 0U);
++    BOOST_REQUIRE(blockman.ReadRawBlock(first));
++    block.nVersion = 8;
++    const auto second{blockman.WriteBlock(block, 2)};
++    BOOST_REQUIRE_GT(node::BlockManagerTestAccess::Pending(blockman), 0U);
++    // This also exercises a previously cached positional read handle.
++    const auto raw{blockman.ReadRawBlock(second)};
++    BOOST_REQUIRE(raw);
++    SpanReader{*raw} >> TX_WITH_WITNESS(read);
++    BOOST_CHECK_EQUAL(read.nVersion, 8);
++    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::Pending(blockman), 0U);
++}
++
++BOOST_FIXTURE_TEST_CASE(buffered_undo_read_visibility, BufferedBlockStorageSetup)
++{
++    LOCK(cs_main);
++    CBlock block;
++    const auto pos{blockman.WriteBlock(block, 1)};
++    BOOST_REQUIRE(!pos.IsNull());
++    const auto previous_hash{Params().GenesisBlock().GetHash()};
++    CBlockIndex previous;
++    previous.phashBlock = &previous_hash;
++    CBlockIndex index;
++    index.pprev = &previous;
++    index.nFile = pos.nFile;
++    index.nHeight = 1;
++    CBlockUndo undo;
++    undo.vtxundo.emplace_back();
++    BlockValidationState state;
++    BOOST_REQUIRE(node::BlockManagerTestAccess::WriteUndo(blockman, undo, state, index));
++    BOOST_REQUIRE_GT(node::BlockManagerTestAccess::Pending(blockman, true), 0U);
++    CBlockUndo read;
++    BOOST_REQUIRE(blockman.ReadBlockUndo(read, index));
++    BOOST_CHECK_EQUAL(read.vtxundo.size(), undo.vtxundo.size());
++    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::Pending(blockman, true), 0U);
++}
++
++BOOST_FIXTURE_TEST_CASE(buffered_index_failure_retains_dirty_state, BufferedBlockStorageSetup)
++{
++    LOCK(cs_main);
++    CBlock block;
++    const auto first{blockman.WriteBlock(block, 1)};
++    BOOST_REQUIRE(!first.IsNull());
++    blockman.WriteBlockIndexDB();
++    CBlockFileInfo checkpoint;
++    BOOST_REQUIRE(blockman.m_block_tree_db->ReadBlockFileInfo(first.nFile, checkpoint));
++    BOOST_CHECK_EQUAL(checkpoint.nBlocks, 1U);
++    BOOST_REQUIRE(!blockman.WriteBlock(block, 2).IsNull());
++    CBlockIndex* best_header{nullptr};
++    blockman.AddToBlockIndex(Params().GenesisBlock(), best_header);
++    const auto dirty_indexes{node::BlockManagerTestAccess::DirtyIndexes(blockman)};
++    BOOST_REQUIRE_GT(dirty_indexes, 0U);
++    const auto dirty_files{node::BlockManagerTestAccess::DirtyFiles(blockman)};
++    BOOST_REQUIRE_GT(dirty_files, 0U);
++    node::BlockManagerTestAccess::MakeReadOnly(blockman, blockman.GetBlockPosFilename(first));
++    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
++    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::DirtyFiles(blockman), dirty_files);
++    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::DirtyIndexes(blockman), dirty_indexes);
++    CBlockFileInfo persisted;
++    BOOST_REQUIRE(blockman.m_block_tree_db->ReadBlockFileInfo(first.nFile, persisted));
++    BOOST_CHECK_EQUAL(persisted.nBlocks, checkpoint.nBlocks);
++    BOOST_CHECK_EQUAL(persisted.nSize, checkpoint.nSize);
++    BOOST_CHECK(!node::BlockManagerTestAccess::Close(blockman));
++    // A closed stream, another file number, and a retry must not hide the failure.
++    BOOST_CHECK(!node::BlockManagerTestAccess::Close(blockman, first.nFile + 1));
++    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
++}
++
++BOOST_FIXTURE_TEST_CASE(buffered_write_exception_is_sticky, BufferedBlockStorageSetup)
++{
++    CBlock block;
++    const auto first{blockman.WriteBlock(block, 1)};
++    BOOST_REQUIRE(!first.IsNull());
++    node::BlockManagerTestAccess::MakeReadOnly(blockman, blockman.GetBlockPosFilename(first));
++    CMutableTransaction tx;
++    tx.vin.resize(1);
++    tx.vin[0].scriptSig.resize(16 * 1024);
++    block.vtx.push_back(MakeTransactionRef(tx));
++    // A large explicit serialization flush fails before Keep(), without rotating.
++    BOOST_CHECK_THROW(blockman.WriteBlock(block, 2), std::ios_base::failure);
++    LOCK(cs_main);
++    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
++    BOOST_CHECK(!node::BlockManagerTestAccess::Close(blockman));
++}
++
++BOOST_FIXTURE_TEST_CASE(buffered_rotation_and_pruning, BufferedBlockStorageSetup)
++{
++    CBlock block;
++    block.nVersion = 9;
++    const auto first{blockman.WriteBlock(block, 1)};
++    BOOST_REQUIRE(!first.IsNull());
++    blockman.GetBlockFileInfo(first.nFile)->nSize = 0x10000;
++    const auto second{blockman.WriteBlock(block, 2)};
++    BOOST_REQUIRE(!second.IsNull());
++    BOOST_CHECK_NE(first.nFile, second.nFile);
++    BOOST_REQUIRE(blockman.ReadRawBlock(first));
++    BOOST_REQUIRE(blockman.ReadRawBlock(second));
++    blockman.UnlinkPrunedFiles({first.nFile});
++    BOOST_CHECK(!fs::exists(blockman.GetBlockPosFilename(first)));
++    BOOST_CHECK(fs::exists(blockman.GetBlockPosFilename(second)));
++}
++
++BOOST_FIXTURE_TEST_CASE(buffered_rotation_failure_is_sticky, BufferedBlockStorageSetup)
++{
++    CBlock block;
++    const auto first{blockman.WriteBlock(block, 1)};
++    BOOST_REQUIRE(!first.IsNull());
++    node::BlockManagerTestAccess::MakeReadOnly(blockman, blockman.GetBlockPosFilename(first));
++    blockman.GetBlockFileInfo(first.nFile)->nSize = 0x10000;
++    BOOST_CHECK(blockman.WriteBlock(block, 2).IsNull());
++    LOCK(cs_main);
++    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
++}
++
++BOOST_FIXTURE_TEST_CASE(buffered_pruning_failure_aborts, BufferedBlockStorageSetup)
++{
++    CBlock block;
++    const auto first{blockman.WriteBlock(block, 1)};
++    BOOST_REQUIRE(!first.IsNull());
++    const auto path{blockman.GetBlockPosFilename(first)};
++    node::BlockManagerTestAccess::MakeReadOnly(blockman, path);
++    BOOST_CHECK_THROW(blockman.UnlinkPrunedFiles({first.nFile}), std::runtime_error);
++    BOOST_CHECK(fs::exists(path));
++    LOCK(cs_main);
++    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
++}
++
++BOOST_AUTO_TEST_CASE(buffered_serialization_failure_is_not_retried)
++{
++    struct FailingWriter {
++        unsigned attempts{0};
++        void write_buffer(std::span<std::byte>)
++        {
++            ++attempts;
++            throw std::ios_base::failure("injected write failure");
++        }
++    } writer;
++    const auto attempt{[&] {
++        BufferedWriter buffer{writer, 1};
++        buffer << uint8_t{42};
++    }};
++    BOOST_CHECK_THROW(attempt(), std::ios_base::failure);
++    BOOST_CHECK_EQUAL(writer.attempts, 1U);
++}
++#endif
++
+ BOOST_AUTO_TEST_SUITE_END()
 diff --git a/src/test/net_tests.cpp b/src/test/net_tests.cpp
 index 188c975d9c..2fe71db94c 100644
 --- a/src/test/net_tests.cpp
@@ -975,7 +1527,7 @@ index 951381823b..448119aa06 100644
       * The callback can either be queued for later/asynchronous/threaded
       * processing, or be executed immediately for synchronous processing.
 diff --git a/src/validation.cpp b/src/validation.cpp
-index 93f7993443..480f577107 100644
+index 93f7993443..720ae2a375 100644
 --- a/src/validation.cpp
 +++ b/src/validation.cpp
 @@ -2718,6 +2718,13 @@ bool Chainstate::FlushStateToDisk(
@@ -992,7 +1544,24 @@ index 93f7993443..480f577107 100644
      std::set<int> setFilesToPrune;
      bool full_flush_completed = false;
  
-@@ -3432,7 +3439,15 @@ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCL
+@@ -2800,10 +2807,14 @@ bool Chainstate::FlushStateToDisk(
+                 LOG_TIME_MILLIS_WITH_CATEGORY("write block and undo data to disk", BCLog::BENCH);
+ 
+                 // First make sure all block and undo data is flushed to disk.
+-                // TODO: Handle return error, or add detailed comment why it is
+-                // safe to not return an error upon failure.
++                // Intel buffers records between writes, so a failed flush must
++                // stop before persisting indexes or coins that refer to them.
+                 if (!m_blockman.FlushChainstateBlockFile(m_chain.Height())) {
++#if defined(__APPLE__) && defined(__x86_64__)
++                    return FatalError(m_chainman.GetNotifications(), state, _("Failed to flush block data before writing chainstate."));
++#else
+                     LogWarning("%s: Failed to flush block file.\n", __func__);
++#endif
+                 }
+             }
+ 
+@@ -3432,7 +3443,15 @@ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCL
      AssertLockNotHeld(cs_main);
  
      if (signals.CallbacksPending() > 10) {
@@ -1008,7 +1577,7 @@ index 93f7993443..480f577107 100644
      }
  }
  
-@@ -3463,7 +3478,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+@@ -3463,7 +3482,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
      CBlockIndex *pindexNewTip = nullptr;
      bool exited_ibd{false};
      do {
@@ -1017,6 +1586,18 @@ index 93f7993443..480f577107 100644
          // never happen in normal operation, however may happen during
          // reindex, causing memory blowup if we run too far ahead.
          // Note that if a validationinterface callback ends up calling
+@@ -4530,7 +4549,11 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
+     // the block files may be pruned, so we can just call this on one
+     // chainstate (particularly if we haven't implemented pruning with
+     // background validation yet).
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (!ActiveChainstate().FlushStateToDisk(state, FlushStateMode::NONE)) return false;
++#else
+     ActiveChainstate().FlushStateToDisk(state, FlushStateMode::NONE);
++#endif
+ 
+     CheckBlockIndex();
+ 
 diff --git a/src/validationinterface.cpp b/src/validationinterface.cpp
 index c7be6abc3a..92c2afa1a9 100644
 --- a/src/validationinterface.cpp
