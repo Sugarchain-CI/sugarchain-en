@@ -1,4 +1,4 @@
-name: macOS retained I/O and validation scheduling A/B
+name: macOS subsecond optimized native build comparison
 'on':
   push:
     branches:
@@ -54,9 +54,10 @@ jobs:
         \ \"$workspace/baseline/sugarchaind\"\ngit -C source apply \"$GITHUB_WORKSPACE/optimization.patch\"\
         \ngit -C source diff --check\nexpected=$(git apply --numstat \"$GITHUB_WORKSPACE/optimization.patch\"\
         \ | cut -f3 | LC_ALL=C sort)\nactual=$(git -C source diff --name-only | LC_ALL=C\
-        \ sort)\ntest \"$actual\" = \"$expected\"\ncmake --build \"$build\" --target\
-        \ bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\" \"$workspace/candidate/sugarchaind\"\
-        \nshasum -a 256 \"$workspace/\"{baseline,candidate}/sugarchaind\n"
+        \ sort)\ntest \"$actual\" = \"$expected\"\ncmake -B \"$build\" -S source -DCMAKE_CXX_FLAGS_RELEASE=-O3\
+        \ -DCMAKE_C_FLAGS_RELEASE=-O3   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\n\
+        cmake --build \"$build\" --target bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\"\
+        \ \"$workspace/candidate/sugarchaind\"\nshasum -a 256 \"$workspace/\"{baseline,candidate}/sugarchaind\n"
     - name: Measure fresh receivers with the same 10,000 blocks
       shell: bash
       run: "set -euo pipefail\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\npython3\
@@ -75,7 +76,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v7
       with:
-        name: macos-subsecond-second-${{ matrix.arch }}
+        name: macos-subsecond-optimized-${{ matrix.arch }}
         path: '${{ runner.temp }}/macos-subsecond/results/result.json
 
           ${{ runner.temp }}/macos-subsecond/results/*/console.log
