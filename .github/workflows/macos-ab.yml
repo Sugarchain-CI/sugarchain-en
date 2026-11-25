@@ -1,19 +1,21 @@
-name: Intel macOS bounded callback queue benchmark
+name: macOS sync candidate and native regression tests
 'on':
   push:
     branches:
-    - automation/regtest-en4-macos-subsecond-20261125
+    - automation/en5-macos-native-checks
 permissions:
   contents: read
 jobs:
   compare:
     name: macOS cache comparison ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 40
+    timeout-minutes: 95
     strategy:
       fail-fast: false
       matrix:
         include:
+        - arch: arm64
+          runner: macos-15
         - arch: x86_64
           runner: macos-15-intel
     steps:
@@ -21,7 +23,7 @@ jobs:
       uses: actions/checkout@v6
       with:
         persist-credentials: false
-    - name: Check out unchanged En.3 source
+    - name: Check out pinned En.4 source
       uses: actions/checkout@v6
       with:
         path: source
@@ -34,7 +36,7 @@ jobs:
         path: ${{ runner.temp }}/macos-subsecond-ccache
         key: macos-subsecond-${{ matrix.arch }}-${{ github.run_id }}
         restore-keys: macos-subsecond-${{ matrix.arch }}-
-    - name: Compile the control and macOS optimized variant
+    - name: Build the prior optimized reference and release candidate
       shell: bash
       run: "set -euo pipefail\nexport CCACHE_DIR=\"$RUNNER_TEMP/macos-subsecond-ccache\"\
         \ntest \"$(uname -m)\" = \"${{ matrix.arch }}\"\ntest \"$(git -C source rev-parse\
@@ -48,8 +50,11 @@ jobs:
         \ \\\n  \"-DCMAKE_PREFIX_PATH=$(brew --prefix boost);$(brew --prefix libevent)\"\
         \ \\\n  -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_CLI=OFF -DENABLE_WALLET=OFF\
         \ -DENABLE_IPC=OFF -DWITH_USDT=OFF\njobs=\"$(sysctl -n hw.logicalcpu)\"\n\
+        git -C source apply \"$GITHUB_WORKSPACE/baseline.patch\"\ncmake -B \"$build\"\
+        \ -S source -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\n\
         cmake --build \"$build\" --target bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\"\
-        \ \"$workspace/baseline/sugarchaind\"\ngit -C source apply \"$GITHUB_WORKSPACE/optimization.patch\"\
+        \ \"$workspace/baseline/sugarchaind\"\ngit -C source apply --reverse \"$GITHUB_WORKSPACE/baseline.patch\"\
+        \ngit -C source diff --exit-code\ngit -C source apply \"$GITHUB_WORKSPACE/optimization.patch\"\
         \ngit -C source diff --check\nexpected=$(git apply --numstat \"$GITHUB_WORKSPACE/optimization.patch\"\
         \ | cut -f3 | LC_ALL=C sort)\nactual=$(git -C source diff --name-only | LC_ALL=C\
         \ sort)\ntest \"$actual\" = \"$expected\"\ncmake -B \"$build\" -S source -DCMAKE_CXX_FLAGS_RELEASE=-O3\
@@ -74,7 +79,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v7
       with:
-        name: macos-subsecond-intel-queue
+        name: macos-sync-checks-${{ matrix.arch }}
         path: '${{ runner.temp }}/macos-subsecond/results/result.json
 
           ${{ runner.temp }}/macos-subsecond/results/*/console.log
@@ -84,6 +89,20 @@ jobs:
           '
         if-no-files-found: warn
         retention-days: 7
+    - name: Run native scheduler, validation signal, storage and stream tests
+      run: 'set -euo pipefail
+
+        build="$RUNNER_TEMP/macos-subsecond/build"
+
+        export CCACHE_DIR="$RUNNER_TEMP/macos-subsecond-ccache"
+
+        cmake -B "$build" -S source -DBUILD_TESTS=ON
+
+        cmake --build "$build" --target test_bitcoin --parallel "$(sysctl -n hw.logicalcpu)"
+
+        ctest --test-dir "$build" --no-tests=error --output-on-failure -R ''^(scheduler_tests|validationinterface_tests|blockmanager_tests|streams_tests)$''
+
+        '
     - name: Keep compiler cache for follow-up measurements
       if: always()
       uses: actions/cache/save@v5

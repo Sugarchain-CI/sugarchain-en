@@ -1,5 +1,31 @@
+diff --git a/src/init.cpp b/src/init.cpp
+index 489288037f..6815285b72 100644
+--- a/src/init.cpp
++++ b/src/init.cpp
+@@ -329,6 +329,9 @@ void Shutdown(NodeContext& node)
+     // the scheduler. After this point, SyncWithValidationInterfaceQueue() should not be called anymore
+     // as this would prevent the shutdown from completing.
+     if (node.scheduler) node.scheduler->stop();
++#if defined(__APPLE__) && defined(__aarch64__)
++    if (node.validation_signals) node.validation_signals->StopBackgroundCallbacks();
++#endif
+ 
+     // After the threads that potentially access these pointers have been stopped,
+     // destruct and reset all to nullptr.
+@@ -1503,7 +1506,11 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
+     }
+ 
+     assert(!node.validation_signals);
++#if defined(__APPLE__) && defined(__aarch64__)
++    node.validation_signals = std::make_unique<ValidationSignals>(std::make_unique<ValidationTaskRunner>());
++#else
+     node.validation_signals = std::make_unique<ValidationSignals>(std::make_unique<SerialTaskRunner>(scheduler));
++#endif
+     auto& validation_signals = *node.validation_signals;
+ 
+     // Create KernelNotifications object. Important to do this early before
 diff --git a/src/node/blockstorage.cpp b/src/node/blockstorage.cpp
-index 80d356384c..fc2828b272 100644
+index 80d356384c..15fb396739 100644
 --- a/src/node/blockstorage.cpp
 +++ b/src/node/blockstorage.cpp
 @@ -68,6 +68,10 @@
@@ -56,11 +82,12 @@ index 80d356384c..fc2828b272 100644
      m_file = file.release();
      m_file_num = file_num;
      // Publish bytes to other handles before exposing the record's index.
-@@ -1514,7 +1533,11 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+@@ -1514,7 +1533,12 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
              return FatalError(m_opts.notifications, state, _("Failed to write undo data."));
          }
          {
 +#ifdef __APPLE__
++            // A spare byte keeps smaller records on the scope-exit flush path.
 +            BufferedWriter fileout{file, std::min<size_t>(size_t{blockundo_size} + UNDO_DATA_DISK_OVERHEAD + 1, 64 * 1024)};
 +#else
              BufferedWriter fileout{file};
@@ -68,7 +95,7 @@ index 80d356384c..fc2828b272 100644
  
              // Write index header
              fileout << GetParams().MessageStart() << blockundo_size;
-@@ -1629,17 +1652,64 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
+@@ -1629,17 +1653,64 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
          LogError("Failed for %s while reading raw block storage header", pos.ToString());
          return util::Unexpected{ReadRawError::IO};
      }
@@ -133,7 +160,7 @@ index 80d356384c..fc2828b272 100644
  
          if (blk_start != GetParams().MessageStart()) {
              LogError("Block magic mismatch for %s: %s versus expected %s while reading raw block",
-@@ -1658,12 +1728,20 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
+@@ -1658,12 +1729,20 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
              if (size == 0 || SaturatingAdd(offset, size) > blk_size) {
                  return util::Unexpected{ReadRawError::BadPartRange}; // Avoid logging - offset/size come from untrusted REST input
              }
@@ -154,7 +181,7 @@ index 80d356384c..fc2828b272 100644
          return data;
      } catch (const std::exception& e) {
          LogError("Read from block file failed: %s for %s while reading raw block", e.what(), pos.ToString());
-@@ -1693,7 +1771,11 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
+@@ -1693,7 +1772,11 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
          return FlatFilePos();
      }
      {
@@ -194,7 +221,7 @@ index 21d11decc0..91ef0b0601 100644
      void FindFilesToPruneManual(
          std::set<int>& setFilesToPrune,
 diff --git a/src/scheduler.cpp b/src/scheduler.cpp
-index 5a3b7218ca..a545bdca3f 100644
+index 5a3b7218ca..f8f956cf86 100644
 --- a/src/scheduler.cpp
 +++ b/src/scheduler.cpp
 @@ -7,6 +7,7 @@
@@ -205,7 +232,7 @@ index 5a3b7218ca..a545bdca3f 100644
  #include <cassert>
  #include <functional>
  #include <utility>
-@@ -138,13 +139,24 @@ void SerialTaskRunner::MaybeScheduleProcessQueue()
+@@ -138,26 +139,57 @@ void SerialTaskRunner::MaybeScheduleProcessQueue()
  {
      {
          LOCK(m_callbacks_mutex);
@@ -228,13 +255,26 @@ index 5a3b7218ca..a545bdca3f 100644
 +        LOCK(m_callbacks_mutex);
 +        m_process_queue_scheduled = false;
 +        throw;
++    }
++#endif
++}
++
++#ifdef __APPLE__
++std::function<void()> SerialTaskRunner::PopCallback()
++{
++    AssertLockHeld(m_callbacks_mutex);
++    auto callback{std::move(m_callbacks_pending.front())};
++    m_callbacks_pending.pop_front();
++    if (m_capacity_waiters && m_callbacks_pending.size() <= m_capacity_wait_limit) {
++        m_capacity.notify_all();
      }
 -    m_scheduler.schedule([this] { this->ProcessQueue(); }, std::chrono::steady_clock::now());
-+#endif
++    return callback;
  }
++#endif
  
  void SerialTaskRunner::ProcessQueue()
-@@ -152,12 +164,20 @@ void SerialTaskRunner::ProcessQueue()
+ {
      std::function<void()> callback;
      {
          LOCK(m_callbacks_mutex);
@@ -245,17 +285,41 @@ index 5a3b7218ca..a545bdca3f 100644
          if (m_callbacks_pending.empty()) return;
          m_are_callbacks_running = true;
  
++#ifdef __APPLE__
++        callback = PopCallback();
++#else
          callback = std::move(m_callbacks_pending.front());
          m_callbacks_pending.pop_front();
-+#ifdef __APPLE__
-+        if (m_capacity_waiters != 0 && m_callbacks_pending.size() <= m_capacity_wait_limit) {
-+            m_capacity.notify_all();
-+        }
 +#endif
      }
  
      // RAII the setting of fCallbacksRunning and calling MaybeScheduleProcessQueue
-@@ -203,3 +223,19 @@ size_t SerialTaskRunner::size()
+@@ -175,7 +207,24 @@ void SerialTaskRunner::ProcessQueue()
+         }
+     } raiicallbacksrunning(this);
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++    const auto deadline{std::chrono::steady_clock::now() + 1ms};
++#endif
+     callback();
++#if defined(__APPLE__) && defined(__x86_64__)
++    callback = {};
++    // Share each scheduler turn among ready callbacks without starving other tasks.
++    for (size_t processed{1}; processed < 8; ++processed) {
++        if (std::chrono::steady_clock::now() >= deadline || m_scheduler.StopRequested()) break;
++        std::function<void()> next;
++        {
++            LOCK(m_callbacks_mutex);
++            if (m_callbacks_pending.empty()) break;
++            next = PopCallback();
++        }
++        next();
++    }
++#endif
+ }
+ 
+ void SerialTaskRunner::insert(std::function<void()> func)
+@@ -203,3 +252,99 @@ size_t SerialTaskRunner::size()
      LOCK(m_callbacks_mutex);
      return m_callbacks_pending.size();
  }
@@ -275,31 +339,108 @@ index 5a3b7218ca..a545bdca3f 100644
 +    return true;
 +}
 +#endif
++
++#if defined(__APPLE__) && defined(__aarch64__)
++ValidationTaskRunner::ValidationTaskRunner() : m_worker{[this] { Run(/*drain=*/false); }} {}
++
++ValidationTaskRunner::~ValidationTaskRunner()
++{
++    stop();
++}
++
++void ValidationTaskRunner::Run(bool drain)
++{
++    WAIT_LOCK(m_mutex, lock);
++    while (drain || !m_stopped) {
++        if (m_pending.empty()) {
++            if (drain) return;
++            m_available.wait(lock);
++            continue;
++        }
++
++        auto callback{std::move(m_pending.front())};
++        m_pending.pop_front();
++        if (m_capacity_waiters != 0 && m_pending.size() <= m_capacity_wait_limit) {
++            m_capacity.notify_all();
++        }
++        {
++            REVERSE_LOCK(lock, m_mutex);
++            auto task{std::move(callback)};
++            task();
++        }
++    }
++}
++
++void ValidationTaskRunner::insert(std::function<void()> func)
++{
++    bool wake;
++    {
++        LOCK(m_mutex);
++        wake = m_pending.empty() && !m_stopped;
++        m_pending.emplace_back(std::move(func));
++    }
++    if (wake) m_available.notify_one();
++}
++
++void ValidationTaskRunner::stop()
++{
++    {
++        LOCK(m_mutex);
++        m_stopped = true;
++    }
++    m_available.notify_one();
++    m_capacity.notify_all();
++    if (m_worker.joinable()) m_worker.join();
++}
++
++void ValidationTaskRunner::flush()
++{
++    assert(!m_worker.joinable());
++    Run(/*drain=*/true);
++}
++
++size_t ValidationTaskRunner::size()
++{
++    LOCK(m_mutex);
++    return m_pending.size();
++}
++
++bool ValidationTaskRunner::waitForPendingAtMost(size_t limit)
++{
++    WAIT_LOCK(m_mutex, lock);
++    if (m_stopped || m_pending.size() <= limit) return true;
++
++    ++m_capacity_waiters;
++    m_capacity_wait_limit = std::max(m_capacity_wait_limit, limit);
++    m_capacity.wait(lock, [this, limit]() EXCLUSIVE_LOCKS_REQUIRED(m_mutex) {
++        return m_stopped || m_pending.size() <= limit;
++    });
++    if (--m_capacity_waiters == 0) m_capacity_wait_limit = 0;
++    return true;
++}
++#endif
 diff --git a/src/scheduler.h b/src/scheduler.h
-index 79b8afd2ad..086f6f705c 100644
+index 79b8afd2ad..6ab66665fe 100644
 --- a/src/scheduler.h
 +++ b/src/scheduler.h
-@@ -14,7 +14,11 @@
- #include <condition_variable>
- #include <cstddef>
- #include <functional>
-+#ifdef __APPLE__
-+#include <deque>
-+#else
- #include <list>
+@@ -102,6 +102,14 @@ public:
+     bool AreThreadsServicingQueue() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex);
+ 
+ private:
++#if defined(__APPLE__) && defined(__x86_64__)
++    friend class SerialTaskRunner;
++
++    bool StopRequested() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex)
++    {
++        return WITH_LOCK(newTaskMutex, return stopRequested);
++    }
 +#endif
- #include <map>
- #include <thread>
- #include <utility>
-@@ -131,8 +135,18 @@ private:
-     // We are not allowed to assume the scheduler only runs in one thread,
-     // but must ensure all callbacks happen in-order, so we end up creating
+     mutable Mutex newTaskMutex;
+     std::condition_variable newTaskScheduled;
+     std::multimap<std::chrono::steady_clock::time_point, Function> taskQueue GUARDED_BY(newTaskMutex);
+@@ -133,8 +141,17 @@ private:
      // our own queue here :(
-+#ifdef __APPLE__
-+    std::deque<std::function<void()>> m_callbacks_pending GUARDED_BY(m_callbacks_mutex);
-+#else
      std::list<std::function<void()>> m_callbacks_pending GUARDED_BY(m_callbacks_mutex);
-+#endif
      bool m_are_callbacks_running GUARDED_BY(m_callbacks_mutex) = false;
 +#ifdef __APPLE__
 +    bool m_process_queue_scheduled GUARDED_BY(m_callbacks_mutex){false};
@@ -309,15 +450,47 @@ index 79b8afd2ad..086f6f705c 100644
 +#endif
  
      void MaybeScheduleProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
++#ifdef __APPLE__
++    std::function<void()> PopCallback() EXCLUSIVE_LOCKS_REQUIRED(m_callbacks_mutex);
++#endif
      void ProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
-@@ -155,6 +169,9 @@ public:
+ 
+ public:
+@@ -155,6 +172,36 @@ public:
      void flush() override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
  
      size_t size() override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
 +#ifdef __APPLE__
 +    bool waitForPendingAtMost(size_t limit) override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
 +#endif
++};
++
++#if defined(__APPLE__) && defined(__aarch64__)
++/** A single background worker for the ordered validation callback queue. */
++class ValidationTaskRunner final : public util::TaskRunnerInterface
++{
++    Mutex m_mutex;
++    std::condition_variable m_available;
++    std::condition_variable m_capacity;
++    size_t m_capacity_waiters GUARDED_BY(m_mutex){0};
++    size_t m_capacity_wait_limit GUARDED_BY(m_mutex){0};
++    std::list<std::function<void()>> m_pending GUARDED_BY(m_mutex);
++    bool m_stopped GUARDED_BY(m_mutex){false};
++    std::thread m_worker;
++
++    void Run(bool drain) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
++
++public:
++    ValidationTaskRunner();
++    ~ValidationTaskRunner() override;
++
++    void insert(std::function<void()> func) override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
++    void stop() override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
++    void flush() override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
++    size_t size() override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
++    bool waitForPendingAtMost(size_t limit) override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
  };
++#endif
  
  #endif // BITCOIN_SCHEDULER_H
 diff --git a/src/streams.h b/src/streams.h
@@ -341,14 +514,118 @@ index f70adcf74a..e7c03e057a 100644
  
      ~AutoFile()
      {
+diff --git a/src/test/scheduler_tests.cpp b/src/test/scheduler_tests.cpp
+index c106eca69c..cea3a44d07 100644
+--- a/src/test/scheduler_tests.cpp
++++ b/src/test/scheduler_tests.cpp
+@@ -9,7 +9,11 @@
+ #include <boost/test/unit_test.hpp>
+ 
+ #include <functional>
++#if defined(__APPLE__) && defined(__aarch64__)
++#include <future>
++#endif
+ #include <mutex>
++#include <stdexcept>
+ #include <thread>
+ #include <vector>
+ 
+@@ -171,6 +175,82 @@ BOOST_AUTO_TEST_CASE(singlethreadedscheduler_ordered)
+     BOOST_CHECK_EQUAL(counter2, 100);
+ }
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++BOOST_AUTO_TEST_CASE(validation_worker_capacity_and_shutdown)
++{
++    ValidationTaskRunner runner;
++    std::vector<int> order;
++    std::thread::id worker_id;
++    std::thread::id draining_id;
++    std::promise<void> first_started, release_first, release_last;
++    auto first_gate{release_first.get_future()};
++    auto last_gate{release_last.get_future()};
++
++    runner.insert([&] {
++        worker_id = std::this_thread::get_id();
++        order.push_back(1);
++        first_started.set_value();
++        first_gate.wait();
++    });
++    first_started.get_future().wait();
++    runner.insert([&] {
++        order.push_back(2);
++        // The last callback waits inside its body. Queue capacity is released
++        // on dequeue, so the producer can unblock it without draining the FIFO.
++        last_gate.wait();
++    });
++    const size_t held_pending{runner.size()};
++    release_first.set_value();
++    const bool capacity_released{runner.waitForPendingAtMost(0)};
++    release_last.set_value();
++    runner.stop();
++
++    // Shutdown can still enqueue final chainstate notifications. The caller
++    // drains them after the worker has stopped, including nested notifications.
++    runner.insert([&] {
++        draining_id = std::this_thread::get_id();
++        order.push_back(3);
++        runner.insert([&] { order.push_back(5); });
++    });
++    runner.insert([&] { order.push_back(4); });
++    BOOST_CHECK_EQUAL(runner.size(), 2U);
++    runner.flush();
++    const std::vector<int> expected{1, 2, 3, 4, 5};
++    BOOST_CHECK_EQUAL(held_pending, 1U);
++    BOOST_CHECK(capacity_released);
++    BOOST_CHECK(worker_id != std::this_thread::get_id());
++    BOOST_CHECK(draining_id == std::this_thread::get_id());
++    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
++    BOOST_CHECK_EQUAL(runner.size(), 0U);
++}
++#endif
++
++BOOST_AUTO_TEST_CASE(serial_callbacks_resume_after_exception_and_stop)
++{
++    CScheduler scheduler;
++    SerialTaskRunner runner{scheduler};
++    std::vector<int> order;
++    runner.insert([&] { order.push_back(1); });
++    runner.insert([&] {
++        order.push_back(2);
++        throw std::runtime_error{"validation callback"};
++    });
++    runner.insert([&] {
++        order.push_back(3);
++        scheduler.stop();
++    });
++    runner.insert([&] { order.push_back(4); });
++
++    BOOST_CHECK_THROW(scheduler.serviceQueue(), std::runtime_error);
++    BOOST_CHECK_EQUAL(order.size(), 2U);
++    scheduler.serviceQueue();
++    BOOST_CHECK_EQUAL(runner.size(), 1U);
++    runner.flush();
++
++    const std::vector<int> expected{1, 2, 3, 4};
++    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
++}
++
+ BOOST_AUTO_TEST_CASE(mockforward)
+ {
+     CScheduler scheduler;
 diff --git a/src/util/task_runner.h b/src/util/task_runner.h
-index 951381823b..9aab3216ee 100644
+index 951381823b..448119aa06 100644
 --- a/src/util/task_runner.h
 +++ b/src/util/task_runner.h
-@@ -21,6 +21,11 @@ class TaskRunnerInterface
+@@ -21,6 +21,16 @@ class TaskRunnerInterface
  public:
      virtual ~TaskRunnerInterface() = default;
  
++#if defined(__APPLE__) && defined(__aarch64__)
++    /** Stop the background worker before the caller flushes remaining tasks. */
++    virtual void stop() {}
++#endif
++
 +#ifdef __APPLE__
 +    /** Wait for the pending count to fall to the limit if supported by this live task runner. */
 +    virtual bool waitForPendingAtMost(size_t) { return false; }
@@ -358,7 +635,7 @@ index 951381823b..9aab3216ee 100644
       * The callback can either be queued for later/asynchronous/threaded
       * processing, or be executed immediately for synchronous processing.
 diff --git a/src/validation.cpp b/src/validation.cpp
-index 93f7993443..1320ca9ba2 100644
+index 93f7993443..bb4960f65f 100644
 --- a/src/validation.cpp
 +++ b/src/validation.cpp
 @@ -2718,6 +2718,13 @@ bool Chainstate::FlushStateToDisk(
@@ -375,25 +652,20 @@ index 93f7993443..1320ca9ba2 100644
      std::set<int> setFilesToPrune;
      bool full_flush_completed = false;
  
-@@ -3431,9 +3438,17 @@ bool ChainstateManager::NotifyHeaderTip()
- static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCLUDED(cs_main) {
+@@ -3432,7 +3439,12 @@ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCL
      AssertLockNotHeld(cs_main);
  
-+#ifdef __APPLE__
-+    // Give the background consumer room to keep processing events across block connections.
-+    // Limit the pending queue even when callbacks cannot keep pace.
-+    if (signals.CallbacksPending() > 32) {
-+        signals.WaitForPendingCallbacks(16);
-+    }
-+#else
      if (signals.CallbacksPending() > 10) {
++#ifdef __APPLE__
++        // Leave room for another block's notifications before applying backpressure again.
++        signals.WaitForPendingCallbacks(8);
++#else
          signals.SyncWithValidationInterfaceQueue();
-     }
 +#endif
+     }
  }
  
- bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<const CBlock> pblock)
-@@ -3463,7 +3478,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+@@ -3463,7 +3475,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
      CBlockIndex *pindexNewTip = nullptr;
      bool exited_ibd{false};
      do {
@@ -403,10 +675,30 @@ index 93f7993443..1320ca9ba2 100644
          // reindex, causing memory blowup if we run too far ahead.
          // Note that if a validationinterface callback ends up calling
 diff --git a/src/validationinterface.cpp b/src/validationinterface.cpp
-index c7be6abc3a..8dd71a6949 100644
+index c7be6abc3a..92c2afa1a9 100644
 --- a/src/validationinterface.cpp
 +++ b/src/validationinterface.cpp
-@@ -154,6 +154,16 @@ void ValidationSignals::SyncWithValidationInterfaceQueue()
+@@ -97,7 +97,19 @@ public:
+ ValidationSignals::ValidationSignals(std::unique_ptr<util::TaskRunnerInterface> task_runner)
+     : m_internals{std::make_unique<ValidationSignalsImpl>(std::move(task_runner))} {}
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++ValidationSignals::~ValidationSignals()
++{
++    StopBackgroundCallbacks();
++}
++
++void ValidationSignals::StopBackgroundCallbacks()
++{
++    m_internals->m_task_runner->stop();
++}
++#else
+ ValidationSignals::~ValidationSignals() = default;
++#endif
+ 
+ void ValidationSignals::FlushBackgroundCallbacks()
+ {
+@@ -154,6 +166,16 @@ void ValidationSignals::SyncWithValidationInterfaceQueue()
      promise.get_future().wait();
  }
  
@@ -424,10 +716,22 @@ index c7be6abc3a..8dd71a6949 100644
  // evaluating arguments when logging is not enabled.
  //
 diff --git a/src/validationinterface.h b/src/validationinterface.h
-index 4777e8dca8..8fb0e3be69 100644
+index 4777e8dca8..d20cb25da5 100644
 --- a/src/validationinterface.h
 +++ b/src/validationinterface.h
-@@ -218,6 +218,11 @@ public:
+@@ -178,6 +178,11 @@ public:
+     /** Call any remaining callbacks on the calling thread */
+     void FlushBackgroundCallbacks();
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++    /** Stop the background dispatcher before tearing down validation subscribers. */
++    void StopBackgroundCallbacks();
++#endif
++
+     size_t CallbacksPending();
+ 
+     /** Register subscriber */
+@@ -218,6 +223,11 @@ public:
       */
      void SyncWithValidationInterfaceQueue() LOCKS_EXCLUDED(cs_main);
  
