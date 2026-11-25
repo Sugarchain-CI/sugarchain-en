@@ -29,6 +29,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <iosfwd>
 #include <limits>
@@ -239,6 +240,27 @@ private:
 
     AutoFile OpenUndoFile(const FlatFilePos& pos, bool fReadOnly = false) const;
 
+#ifdef WIN32
+    /** Keep one writable handle per sequence. Each record is flushed before publication. */
+    class WriteFileCache
+    {
+        std::FILE* m_file{nullptr};
+        int m_file_num{-1};
+
+    public:
+        WriteFileCache() = default;
+        WriteFileCache(const WriteFileCache&) = delete;
+        WriteFileCache& operator=(const WriteFileCache&) = delete;
+        ~WriteFileCache();
+        AutoFile Open(const FlatFileSeq& sequence, const FlatFilePos& pos, const Obfuscation& obfuscation);
+        [[nodiscard]] bool Keep(AutoFile& file, int file_num);
+        [[nodiscard]] bool Close(int file_num = -1);
+    };
+
+    mutable WriteFileCache m_block_writer GUARDED_BY(cs_LastBlockFile);
+    mutable WriteFileCache m_undo_writer GUARDED_BY(cs_LastBlockFile);
+#endif
+
     /* Calculate the block/rev files to delete based on height specified by user with RPC command pruneblockchain */
     void FindFilesToPruneManual(
         std::set<int>& setFilesToPrune,
@@ -267,7 +289,7 @@ private:
         const Chainstate& chain,
         ChainstateManager& chainman);
 
-    RecursiveMutex cs_LastBlockFile;
+    mutable RecursiveMutex cs_LastBlockFile;
 
     //! Since assumedvalid chainstates may be syncing a range of the chain that is very
     //! far away from the normal/background validation process, we should segment blockfiles
