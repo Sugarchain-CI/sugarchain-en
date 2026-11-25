@@ -1,0 +1,30 @@
+name: Intel stdio diagnostic
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-15-intel
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build and run isolated stdio probe
+      shell: bash
+      run: 'set -euo pipefail
+
+        mkdir -p probe-results
+
+        clang++ -std=c++20 -O3 contrib/devtools/stdio_probe.cpp -o probe-results/stdio-probe
+
+        probe-results/stdio-probe "$RUNNER_TEMP/stdio-probe-files" | tee probe-results/stdio-probe.log
+
+        '
+    - uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: intel-stdio-diagnostic
+        path: probe-results/stdio-probe.log
+        retention-days: 7
+'on':
+  push:
+    branches:
+    - diagnostic/en6-intel-stdio
