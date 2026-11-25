@@ -1533,7 +1533,12 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
             return FatalError(m_opts.notifications, state, _("Failed to write undo data."));
         }
         {
+#ifdef __APPLE__
+            // A spare byte keeps smaller records on the scope-exit flush path.
+            BufferedWriter fileout{file, std::min<size_t>(size_t{blockundo_size} + UNDO_DATA_DISK_OVERHEAD + 1, 64 * 1024)};
+#else
             BufferedWriter fileout{file};
+#endif
 
             // Write index header
             fileout << GetParams().MessageStart() << blockundo_size;
@@ -1767,7 +1772,11 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
         return FlatFilePos();
     }
     {
+#ifdef __APPLE__
+        BufferedWriter fileout{file, std::min<size_t>(size_t{block_size} + STORAGE_HEADER_BYTES + 1, 64 * 1024)};
+#else
         BufferedWriter fileout{file};
+#endif
 
         // Write index header
         fileout << GetParams().MessageStart() << block_size;
