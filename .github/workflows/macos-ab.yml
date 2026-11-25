@@ -33,19 +33,20 @@ jobs:
     - name: Restore compiler cache
       uses: actions/cache/restore@v5
       with:
-        path: ${{ env.CCACHE_DIR }}
+        path: ${{ runner.temp }}/macos-subsecond-ccache
         key: macos-subsecond-${{ matrix.arch }}-${{ github.run_id }}
         restore-keys: macos-subsecond-${{ matrix.arch }}-
     - name: Compile the control and macOS optimized variant
       shell: bash
-      run: "set -euo pipefail\ntest \"$(uname -m)\" = \"${{ matrix.arch }}\"\ntest\
-        \ \"$(git -C source rev-parse HEAD)\" = 13a5822c27a5097f72f97262413c243d7db57708\n\
-        for dependency in boost libevent; do\n  if ! brew list --versions \"$dependency\"\
-        \ >/dev/null 2>&1 || [[ -z \"$(brew list --versions \"$dependency\")\" ]];\
-        \ then\n    HOMEBREW_NO_AUTO_UPDATE=1 brew install \"$dependency\"\n  fi\n\
-        done\ncommand -v cmake\ncommand -v ninja\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\
-        \nbuild=\"$workspace/build\"\nmkdir -p \"$workspace/baseline\" \"$workspace/candidate\"\
-        \ncmake -S source -B \"$build\" -G Ninja -DCMAKE_BUILD_TYPE=Release \"-DCMAKE_CXX_FLAGS=-Werror=thread-safety\"\
+      run: "set -euo pipefail\nexport CCACHE_DIR=\"$RUNNER_TEMP/macos-subsecond-ccache\"\
+        \ntest \"$(uname -m)\" = \"${{ matrix.arch }}\"\ntest \"$(git -C source rev-parse\
+        \ HEAD)\" = 13a5822c27a5097f72f97262413c243d7db57708\nfor dependency in boost\
+        \ libevent; do\n  if ! brew list --versions \"$dependency\" >/dev/null 2>&1\
+        \ || [[ -z \"$(brew list --versions \"$dependency\")\" ]]; then\n    HOMEBREW_NO_AUTO_UPDATE=1\
+        \ brew install \"$dependency\"\n  fi\ndone\ncommand -v cmake\ncommand -v ninja\n\
+        workspace=\"$RUNNER_TEMP/macos-subsecond\"\nbuild=\"$workspace/build\"\nmkdir\
+        \ -p \"$workspace/baseline\" \"$workspace/candidate\"\ncmake -S source -B\
+        \ \"$build\" -G Ninja -DCMAKE_BUILD_TYPE=Release \"-DCMAKE_CXX_FLAGS=-Werror=thread-safety\"\
         \ \\\n  \"-DCMAKE_PREFIX_PATH=$(brew --prefix boost);$(brew --prefix libevent)\"\
         \ \\\n  -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_CLI=OFF -DENABLE_WALLET=OFF\
         \ -DENABLE_IPC=OFF -DWITH_USDT=OFF\njobs=\"$(sysctl -n hw.logicalcpu)\"\n\
@@ -91,7 +92,5 @@ jobs:
       if: always()
       uses: actions/cache/save@v5
       with:
-        path: ${{ env.CCACHE_DIR }}
+        path: ${{ runner.temp }}/macos-subsecond-ccache
         key: macos-subsecond-${{ matrix.arch }}-${{ github.run_id }}
-    env:
-      CCACHE_DIR: ${{ runner.temp }}/macos-subsecond-ccache
