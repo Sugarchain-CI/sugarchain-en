@@ -501,7 +501,7 @@ fs::path static StartupShortcutPath()
     ChainType chain = gArgs.GetChainType();
     if (chain == ChainType::MAIN)
         return GetSpecialFolderPath(CSIDL_STARTUP) / "Sugarchain.lnk";
-    if (chain == ChainType::TESTNET) // Remove this special case when testnet CBaseChainParams::DataDir() is incremented to "testnet4"
+    if (chain == ChainType::TESTNET)
         return GetSpecialFolderPath(CSIDL_STARTUP) / "Sugarchain (testnet).lnk";
     return GetSpecialFolderPath(CSIDL_STARTUP) / fs::u8path(strprintf("Sugarchain (%s).lnk", ChainTypeToString(chain)));
 }

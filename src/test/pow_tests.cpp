@@ -207,6 +207,9 @@ BOOST_AUTO_TEST_CASE(ChainParams_REGTEST_sanity)
 BOOST_AUTO_TEST_CASE(ChainParams_TESTNET_sanity)
 {
     sanity_check_chainparams(*m_node.args, ChainType::TESTNET);
+    const auto params{CreateChainParams(*m_node.args, ChainType::TESTNET)};
+    const auto& genesis{params->GenesisBlock()};
+    BOOST_CHECK(CheckProofOfWork(genesis.GetPoWHash(), genesis.nBits, params->GetConsensus()));
 }
 
 BOOST_AUTO_TEST_CASE(ChainParams_TESTNET4_sanity)

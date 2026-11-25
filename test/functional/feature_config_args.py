@@ -487,10 +487,10 @@ class ConfArgsTest(BitcoinTestFramework):
     def test_acceptstalefeeestimates_arg_support(self):
         self.log.info("Test -acceptstalefeeestimates option support")
         conf_file = self.nodes[0].datadir_path / "sugarchain.conf"
-        for chain, chain_name in {("main", ""), ("test", "testnet3"), ("signet", "signet"), ("testnet4", "testnet4")}:
+        for chain, chain_name in {("main", ""), ("test", "testnet7"), ("signet", "signet"), ("testnet4", "testnet4")}:
             util.write_config(conf_file, n=0, chain=chain_name, extra_config='acceptstalefeeestimates=1\n')
-            expected = (f'Error: acceptstalefeeestimates is not supported on {chain} chain.' if chain == 'main' else
-                        f"Error: Network '{chain}' is not supported by Sugarchain En. Use mainnet or isolated regtest.")
+            expected = (f'Error: acceptstalefeeestimates is not supported on {chain} chain.' if chain in ('main', 'test') else
+                        f"Error: Network '{chain}' is not supported by Sugarchain En. Use mainnet, testnet, or isolated regtest.")
             self.nodes[0].assert_start_raises_init_error(expected_msg=expected)
         util.write_config(conf_file, n=0, chain="regtest")  # Reset to regtest
 
@@ -498,10 +498,10 @@ class ConfArgsTest(BitcoinTestFramework):
         self.log.info("Test unported public networks are rejected before startup")
         node = self.nodes[0]
         conf_file = node.datadir_path / "sugarchain.conf"
-        for chain, chain_name in [("test", "testnet3"), ("testnet4", "testnet4"), ("signet", "signet")]:
+        for chain, chain_name in [("testnet4", "testnet4"), ("signet", "signet")]:
             util.write_config(conf_file, n=0, chain=chain_name)
             node.assert_start_raises_init_error(expected_msg=
-                f"Error: Network '{chain}' is not supported by Sugarchain En. Use mainnet or isolated regtest.")
+                f"Error: Network '{chain}' is not supported by Sugarchain En. Use mainnet, testnet, or isolated regtest.")
             assert not (node.datadir_path / chain_name).exists()
 
         util.write_config(conf_file, n=0, chain="regtest")

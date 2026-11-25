@@ -44,6 +44,6 @@ std::optional<ChainType> ChainTypeFromString(std::string_view chain)
 
 std::optional<std::string> CheckSupportedChainType(ChainType chain)
 {
-    if (chain == ChainType::MAIN || chain == ChainType::REGTEST) return std::nullopt;
-    return "Network '" + ChainTypeToString(chain) + "' is not supported by Sugarchain En. Use mainnet or isolated regtest.";
+    if (chain == ChainType::MAIN || chain == ChainType::TESTNET || chain == ChainType::REGTEST) return std::nullopt;
+    return "Network '" + ChainTypeToString(chain) + "' is not supported by Sugarchain En. Use mainnet, testnet, or isolated regtest.";
 }
