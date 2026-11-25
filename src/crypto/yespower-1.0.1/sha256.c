@@ -74,6 +74,7 @@ be32enc_vect(uint8_t * dst, const uint32_t * src, size_t len)
 	} while (--len);
 }
 
+#ifndef YESPOWER_APPLE_SHA2
 /*
  * Decode a big-endian length len*8 vector of (uint8_t) into a length
  * len*2 vector of (uint32_t).
@@ -90,6 +91,8 @@ be32dec_vect(uint32_t * dst, const uint8_t * src, size_t len)
 		dst += 2;
 	} while (--len);
 }
+
+#endif
 
 /* SHA256 round constants. */
 static const uint32_t Krnd[64] = {
