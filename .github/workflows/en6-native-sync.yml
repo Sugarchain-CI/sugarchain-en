@@ -1,0 +1,113 @@
+name: En.6 native Regtest and Testnet7 distribution audit
+'on':
+  push:
+    branches:
+    - audit/en6-native-dual-network
+    paths:
+    - .github/workflows/en6-native-sync.yml
+    - .github/diagnostics/en6-native-sync/**
+permissions:
+  contents: read
+jobs:
+  linux:
+    name: Linux ${{ matrix.arch }} native package audit
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: x86_64
+          target: x86_64-linux-gnu
+          runner: ubuntu-24.04
+        - arch: aarch64
+          target: aarch64-linux-gnu
+          runner: ubuntu-24.04-arm
+    steps:
+    - name: Check out the isolated audit
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Set up a virtual X11 display
+      run: 'sudo apt-get update -qq
+
+        sudo apt-get install -y --no-install-recommends xvfb xauth fonts-dejavu-core
+        libxkbcommon-x11-0 libxcb-cursor0'
+    - name: Verify and measure the released daemon and GUI
+      env:
+        TARGET_TRIPLE: ${{ matrix.target }}
+      run: bash .github/diagnostics/en6-native-sync/run-linux.sh "$TARGET_TRIPLE"
+        "$RUNNER_TEMP/en6-native-linux"
+    - name: Retain measurement evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: en6-native-linux-${{ matrix.arch }}
+        path: ${{ runner.temp }}/en6-native-linux/results/
+        if-no-files-found: warn
+        retention-days: 14
+  windows:
+    name: Windows ${{ matrix.crt }} native package audit
+    runs-on: windows-2022
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        crt:
+        - ucrt
+        - msvcrt
+    steps:
+    - name: Check out the isolated audit
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Verify and measure the released portable and installed programs
+      shell: pwsh
+      env:
+        RELEASE_CRT: ${{ matrix.crt }}
+      working-directory: .github/diagnostics/en6-native-sync
+      run: 'py -3 native-windows.py --crt $env:RELEASE_CRT --fixture testnet7-fixture.json
+        --work-dir "$env:RUNNER_TEMP/native-en6-windows"
+
+        exit $LASTEXITCODE'
+    - name: Retain measurement evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: en6-native-windows-${{ matrix.crt }}
+        path: ${{ runner.temp }}/native-en6-windows/evidence/
+        if-no-files-found: warn
+        retention-days: 14
+  macos:
+    name: macOS ${{ matrix.arch }} native package audit
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: arm64
+          runner: macos-15
+        - arch: x86_64
+          runner: macos-15-intel
+    defaults:
+      run:
+        shell: bash
+    env:
+      BENCH_ARCH: ${{ matrix.arch }}
+      BENCH_RUNNER: ${{ matrix.runner }}
+    steps:
+    - name: Check out isolated benchmark tools
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Verify and measure exact released CLI and GUI archives
+      run: bash .github/diagnostics/en6-native-sync/macos-native.sh "$RUNNER_TEMP/en6-native-macos"
+    - name: Retain startup, synchronization, and restart evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: en6-native-macos-${{ matrix.arch }}
+        path: ${{ runner.temp }}/en6-native-macos/evidence/
+        if-no-files-found: error
+        retention-days: 14
