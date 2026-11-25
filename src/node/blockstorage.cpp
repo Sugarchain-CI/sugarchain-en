@@ -1306,6 +1306,12 @@ bool BlockManager::WriteFileCache::Close(int file_num)
 AutoFile BlockManager::WriteFileCache::Open(const FlatFileSeq& sequence, const FlatFilePos& pos, const Obfuscation& obfuscation)
 {
     if (m_file && pos.nFile == m_file_num) {
+#ifdef __APPLE__
+        // Keep flushed the previous record, so the stream is ready for an append.
+        if (m_file_pos && *m_file_pos == pos.nPos) {
+            return AutoFile{std::exchange(m_file, nullptr), obfuscation, *m_file_pos};
+        }
+#endif
         // Use the absolute offset so AutoFile starts with the correct XOR position.
         if (std::fseek(m_file, pos.nPos, SEEK_SET) == 0) {
             return AutoFile{std::exchange(m_file, nullptr), obfuscation};
@@ -1321,6 +1327,9 @@ AutoFile BlockManager::WriteFileCache::Open(const FlatFileSeq& sequence, const F
 bool BlockManager::WriteFileCache::Keep(AutoFile& file, int file_num)
 {
     assert(!m_file);
+#ifdef __APPLE__
+    m_file_pos = file.GetPosition();
+#endif
     m_file = file.release();
     m_file_num = file_num;
     // Publish bytes to other handles before exposing the record's index.

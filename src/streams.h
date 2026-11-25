@@ -379,6 +379,16 @@ protected:
 
 public:
     explicit AutoFile(std::FILE* file, const Obfuscation& obfuscation = {});
+#ifdef __APPLE__
+    AutoFile(std::FILE* file, const Obfuscation& obfuscation, int64_t position)
+        : m_file{file}, m_obfuscation{obfuscation}, m_position{position}
+    {
+        assert(file);
+    }
+
+    /** The logical stream offset, when available. Includes buffered writes. */
+    [[nodiscard]] std::optional<int64_t> GetPosition() const { return m_position; }
+#endif
 
     ~AutoFile()
     {

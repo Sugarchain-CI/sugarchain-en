@@ -246,6 +246,9 @@ private:
     {
         std::FILE* m_file{nullptr};
         int m_file_num{-1};
+#ifdef __APPLE__
+        std::optional<int64_t> m_file_pos;
+#endif
 
     public:
         WriteFileCache() = default;
