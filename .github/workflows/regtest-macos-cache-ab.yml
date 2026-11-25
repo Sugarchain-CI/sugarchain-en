@@ -1,0 +1,80 @@
+name: macOS block-write synchronization A/B
+'on':
+  push:
+    branches:
+      - automation/regtest-en3-macos-cache-ab-20261125
+permissions:
+  contents: read
+jobs:
+  compare:
+    name: macOS cache comparison ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    steps:
+      - name: Check out benchmark inputs
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check out unchanged En.3 source
+        uses: actions/checkout@v6
+        with:
+          path: source
+          repository: decryp2kanon/sugarchain-en
+          ref: 692f7f6c91450d3bc707e2ad85dd99d993a7b3b5
+          persist-credentials: false
+      - name: Compile the control and macOS write-handle variant
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "${{ matrix.arch }}"
+          test "$(git -C source rev-parse HEAD)" = 692f7f6c91450d3bc707e2ad85dd99d993a7b3b5
+          for dependency in boost libevent; do
+            if ! brew list --versions "$dependency" >/dev/null 2>&1 || [[ -z "$(brew list --versions "$dependency")" ]]; then
+              HOMEBREW_NO_AUTO_UPDATE=1 brew install "$dependency"
+            fi
+          done
+          command -v cmake
+          command -v ninja
+          workspace="$RUNNER_TEMP/macos-cache-ab"
+          build="$workspace/build"
+          mkdir -p "$workspace/baseline" "$workspace/candidate"
+          cmake -S source -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            "-DCMAKE_PREFIX_PATH=$(brew --prefix boost);$(brew --prefix libevent)" \
+            -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_CLI=OFF -DENABLE_WALLET=OFF -DENABLE_IPC=OFF -DWITH_USDT=OFF
+          jobs="$(sysctl -n hw.logicalcpu)"
+          cmake --build "$build" --target bitcoind --parallel "$jobs"
+          cp "$build/bin/sugarchaind" "$workspace/baseline/sugarchaind"
+          git -C source apply "$GITHUB_WORKSPACE/cache-write-handles.patch"
+          git -C source diff --check
+          test "$(git -C source diff --name-only | wc -l | tr -d ' ')" = 2
+          cmake --build "$build" --target bitcoind --parallel "$jobs"
+          cp "$build/bin/sugarchaind" "$workspace/candidate/sugarchaind"
+          shasum -a 256 "$workspace/"{baseline,candidate}/sugarchaind
+      - name: Measure fresh receivers with the same 10,000 blocks
+        shell: bash
+        run: |
+          set -euo pipefail
+          workspace="$RUNNER_TEMP/macos-cache-ab"
+          python3 regtest-sync.py --baseline-bin-dir "$workspace/baseline" --candidate-bin-dir "$workspace/candidate" \
+            --work-dir "$workspace/results" --blocks 10000 --repeats 3
+          jq -e '.fixture_sha256 == "e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9"
+            and .fixture_utxo_sha256 == "63208d710cf03c30de2660b77a5434181b20fd1c5e70460b256ea4f4e798cb84"
+            and all(.variants[].samples[]; .reload_verified)' "$workspace/results/result.json"
+      - name: Retain comparison evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-cache-ab-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/macos-cache-ab/results/result.json
+            ${{ runner.temp }}/macos-cache-ab/results/*/console.log
+          if-no-files-found: warn
+          retention-days: 7
