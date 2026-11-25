@@ -967,7 +967,7 @@ void BlockManager::WriteBlockIndexDB()
 
 bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_blockhash, std::vector<CBlockIndex*>* sorted_indices)
 {
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
     {
         LOCK(cs_LastBlockFile);
         const bool block_closed{m_block_writer.Close()};
@@ -1188,7 +1188,7 @@ bool BlockManager::ReadBlockUndo(CBlockUndo& blockundo, const CBlockIndex& index
 bool BlockManager::FlushUndoFile(int block_file, bool finalize)
 {
     bool closed{true};
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
     LOCK(cs_LastBlockFile);
     closed = m_undo_writer.Close(block_file);
 #endif
@@ -1216,7 +1216,7 @@ bool BlockManager::FlushBlockFile(int blockfile_num, bool fFinalize, bool finali
 
     FlatFilePos block_pos_old(blockfile_num, m_blockfile_info[blockfile_num].nSize);
     bool closed{true};
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
     closed = m_block_writer.Close(blockfile_num);
 #endif
     if (!m_block_file_seq.Flush(block_pos_old, fFinalize) || !closed) {
@@ -1268,12 +1268,12 @@ uint64_t BlockManager::CalculateCurrentUsage()
 
 void BlockManager::UnlinkPrunedFiles(const std::set<int>& setFilesToPrune) const
 {
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
     LOCK(cs_LastBlockFile);
 #endif
     std::error_code ec;
     for (std::set<int>::iterator it = setFilesToPrune.begin(); it != setFilesToPrune.end(); ++it) {
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
         const bool block_closed{m_block_writer.Close(*it)};
         const bool undo_closed{m_undo_writer.Close(*it)};
         if (!block_closed || !undo_closed) continue;
@@ -1287,7 +1287,7 @@ void BlockManager::UnlinkPrunedFiles(const std::set<int>& setFilesToPrune) const
     }
 }
 
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
 BlockManager::WriteFileCache::~WriteFileCache()
 {
     (void)Close();
@@ -1486,7 +1486,7 @@ bool BlockManager::FindUndoPos(BlockValidationState& state, int nFile, FlatFileP
 bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationState& state, CBlockIndex& block)
 {
     AssertLockHeld(::cs_main);
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
     LOCK(cs_LastBlockFile);
 #endif
     const BlockfileType type = BlockfileTypeForHeight(block.nHeight);
@@ -1502,7 +1502,7 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
         }
 
         // Open history file to append
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
         AutoFile file{m_undo_writer.Open(m_undo_file_seq, pos, m_obfuscation)};
 #else
         AutoFile file{OpenUndoFile(pos)};
@@ -1527,7 +1527,7 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
             // BufferedWriter will flush pending data to file when fileout goes out of scope.
         }
 
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
         if (!m_undo_writer.Keep(file, pos.nFile)) {
             LogError("Failed to flush block undo file %s: %s", pos.ToString(), SysErrorString(errno));
             return FatalError(m_opts.notifications, state, _("Failed to write undo data."));
@@ -1671,7 +1671,7 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
 
 FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
 {
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
     LOCK(cs_LastBlockFile);
 #endif
     const unsigned int block_size{static_cast<unsigned int>(GetSerializeSize(TX_WITH_WITNESS(block)))};
@@ -1680,7 +1680,7 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
         LogError("FindNextBlockPos failed for %s while writing block", pos.ToString());
         return FlatFilePos();
     }
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
     AutoFile file{m_block_writer.Open(m_block_file_seq, pos, m_obfuscation)};
 #else
     AutoFile file{OpenBlockFile(pos, /*fReadOnly=*/false)};
@@ -1700,7 +1700,7 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
         fileout << TX_WITH_WITNESS(block);
     }
 
-#ifdef WIN32
+#if defined(WIN32) || defined(__APPLE__)
     if (!m_block_writer.Keep(file, pos.nFile)) {
         LogError("Failed to flush block file %s: %s", pos.ToString(), SysErrorString(errno));
         m_opts.notifications.fatalError(_("Failed to write block."));
