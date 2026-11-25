@@ -30,6 +30,12 @@ jobs:
         repository: decryp2kanon/sugarchain-en
         ref: 13a5822c27a5097f72f97262413c243d7db57708
         persist-credentials: false
+    - name: Restore compiler cache
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: macos-subsecond-${{ matrix.arch }}-${{ github.run_id }}
+        restore-keys: macos-subsecond-${{ matrix.arch }}-
     - name: Compile the control and macOS optimized variant
       shell: bash
       run: "set -euo pipefail\ntest \"$(uname -m)\" = \"${{ matrix.arch }}\"\ntest\
@@ -49,10 +55,11 @@ jobs:
         $build\" --target bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\"\
         \ \"$workspace/profile/sugarchaind\"\ngit -C source apply -R \"$GITHUB_WORKSPACE/aggregate.patch\"\
         \ngit -C source apply \"$GITHUB_WORKSPACE/optimization.patch\"\ngit -C source\
-        \ diff --check\ntest \"$(git -C source diff --name-only | wc -l | tr -d '\
-        \ ')\" = 2\ncmake --build \"$build\" --target bitcoind --parallel \"$jobs\"\
-        \ncp \"$build/bin/sugarchaind\" \"$workspace/candidate/sugarchaind\"\nshasum\
-        \ -a 256 \"$workspace/\"{baseline,candidate}/sugarchaind\n"
+        \ diff --check\nexpected=$(git apply --numstat \"$GITHUB_WORKSPACE/optimization.patch\"\
+        \ | cut -f3 | LC_ALL=C sort)\nactual=$(git -C source diff --name-only | LC_ALL=C\
+        \ sort)\ntest \"$actual\" = \"$expected\"\ncmake --build \"$build\" --target\
+        \ bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\" \"$workspace/candidate/sugarchaind\"\
+        \nshasum -a 256 \"$workspace/\"{baseline,candidate}/sugarchaind\n"
     - name: Measure fresh receivers with the same 10,000 blocks
       shell: bash
       run: "set -euo pipefail\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\npython3\
@@ -80,3 +87,11 @@ jobs:
           '
         if-no-files-found: warn
         retention-days: 7
+    - name: Keep compiler cache for follow-up measurements
+      if: always()
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: macos-subsecond-${{ matrix.arch }}-${{ github.run_id }}
+    env:
+      CCACHE_DIR: ${{ runner.temp }}/macos-subsecond-ccache
