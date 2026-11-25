@@ -2718,6 +2718,13 @@ bool Chainstate::FlushStateToDisk(
 {
     LOCK(cs_main);
     assert(this->CanFlushToDisk());
+#ifdef __APPLE__
+    // NONE can only prune or initialize the periodic write deadline.
+    if (mode == FlushStateMode::NONE && !m_blockman.IsPruneMode() &&
+        m_next_write != NodeClock::time_point::max()) {
+        return true;
+    }
+#endif
     std::set<int> setFilesToPrune;
     bool full_flush_completed = false;
 
