@@ -13,7 +13,7 @@ mkdir -p "$work/evidence" "$work/home"
 export CFFIXED_USER_HOME="$work/home"
 export CCACHE_DIR="$RUNNER_TEMP/macos-subsecond-ccache"
 export HOMEBREW_NO_AUTO_UPDATE=1
-for dependency in boost libevent ccache qt; do
+for dependency in boost libevent ccache qt qrencode; do
   if [[ -z "$(brew list --versions "$dependency" 2>/dev/null || :)" ]]; then
     brew install "$dependency"
   fi
@@ -30,7 +30,7 @@ done
 cmake -S "$source_dir" -B "$work/build" -G Ninja \
   -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-Werror=thread-safety \
-  "-DCMAKE_PREFIX_PATH=$(brew --prefix boost);$(brew --prefix libevent);$(brew --prefix qt)" \
+  "-DCMAKE_PREFIX_PATH=$(brew --prefix boost);$(brew --prefix libevent);$(brew --prefix qt);$(brew --prefix qrencode)" \
   -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_C_FLAGS_RELEASE=-O3 \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
   -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -63,12 +63,12 @@ for sender in baseline candidate; do
   for mode in baseline candidate; do
     for kind in cli gui; do
       exe="$work/$mode/sugarchaind"
-      extra=()
+      extra=(--fixture "$here/testnet7-fixture.json")
       if [[ "$kind" == gui ]]; then exe="$work/$mode/sugarchain-qt"; extra+=(--gui); fi
       label="$sender-sender-$mode-$kind"
       python3 "$here/native-sync.py" --sender "$work/$sender/sugarchaind" --receiver "$exe" \
         --work-dir "$work/$label" --platform macos --arch arm64 --network testnet7 \
-        --fixture "$here/testnet7-fixture.json" "${extra[@]}" > "$work/evidence/$label.log" 2>&1
+        "${extra[@]}" > "$work/evidence/$label.log" 2>&1
       cp "$work/$label/result.json" "$work/evidence/$label.json"
     done
   done
