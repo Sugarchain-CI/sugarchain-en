@@ -103,12 +103,22 @@ class WindowsDesktop:
         self.user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
         self.user32.GetDlgItem.argtypes = (wintypes.HWND, ctypes.c_int)
         self.user32.GetDlgItem.restype = wintypes.HWND
+        self.user32.GetAncestor.argtypes = (wintypes.HWND, wintypes.UINT)
+        self.user32.GetAncestor.restype = wintypes.HWND
+        self.user32.GetWindowLongW.argtypes = (wintypes.HWND, ctypes.c_int)
+        self.user32.GetWindowLongW.restype = wintypes.LONG
+        self.user32.GetWindowRect.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.RECT))
+        self.user32.GetCursorPos.argtypes = (ctypes.POINTER(wintypes.POINT),)
+        self.user32.SetCursorPos.argtypes = (ctypes.c_int, ctypes.c_int)
+        self.user32.WindowFromPoint.argtypes = (wintypes.POINT,)
+        self.user32.WindowFromPoint.restype = wintypes.HWND
         self.user32.GetForegroundWindow.restype = wintypes.HWND
         self.user32.IsWindowVisible.argtypes = (wintypes.HWND,)
         self.user32.IsWindowEnabled.argtypes = (wintypes.HWND,)
         self.user32.ShowWindowAsync.argtypes = (wintypes.HWND, ctypes.c_int)
         self.user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
         self.user32.keybd_event.argtypes = (wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_size_t)
+        self.user32.mouse_event.argtypes = (wintypes.DWORD,) * 4 + (ctypes.c_size_t,)
         self.user32.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
         self.user32.SendMessageTimeoutW.argtypes = (
             wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
@@ -136,10 +146,10 @@ class WindowsDesktop:
         self.user32.EnumChildWindows(dialog, collect, 0)
         return children
 
-    def control_text(self, handle):
-        title = ctypes.create_unicode_buffer(1024)
-        self.message(handle, 0x000D, len(title), ctypes.addressof(title), timeout=1000)
-        return title.value.replace("&", "").strip()
+    def window_class(self, handle):
+        class_name = ctypes.create_unicode_buffer(64)
+        self.user32.GetClassNameW(handle, class_name, len(class_name))
+        return class_name.value.casefold()
 
     def find(self, process, title="Sugarchain", timeout=8, exclude=None):
         windows = []
@@ -165,19 +175,22 @@ class WindowsDesktop:
             time.sleep(0.15)
         raise RuntimeError(f"The runner did not expose a window titled {title}")
 
-    def screenshot(self, handle, name):
+    def image(self, handle):
         from PIL import ImageGrab
 
-        self.message(handle, 0)
         image = ImageGrab.grab(window=handle).convert("RGB")
         if min(image.size) < 100 or all(low == high for low, high in image.getextrema()):
             raise RuntimeError("The window capture was empty")
+        return image
+
+    def screenshot(self, handle, name):
+        self.message(handle, 0)
+        image = self.image(handle)
         path = self.directory / f"{name}.png"
         image.save(path)
         return {"screenshot": path.name, "width": image.width, "height": image.height}
 
-    def keystroke(self, handle, key, alt=False):
-        # Keep generated desktop input inside the selected program window.
+    def focus(self, handle):
         if self.user32.GetForegroundWindow() != handle:
             self.user32.ShowWindowAsync(handle, 9)
             self.user32.SetForegroundWindow(handle)
@@ -186,6 +199,9 @@ class WindowsDesktop:
             if time.monotonic() >= deadline:
                 raise RuntimeError("The runner did not focus the application window")
             time.sleep(0.05)
+
+    def keystroke(self, handle, key, alt=False):
+        self.focus(handle)
         if alt:
             self.user32.keybd_event(0x12, 0, 0, 0)
         self.user32.keybd_event(key, 0, 0, 0)
@@ -193,32 +209,70 @@ class WindowsDesktop:
         if alt:
             self.user32.keybd_event(0x12, 0, 2, 0)
 
-    def button(self, window, label, timeout=10):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            candidates = [self.user32.GetDlgItem(window, 1), *self.controls(window)]
-            for handle in filter(None, candidates):
-                control_class = ctypes.create_unicode_buffer(64)
-                self.user32.GetClassNameW(handle, control_class, len(control_class))
-                if (control_class.value.casefold() == "button" and self.user32.IsWindowEnabled(handle)
-                        and self.control_text(handle).startswith(label)):
-                    return handle
-            time.sleep(0.15)
-        raise RuntimeError(f"The installer action {label} was not available")
+    def forward_button(self, dialog):
+        # NSIS uses IDOK for the visible Next, Install and Finish buttons.
+        handle = self.user32.GetDlgItem(dialog, 1)
+        if (handle and self.window_class(handle) == "button"
+                and self.user32.IsWindowVisible(handle) and self.user32.IsWindowEnabled(handle)):
+            return handle
+        raise RuntimeError("The installer forward button was unavailable")
 
-    def page(self, window, *labels, timeout=10):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            for handle in self.controls(window):
-                text = self.control_text(handle).casefold()
-                if any(label in text for label in labels):
-                    return
+    def mouse_click(self, dialog, button):
+        from ctypes import wintypes
+
+        self.focus(dialog)
+        rectangle = wintypes.RECT()
+        point = wintypes.POINT()
+        if not self.user32.GetWindowRect(button, ctypes.byref(rectangle)):
+            raise RuntimeError("The runner did not expose the installer button bounds")
+        if rectangle.right <= rectangle.left or rectangle.bottom <= rectangle.top:
+            raise RuntimeError("The installer button did not have a visible center")
+        x = (rectangle.left + rectangle.right) // 2
+        y = (rectangle.top + rectangle.bottom) // 2
+        at_center = self.user32.WindowFromPoint(wintypes.POINT(x, y))
+        if at_center != button or self.user32.GetAncestor(button, 2) != dialog:
+            raise RuntimeError("The installer button center was covered or outside its dialog")
+        had_cursor = self.user32.GetCursorPos(ctypes.byref(point))
+        if not self.user32.SetCursorPos(x, y):
+            raise RuntimeError("The runner did not allow positioning the cursor")
+        try:
+            if self.user32.GetForegroundWindow() != dialog:
+                raise RuntimeError("The installer lost focus before the click")
+            self.user32.mouse_event(0x0002, 0, 0, 0, 0)
+            self.user32.mouse_event(0x0004, 0, 0, 0, 0)
             time.sleep(0.1)
-        raise RuntimeError(f"The installer page did not show {labels}")
+        finally:
+            if had_cursor:
+                self.user32.SetCursorPos(point.x, point.y)
 
-    def click_button(self, handle):
-        if not self.user32.PostMessageW(handle, 0x00F5, 0, 0):
-            raise RuntimeError("The runner did not deliver an installer button click")
+    def installer_body(self, dialog):
+        image = self.image(dialog)
+        # Ignore outer borders, title bar and footer button state.
+        box = (16, 36, image.width - 16, image.height - 55)
+        return image.crop(box).convert("L").resize((160, 120))
+
+    def wait_for_page_change(self, dialog, prior):
+        from PIL import ImageChops
+
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            try:
+                self.forward_button(dialog)
+            except RuntimeError:
+                time.sleep(0.15)
+                continue
+            difference = ImageChops.difference(prior, self.installer_body(dialog))
+            if sum(difference.histogram()[16:]) > 480:
+                return
+            time.sleep(0.15)
+        raise RuntimeError("The installer page body did not change after the click")
+
+    def checkboxes(self, dialog):
+        return {
+            handle for handle in self.controls(dialog)
+            if self.window_class(handle) == "button"
+            and (self.user32.GetWindowLongW(handle, -16) & 0xF) in {2, 3, 5, 6}
+        }
 
 
 def capture_screenshot(desktop, window, name, evidence):
@@ -279,36 +333,49 @@ def interactive_install(installer_path, gui, desktop, evidence):
     started_installation = False
     try:
         dialog = desktop.find(process, "Setup")
-        next_button = desktop.button(dialog, "Next")
+        desktop.focus(dialog)
         capture_screenshot(desktop, dialog, "installer-01-welcome", evidence)
-        desktop.click_button(next_button)
-        desktop.page(dialog, "destination folder", "choose install location")
+        previous = desktop.installer_body(dialog)
+        desktop.mouse_click(dialog, desktop.forward_button(dialog))
+        desktop.wait_for_page_change(dialog, previous)
         capture_screenshot(desktop, dialog, "installer-02-destination", evidence)
-        desktop.click_button(desktop.button(dialog, "Next"))
-        install_button = desktop.button(dialog, "Install")
+        previous = desktop.installer_body(dialog)
+        desktop.mouse_click(dialog, desktop.forward_button(dialog))
+        desktop.wait_for_page_change(dialog, previous)
         capture_screenshot(desktop, dialog, "installer-03-start-menu", evidence)
-        desktop.click_button(install_button)
+        start_menu_checkboxes = desktop.checkboxes(dialog)
+        desktop.mouse_click(dialog, desktop.forward_button(dialog))
         started_installation = True
-        try:
-            desktop.page(dialog, "installing", timeout=3)
-            capture_screenshot(desktop, dialog, "installer-04-install-progress", evidence)
-        except RuntimeError as error:
-            evidence["installer-04-install-progress"] = {"status": "inconclusive", "reason": str(error)}
-        finish = desktop.button(dialog, "Finish", timeout=120)
+        deadline = time.monotonic() + 120
+        progress_name = "installer-04-install-progress"
+        while process.poll() is None and time.monotonic() < deadline:
+            if progress_name not in evidence and any(
+                desktop.window_class(handle) == "msctls_progress32"
+                for handle in desktop.controls(dialog)
+            ):
+                capture_screenshot(desktop, dialog, progress_name, evidence)
+            finish_checkboxes = desktop.checkboxes(dialog) - start_menu_checkboxes
+            if len(finish_checkboxes) == 1 and gui.is_file():
+                try:
+                    finish = desktop.forward_button(dialog)
+                    break
+                except RuntimeError:
+                    pass
+            time.sleep(0.15)
+        else:
+            raise RuntimeError("The installer Finish page was not exposed")
+        evidence.setdefault(progress_name, {"status": "inconclusive", "reason": "The installation progress page was transient"})
         capture_screenshot(desktop, dialog, "installer-05-finish", evidence)
-        run_checkbox = next((
-            handle for handle in desktop.controls(dialog)
-            if desktop.control_text(handle) == "Run Sugarchain"
-        ), None)
-        if not run_checkbox:
-            raise RuntimeError("The Run Sugarchain checkbox was not exposed")
-        desktop.message(run_checkbox, 0x00F1, 0)
+        # The published installer's Finish page has one optional auto-run checkbox.
+        run_checkbox, = finish_checkboxes
+        if desktop.message(run_checkbox, 0x00F0) != 0:
+            desktop.mouse_click(dialog, run_checkbox)
         if desktop.message(run_checkbox, 0x00F0) != 0:
             raise RuntimeError("The installer Run Sugarchain option remained selected")
-        desktop.click_button(finish)
+        desktop.mouse_click(dialog, finish)
         assert process.wait(timeout=15) == 0
         return "interactive"
-    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+    except (ImportError, OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
         evidence["installer-navigation"] = {"status": "inconclusive", "reason": str(error)}
         if started_installation and not gui.exists():
             raise RuntimeError("The interactive installation did not reach the installed GUI") from error

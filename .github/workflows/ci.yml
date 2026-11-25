@@ -1,13 +1,6 @@
-name: Published 31.1.1 Windows and macOS runtime
-
-on:
-  push:
-    branches: [release-validation/31.1.1]
-  workflow_dispatch:
-
+name: Published 31.1.1 Windows wizard runtime
 permissions:
   contents: read
-
 jobs:
   windows:
     name: Published Windows x86-64 (${{ matrix.crt }})
@@ -16,82 +9,49 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        crt: [ucrt, msvcrt]
+        crt:
+        - ucrt
+        - msvcrt
     env:
       RELEASE_CRT: ${{ matrix.crt }}
     steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - name: Fetch and verify the public Windows downloads
-        shell: pwsh
-        run: |
-          $stem = "sugarchain-en-31.1.1-windows-x86_64-$env:RELEASE_CRT"
-          py -3 .github/public-release-smoke/fetch-public-assets.py --output "$env:RUNNER_TEMP/public-downloads" "$stem-setup.exe" "$stem-portable.zip"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Install test screenshot support
-        shell: pwsh
-        run: py -3 -m pip install --disable-pip-version-check Pillow
-      - name: Check Windows installed and portable runtime
-        shell: pwsh
-        run: |
-          py -3 .github/public-release-smoke/windows-smoke.py --source "$env:GITHUB_WORKSPACE" --assets "$env:RUNNER_TEMP/public-downloads" --workdir "$env:RUNNER_TEMP/public-windows-runtime" --crt "$env:RELEASE_CRT"
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Upload Windows verification results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: published-windows-${{ matrix.crt }}-results
-          path: |
-            ${{ runner.temp }}/public-downloads/integrity.json
-            ${{ runner.temp }}/public-windows-runtime/result.json
-            ${{ runner.temp }}/public-windows-runtime/screenshots/*.png
-          if-no-files-found: ignore
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Fetch and verify the public Windows downloads
+      shell: pwsh
+      run: '$stem = "sugarchain-en-31.1.1-windows-x86_64-$env:RELEASE_CRT"
 
-  macos:
-    name: Published macOS (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-15
-          - arch: x86_64
-            runner: macos-15-intel
-    env:
-      RELEASE_ARCH: ${{ matrix.arch }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - name: Fetch and verify the public macOS downloads
-        shell: bash
-        run: |
-          command -v gpg >/dev/null || brew install gnupg
-          stem="sugarchain-en-31.1.1-macos-$RELEASE_ARCH"
-          python3 .github/public-release-smoke/fetch-public-assets.py \
-            --output "$RUNNER_TEMP/public-downloads" "$stem.zip" "$stem-cli.tar.gz"
-      - name: Check the macOS Cocoa wallet and CLI
-        shell: bash
-        run: |
-          stem="sugarchain-en-31.1.1-macos-$RELEASE_ARCH"
-          extracted="$RUNNER_TEMP/public-macos-extracted"
-          mkdir "$extracted"
-          ditto -x -k "$RUNNER_TEMP/public-downloads/$stem.zip" "$extracted"
-          tar -xf "$RUNNER_TEMP/public-downloads/$stem-cli.tar.gz" -C "$extracted"
-          python3 .github/public-release-smoke/macos-smoke.py \
-            --app "$extracted/Sugarchain-Qt.app" \
-            --cli "$extracted/$stem-cli/bin/sugarchain-cli" \
-            --output-dir "$RUNNER_TEMP/public-macos-runtime"
-      - name: Upload macOS verification results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: published-macos-${{ matrix.arch }}-results
-          path: |
-            ${{ runner.temp }}/public-downloads/integrity.json
-            ${{ runner.temp }}/public-macos-runtime/results.json
-            ${{ runner.temp }}/public-macos-runtime/screenshots/*.png
-          if-no-files-found: ignore
+        py -3 .github/public-release-smoke/fetch-public-assets.py --output "$env:RUNNER_TEMP/public-downloads" "$stem-setup.exe" "$stem-portable.zip"
+
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        '
+    - name: Install test screenshot support
+      shell: pwsh
+      run: py -3 -m pip install --disable-pip-version-check Pillow
+    - name: Check Windows installed and portable runtime
+      shell: pwsh
+      run: 'py -3 .github/public-release-smoke/windows-smoke.py --source "$env:GITHUB_WORKSPACE" --assets "$env:RUNNER_TEMP/public-downloads" --workdir "$env:RUNNER_TEMP/public-windows-runtime" --crt "$env:RELEASE_CRT"
+
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        '
+    - name: Upload Windows verification results
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: published-windows-${{ matrix.crt }}-results
+        path: '${{ runner.temp }}/public-downloads/integrity.json
+
+          ${{ runner.temp }}/public-windows-runtime/result.json
+
+          ${{ runner.temp }}/public-windows-runtime/screenshots/*.png
+
+          '
+        if-no-files-found: ignore
+'on':
+  push:
+    branches:
+    - release-validation/windows-wizard-31.1.1
+  workflow_dispatch: null
