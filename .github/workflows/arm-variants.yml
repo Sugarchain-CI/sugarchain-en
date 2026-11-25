@@ -1,0 +1,36 @@
+name: Apple Silicon Yespower variant comparison
+on:
+  push:
+    branches: [automation/en7-arm-variants]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  compare:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Check out diagnostic inputs
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check out the baseline crypto source
+        uses: actions/checkout@v6
+        with:
+          repository: decryp2kanon/sugarchain-en
+          ref: 8400a011d8d4879fb606d50c263b6e4801213605
+          path: source
+          persist-credentials: false
+          sparse-checkout: |
+            src/crypto/yespower-1.0.1
+      - name: Compare actual fixture proofs
+        shell: bash
+        run: bash diagnostics/run-variants.sh "$GITHUB_WORKSPACE/source" "$GITHUB_WORKSPACE/candidate.patch" "$RUNNER_TEMP/arm-variants"
+      - name: Save timing and differential evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: arm-variants-comparison
+          path: ${{ runner.temp }}/arm-variants/evidence
+          if-no-files-found: error
+          retention-days: 14
