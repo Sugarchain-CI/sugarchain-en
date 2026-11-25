@@ -1,5 +1,5 @@
 diff --git a/src/node/blockstorage.cpp b/src/node/blockstorage.cpp
-index 6768e0ced6..e6df032ad1 100644
+index 3f9c639560..f63cf51066 100644
 --- a/src/node/blockstorage.cpp
 +++ b/src/node/blockstorage.cpp
 @@ -3,6 +3,7 @@
@@ -33,7 +33,23 @@ index 6768e0ced6..e6df032ad1 100644
      }
      return true;
  }
-@@ -1636,6 +1642,8 @@ bool BlockManager::FindUndoPos(BlockValidationState& state, int nFile, FlatFileP
+@@ -1451,6 +1457,15 @@ bool BlockManager::WriteFileCache::Keep(AutoFile& file, int file_num)
+ #endif
+     m_file = file.release();
+     m_file_num = file_num;
++#if defined(__x86_64__) && defined(__APPLE__)
++    static thread_local unsigned keep_calls{0};
++    ++keep_calls;
++    if (keep_calls <= 8 || keep_calls == 10000 || keep_calls == 20000) {
++        LogInfo("NATIVEFILE keep_calls=%u fd=%d buffer=%d flags=%04x added_bytes=%u logical_pos=%d", keep_calls,
++            ::fileno(m_file), m_file->_bf._size, static_cast<unsigned>(static_cast<unsigned short>(m_file->_flags)),
++            added, m_file_pos.value_or(-1));
++    }
++#endif
+ #if defined(__APPLE__) && defined(__x86_64__)
+     if (std::ferror(m_file)) RecordError();
+     if (m_write_error || m_pending_bytes >= MAX_PENDING_BYTES) return Flush();
+@@ -1641,6 +1656,8 @@ bool BlockManager::FindUndoPos(BlockValidationState& state, int nFile, FlatFileP
  
  bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationState& state, CBlockIndex& block)
  {
@@ -42,7 +58,7 @@ index 6768e0ced6..e6df032ad1 100644
      AssertLockHeld(::cs_main);
      const BlockfileType type = BlockfileTypeForHeight(block.nHeight);
  #if defined(WIN32) || defined(__APPLE__)
-@@ -1645,21 +1653,27 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+@@ -1650,25 +1667,33 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
      auto& cursor = *Assert(WITH_LOCK(cs_LastBlockFile, return m_blockfile_cursors[type]));
  #endif
  
@@ -70,16 +86,41 @@ index 6768e0ced6..e6df032ad1 100644
          if (file.IsNull()) {
              LogError("OpenUndoFile failed for %s while writing block undo", pos.ToString());
              return FatalError(m_opts.notifications, state, _("Failed to write undo data."));
-@@ -1698,6 +1712,8 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+         }
++        static thread_local IntelStageTotals<4> fine_totals{"undorecord", {"allocation", "serialize", "write", "destruct"}};
++        IntelStageScope fine{fine_totals};
+ #if defined(__APPLE__) && defined(__x86_64__)
+         try
+ #endif
+@@ -1679,6 +1704,7 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+ #else
+             BufferedWriter fileout{file};
+ #endif
++            fine.Mark(0);
+ 
+             // Write index header
+             fileout << GetParams().MessageStart() << blockundo_size;
+@@ -1691,7 +1717,9 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+                 fileout << blockundo << hasher.GetHash();
+             }
+ #if defined(__APPLE__) && defined(__x86_64__)
++            fine.Mark(1);
+             fileout.flush();
++            fine.Mark(2);
+ #endif
+             // BufferedWriter will flush pending data to file when fileout goes out of scope.
+         }
+@@ -1703,6 +1731,9 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
          }
  #endif
  
++        fine.Mark(3);
 +        profile.Mark(4);
 +
  #if defined(WIN32) || defined(__APPLE__)
          if (!m_undo_writer.Keep(file, pos.nFile)) {
              LogError("Failed to flush block undo file %s: %s", pos.ToString(), SysErrorString(errno));
-@@ -1711,6 +1727,8 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+@@ -1716,6 +1747,8 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
          }
  #endif
  
@@ -88,7 +129,7 @@ index 6768e0ced6..e6df032ad1 100644
          // rev files are written in block height order, whereas blk files are written as blocks come in (often out of order)
          // we want to flush the rev (undo) file once we've written the last block, which is indicated by the last height
          // in the block file info as below; note that this does not catch the case where the undo writes are keeping up
-@@ -1737,6 +1755,7 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+@@ -1742,6 +1775,7 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
          m_dirty_blockindex.insert(&block);
      }
  
@@ -96,7 +137,7 @@ index 6768e0ced6..e6df032ad1 100644
      return true;
  }
  
-@@ -1906,11 +1925,16 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
+@@ -1911,11 +1945,16 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
  
  FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
  {
@@ -113,7 +154,7 @@ index 6768e0ced6..e6df032ad1 100644
      if (pos.IsNull()) {
          LogError("FindNextBlockPos failed for %s while writing block", pos.ToString());
          return FlatFilePos();
-@@ -1920,6 +1944,7 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
+@@ -1925,11 +1964,14 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
  #else
      AutoFile file{OpenBlockFile(pos, /*fReadOnly=*/false)};
  #endif
@@ -121,16 +162,42 @@ index 6768e0ced6..e6df032ad1 100644
      if (file.IsNull()) {
          LogError("OpenBlockFile failed for %s while writing block", pos.ToString());
          m_opts.notifications.fatalError(_("Failed to write block."));
-@@ -1952,6 +1977,8 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
+         return FlatFilePos();
+     }
++    static thread_local IntelStageTotals<4> fine_totals{"blockrecord", {"allocation", "serialize", "write", "destruct"}};
++    IntelStageScope fine{fine_totals};
+ #if defined(__APPLE__) && defined(__x86_64__)
+     try
+ #endif
+@@ -1939,6 +1981,7 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
+ #else
+         BufferedWriter fileout{file};
+ #endif
++        fine.Mark(0);
+ 
+         // Write index header
+         fileout << GetParams().MessageStart() << block_size;
+@@ -1946,7 +1989,9 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
+         // Write block
+         fileout << TX_WITH_WITNESS(block);
+ #if defined(__APPLE__) && defined(__x86_64__)
++        fine.Mark(1);
+         fileout.flush();
++        fine.Mark(2);
+ #endif
+     }
+ 
+@@ -1957,6 +2002,9 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
      }
  #endif
  
++    fine.Mark(3);
 +    profile.Mark(4);
 +
  #if defined(WIN32) || defined(__APPLE__)
      if (!m_block_writer.Keep(file, pos.nFile)) {
          LogError("Failed to flush block file %s: %s", pos.ToString(), SysErrorString(errno));
-@@ -1966,6 +1993,7 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
+@@ -1971,6 +2019,7 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
      }
  #endif
  
@@ -138,6 +205,40 @@ index 6768e0ced6..e6df032ad1 100644
      return pos;
  }
  
+diff --git a/src/streams.cpp b/src/streams.cpp
+index e38b959294..d72a6f53df 100644
+--- a/src/streams.cpp
++++ b/src/streams.cpp
+@@ -5,6 +5,7 @@
+ #include <memusage.h>
+ #include <span.h>
+ #include <streams.h>
++#include <util/intel_stage_profile.h>
+ #include <util/fs_helpers.h>
+ #include <util/obfuscation.h>
+ 
+@@ -114,16 +115,21 @@ void AutoFile::write(std::span<const std::byte> src)
+ 
+ void AutoFile::write_buffer(std::span<std::byte> src)
+ {
++    static thread_local IntelStageTotals<3> profile_totals{"autofilewrite", {"xor", "fwrite", "offset"}};
++    IntelStageScope profile{profile_totals};
+     if (!m_file) throw std::ios_base::failure("AutoFile::write_buffer: file handle is nullptr");
+     if (m_obfuscation) {
+         if (!m_position) throw std::ios_base::failure("AutoFile::write_buffer: obfuscation position unknown");
+         m_obfuscation(src, *m_position); // obfuscate in-place
+     }
++    profile.Mark(0);
+     if (std::fwrite(src.data(), 1, src.size(), m_file) != src.size()) {
+         throw std::ios_base::failure("AutoFile::write_buffer: write failed");
+     }
++    profile.Mark(1);
+     m_was_written = true;
+     if (m_position) *m_position += src.size();
++    profile.Mark(2);
+ }
+ 
+ bool AutoFile::Commit()
 diff --git a/src/util/intel_stage_profile.h b/src/util/intel_stage_profile.h
 new file mode 100644
 index 0000000000..0e8667b31a
@@ -605,3 +706,81 @@ index 720ae2a375..f3231133ca 100644
      return true;
  }
  
+
+diff --git a/src/txgraph.cpp b/src/txgraph.cpp
+index ca12bca6f4..c375e852ea 100644
+--- a/src/txgraph.cpp
++++ b/src/txgraph.cpp
+@@ -3,6 +3,7 @@
+ // file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ 
+ #include <txgraph.h>
++#include <util/intel_stage_profile.h>
+ 
+ #include <cluster_linearize.h>
+ #include <random.h>
+@@ -3112,6 +3113,8 @@ void TxGraphImpl::SanityCheck() const
+ 
+ bool TxGraphImpl::DoWork(uint64_t max_cost) noexcept
+ {
++    static thread_local IntelStageTotals<2> profile_totals{"graphwork", {"dependencies", "linearize"}};
++    IntelStageScope profile{profile_totals};
+     uint64_t cost_done{0};
+     // First linearize everything in NEEDS_RELINEARIZE to an acceptable level. If more budget
+     // remains after that, try to make everything optimal.
+@@ -3121,6 +3124,7 @@ bool TxGraphImpl::DoWork(uint64_t max_cost) noexcept
+             // Do not modify main if it has any observers.
+             if (level == 0 && m_main_chunkindex_observers != 0) continue;
+             ApplyDependencies(level);
++            profile.Mark(0);
+             auto& clusterset = GetClusterSet(level);
+             // Do not modify oversized levels.
+             if (clusterset.m_oversized == true) continue;
+@@ -3148,6 +3152,7 @@ bool TxGraphImpl::DoWork(uint64_t max_cost) noexcept
+                 // stop here too.
+                 if (!improved) return false;
+             }
++            profile.Mark(1);
+         }
+     }
+     // All possible work has been performed, so we can return true. Note that this does *not* mean
+diff --git a/src/txmempool.cpp b/src/txmempool.cpp
+index bfff181683..45a836a8a1 100644
+--- a/src/txmempool.cpp
++++ b/src/txmempool.cpp
+@@ -16,6 +16,7 @@
+ #include <random.h>
+ #include <tinyformat.h>
+ #include <util/check.h>
++#include <util/intel_stage_profile.h>
+ #include <util/feefrac.h>
+ #include <util/log.h>
+ #include <util/moneystr.h>
+@@ -404,6 +405,8 @@ void CTxMemPool::removeConflicts(const CTransaction &tx)
+ 
+ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight)
+ {
++    static thread_local IntelStageTotals<4> profile_totals{"removeforblock", {"scan", "signal", "clock", "graph"}};
++    IntelStageScope profile{profile_totals};
+     // Remove confirmed txs and conflicts when a new block is connected, updating the fee logic
+     AssertLockHeld(cs);
+     Assume(!m_have_changeset);
+@@ -420,14 +423,18 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigne
+             ClearPrioritisation(tx->GetHash());
+         }
+     }
++    profile.Mark(0);
+     if (m_opts.signals) {
+         m_opts.signals->MempoolTransactionsRemovedForBlock(txs_removed_for_block, nBlockHeight);
+     }
++    profile.Mark(1);
+     lastRollingFeeUpdate = GetTime();
+     blockSinceLastRollingFeeBump = true;
++    profile.Mark(2);
+     if (!m_txgraph->DoWork(/*max_cost=*/POST_CHANGE_COST)) {
+         LogDebug(BCLog::MEMPOOL, "Mempool in non-optimal ordering after block.");
+     }
++    profile.Mark(3);
+ }
+ 
+ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendheight) const

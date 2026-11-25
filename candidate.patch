@@ -1,3 +1,61 @@
+diff --git a/src/flatfile.cpp b/src/flatfile.cpp
+index e83fc156bf..4a076f19b4 100644
+--- a/src/flatfile.cpp
++++ b/src/flatfile.cpp
+@@ -31,7 +31,16 @@ fs::path FlatFileSeq::FileName(const FlatFilePos& pos) const
+     return m_dir / fs::u8path(strprintf("%s%05u.dat", m_prefix, pos.nFile));
+ }
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
+ FILE* FlatFileSeq::Open(const FlatFilePos& pos, bool read_only) const
++{
++    return Open(pos, read_only, {});
++}
++
++FILE* FlatFileSeq::Open(const FlatFilePos& pos, bool read_only, std::span<char> buffer) const
++#else
++FILE* FlatFileSeq::Open(const FlatFilePos& pos, bool read_only) const
++#endif
+ {
+     if (pos.IsNull()) {
+         return nullptr;
+@@ -48,6 +57,13 @@ FILE* FlatFileSeq::Open(const FlatFilePos& pos, bool read_only) const
+         LogError("Unable to open file %s", fs::PathToString(path));
+         return nullptr;
+     }
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (!buffer.empty() && std::setvbuf(file, buffer.data(), _IOFBF, buffer.size()) != 0) {
++        LogError("Unable to configure buffered file %s", fs::PathToString(path));
++        if (std::fclose(file) != 0) LogError("Unable to close file %s", fs::PathToString(path));
++        return nullptr;
++    }
++#endif
+     if (pos.nPos && fseek(file, pos.nPos, SEEK_SET)) {
+         LogError("Unable to seek to position %u of %s", pos.nPos, fs::PathToString(path));
+         if (fclose(file) != 0) {
+diff --git a/src/flatfile.h b/src/flatfile.h
+index 6cdf22ffab..d15e9bc6d2 100644
+--- a/src/flatfile.h
++++ b/src/flatfile.h
+@@ -6,6 +6,7 @@
+ #ifndef BITCOIN_FLATFILE_H
+ #define BITCOIN_FLATFILE_H
+ 
++#include <span>
+ #include <string>
+ 
+ #include <serialize.h>
+@@ -60,6 +61,10 @@ public:
+ 
+     /** Open a handle to the file at the given position. */
+     FILE* Open(const FlatFilePos& pos, bool read_only = false) const;
++#if defined(__APPLE__) && defined(__x86_64__)
++    /** Configure a caller-owned buffer before any stream I/O or seeking. */
++    FILE* Open(const FlatFilePos& pos, bool read_only, std::span<char> buffer) const;
++#endif
+ 
+     /**
+      * Allocate additional space in a file after the given starting position. The amount allocated
 diff --git a/src/init.cpp b/src/init.cpp
 index 489288037f..6815285b72 100644
 --- a/src/init.cpp
@@ -125,7 +183,7 @@ index 96a171736e..041f63d6e5 100644
      /**
       * Cap on the size of `m_unused_i2p_sessions`, to ensure it does not
 diff --git a/src/node/blockstorage.cpp b/src/node/blockstorage.cpp
-index 80d356384c..6768e0ced6 100644
+index 80d356384c..3f9c639560 100644
 --- a/src/node/blockstorage.cpp
 +++ b/src/node/blockstorage.cpp
 @@ -31,6 +31,7 @@
@@ -215,7 +273,7 @@ index 80d356384c..6768e0ced6 100644
  #endif
          FlatFilePos pos(*it, 0);
          const bool removed_blockfile{fs::remove(m_block_file_seq.FileName(pos), ec)};
-@@ -1293,36 +1329,128 @@ BlockManager::WriteFileCache::~WriteFileCache()
+@@ -1293,36 +1329,133 @@ BlockManager::WriteFileCache::~WriteFileCache()
      (void)Close();
  }
  
@@ -317,8 +375,13 @@ index 80d356384c..6768e0ced6 100644
      if (!Close()) return AutoFile{nullptr};
 +#if defined(__APPLE__) && defined(__x86_64__)
 +    m_file_pos = pos.nPos;
-+#endif
++    if (!m_stdio_buffer) m_stdio_buffer = std::make_unique_for_overwrite<char[]>(MAX_PENDING_BYTES);
++    auto* opened{sequence.Open(pos, /*read_only=*/false, {m_stdio_buffer.get(), MAX_PENDING_BYTES})};
++    if (!opened) RecordError();
++    return AutoFile{opened, obfuscation};
++#else
      return AutoFile{sequence.Open(pos), obfuscation};
++#endif
  }
  
  bool BlockManager::WriteFileCache::Keep(AutoFile& file, int file_num)
@@ -344,7 +407,7 @@ index 80d356384c..6768e0ced6 100644
      // Publish bytes to other handles before exposing the record's index.
      // The block manager still commits them to disk at the usual flush points.
      if (std::fflush(m_file) == 0) return true;
-@@ -1330,17 +1458,36 @@ bool BlockManager::WriteFileCache::Keep(AutoFile& file, int file_num)
+@@ -1330,17 +1463,36 @@ bool BlockManager::WriteFileCache::Keep(AutoFile& file, int file_num)
      (void)Close();
      errno = write_error;
      return false;
@@ -381,7 +444,7 @@ index 80d356384c..6768e0ced6 100644
      return AutoFile{m_undo_file_seq.Open(pos, fReadOnly), m_obfuscation};
  }
  
-@@ -1417,6 +1564,10 @@ FlatFilePos BlockManager::FindNextBlockPos(unsigned int nAddSize, unsigned int n
+@@ -1417,6 +1569,10 @@ FlatFilePos BlockManager::FindNextBlockPos(unsigned int nAddSize, unsigned int n
              LogWarning(
                            "Failed to flush previous block file %05i (finalize=1, finalize_undo=%i) before opening new block file %05i\n",
                            last_blockfile, finalize_undo, nFile);
@@ -392,7 +455,7 @@ index 80d356384c..6768e0ced6 100644
          }
          // No undo data yet in the new file, so reset our undo-height tracking.
          m_blockfile_cursors[chain_type] = BlockfileCursor{nFile};
-@@ -1513,8 +1664,16 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+@@ -1513,8 +1669,16 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
              LogError("OpenUndoFile failed for %s while writing block undo", pos.ToString());
              return FatalError(m_opts.notifications, state, _("Failed to write undo data."));
          }
@@ -409,7 +472,7 @@ index 80d356384c..6768e0ced6 100644
  
              // Write index header
              fileout << GetParams().MessageStart() << blockundo_size;
-@@ -1526,9 +1685,19 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+@@ -1526,9 +1690,19 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
                  // Write undo data & checksum
                  fileout << blockundo << hasher.GetHash();
              }
@@ -429,7 +492,7 @@ index 80d356384c..6768e0ced6 100644
  #if defined(WIN32) || defined(__APPLE__)
          if (!m_undo_writer.Keep(file, pos.nFile)) {
              LogError("Failed to flush block undo file %s: %s", pos.ToString(), SysErrorString(errno));
-@@ -1555,6 +1724,9 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+@@ -1555,6 +1729,9 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
              // file untrimmed.
              if (!FlushUndoFile(pos.nFile, true)) {
                  LogWarning("Failed to flush undo file %05i\n", pos.nFile);
@@ -439,7 +502,7 @@ index 80d356384c..6768e0ced6 100644
              }
          } else if (pos.nFile == cursor.file_num && block.nHeight > cursor.undo_height) {
              cursor.undo_height = block.nHeight;
-@@ -1629,17 +1801,70 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
+@@ -1629,17 +1806,70 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
          LogError("Failed for %s while reading raw block storage header", pos.ToString());
          return util::Unexpected{ReadRawError::IO};
      }
@@ -510,7 +573,7 @@ index 80d356384c..6768e0ced6 100644
  
          if (blk_start != GetParams().MessageStart()) {
              LogError("Block magic mismatch for %s: %s versus expected %s while reading raw block",
-@@ -1658,12 +1883,20 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
+@@ -1658,12 +1888,20 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
              if (size == 0 || SaturatingAdd(offset, size) > blk_size) {
                  return util::Unexpected{ReadRawError::BadPartRange}; // Avoid logging - offset/size come from untrusted REST input
              }
@@ -531,7 +594,7 @@ index 80d356384c..6768e0ced6 100644
          return data;
      } catch (const std::exception& e) {
          LogError("Read from block file failed: %s for %s while reading raw block", e.what(), pos.ToString());
-@@ -1692,16 +1925,33 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
+@@ -1692,16 +1930,33 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
          m_opts.notifications.fatalError(_("Failed to write block."));
          return FlatFilePos();
      }
@@ -566,7 +629,7 @@ index 80d356384c..6768e0ced6 100644
      if (!m_block_writer.Keep(file, pos.nFile)) {
          LogError("Failed to flush block file %s: %s", pos.ToString(), SysErrorString(errno));
 diff --git a/src/node/blockstorage.h b/src/node/blockstorage.h
-index 21d11decc0..ffa91c041c 100644
+index 21d11decc0..17d4e58fee 100644
 --- a/src/node/blockstorage.h
 +++ b/src/node/blockstorage.h
 @@ -207,6 +207,9 @@ class BlockManager
@@ -579,7 +642,7 @@ index 21d11decc0..ffa91c041c 100644
  
  private:
      const CChainParams& GetParams() const { return m_opts.chainparams; }
-@@ -241,11 +244,21 @@ private:
+@@ -241,11 +244,23 @@ private:
      AutoFile OpenUndoFile(const FlatFilePos& pos, bool fReadOnly = false) const;
  
  #if defined(WIN32) || defined(__APPLE__)
@@ -595,6 +658,8 @@ index 21d11decc0..ffa91c041c 100644
 +#if defined(__APPLE__) && defined(__x86_64__)
 +        friend struct BlockManagerTestAccess;
 +        static constexpr size_t MAX_PENDING_BYTES{64 * 1024};
++        // Outlives the FILE stream, which Close() releases before destruction.
++        std::unique_ptr<char[]> m_stdio_buffer;
 +        size_t m_pending_bytes{0};
 +        bool m_needs_commit{false};
 +        int m_write_error{0};
@@ -602,7 +667,7 @@ index 21d11decc0..ffa91c041c 100644
  
      public:
          WriteFileCache() = default;
-@@ -255,12 +268,23 @@ private:
+@@ -255,12 +270,23 @@ private:
          AutoFile Open(const FlatFileSeq& sequence, const FlatFilePos& pos, const Obfuscation& obfuscation);
          [[nodiscard]] bool Keep(AutoFile& file, int file_num);
          [[nodiscard]] bool Close(int file_num = -1);
@@ -1065,7 +1130,7 @@ index f70adcf74a..8c387cd087 100644
  
      void write(std::span<const std::byte> src)
 diff --git a/src/test/blockmanager_tests.cpp b/src/test/blockmanager_tests.cpp
-index dfaf9ac880..649950abb1 100644
+index dfaf9ac880..64a00d4580 100644
 --- a/src/test/blockmanager_tests.cpp
 +++ b/src/test/blockmanager_tests.cpp
 @@ -15,6 +15,11 @@
@@ -1080,7 +1145,7 @@ index dfaf9ac880..649950abb1 100644
  
  #include <algorithm>
  #include <array>
-@@ -34,6 +39,49 @@ using node::BlockManager;
+@@ -34,6 +39,54 @@ using node::BlockManager;
  using node::KernelNotifications;
  using node::MAX_BLOCKFILE_SIZE;
  
@@ -1117,20 +1182,25 @@ index dfaf9ac880..649950abb1 100644
 +
 +struct BufferedBlockStorageSetup : BasicTestingSetup {
 +    KernelNotifications notifications{Assert(m_node.shutdown_request), m_node.exit_status, *Assert(m_node.warnings)};
-+    BlockManager blockman{*Assert(m_node.shutdown_signal), {
-+        .chainparams = Params(),
-+        .fast_prune = true,
-+        .blocks_dir = m_args.GetBlocksDirPath(),
-+        .notifications = notifications,
-+        .block_tree_db_params = {.path = m_args.GetDataDirNet() / "buffered-index", .cache_bytes = 0},
-+    }};
++    BlockManager blockman;
++    explicit BufferedBlockStorageSetup(bool fast_prune = true)
++        : blockman{*Assert(m_node.shutdown_signal), {
++              .chainparams = Params(),
++              .fast_prune = fast_prune,
++              .blocks_dir = m_args.GetBlocksDirPath(),
++              .notifications = notifications,
++              .block_tree_db_params = {.path = m_args.GetDataDirNet() / "buffered-index", .cache_bytes = 0},
++          }} {}
++};
++struct LargeFileBufferedBlockStorageSetup : BufferedBlockStorageSetup {
++    LargeFileBufferedBlockStorageSetup() : BufferedBlockStorageSetup(false) {}
 +};
 +#endif
 +
  // use BasicTestingSetup here for the data directory configuration, setup, and cleanup
  BOOST_FIXTURE_TEST_SUITE(blockmanager_tests, BasicTestingSetup)
  
-@@ -629,4 +677,164 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file)
+@@ -629,4 +682,182 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file)
      }
  }
  
@@ -1216,7 +1286,7 @@ index dfaf9ac880..649950abb1 100644
 +    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
 +}
 +
-+BOOST_FIXTURE_TEST_CASE(buffered_write_exception_is_sticky, BufferedBlockStorageSetup)
++BOOST_FIXTURE_TEST_CASE(buffered_write_exception_is_sticky, LargeFileBufferedBlockStorageSetup)
 +{
 +    CBlock block;
 +    const auto first{blockman.WriteBlock(block, 1)};
@@ -1224,13 +1294,31 @@ index dfaf9ac880..649950abb1 100644
 +    node::BlockManagerTestAccess::MakeReadOnly(blockman, blockman.GetBlockPosFilename(first));
 +    CMutableTransaction tx;
 +    tx.vin.resize(1);
-+    tx.vin[0].scriptSig.resize(16 * 1024);
++    tx.vin[0].scriptSig.resize(128 * 1024);
 +    block.vtx.push_back(MakeTransactionRef(tx));
 +    // A large explicit serialization flush fails before Keep(), without rotating.
 +    BOOST_CHECK_THROW(blockman.WriteBlock(block, 2), std::ios_base::failure);
 +    LOCK(cs_main);
 +    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
 +    BOOST_CHECK(!node::BlockManagerTestAccess::Close(blockman));
++}
++
++BOOST_FIXTURE_TEST_CASE(buffered_large_record_is_readable, LargeFileBufferedBlockStorageSetup)
++{
++    CBlock block;
++    CMutableTransaction tx;
++    tx.vin.resize(1);
++    tx.vin[0].scriptSig.resize(96 * 1024);
++    block.vtx.push_back(MakeTransactionRef(tx));
++    const auto pos{blockman.WriteBlock(block, 1)};
++    BOOST_REQUIRE(!pos.IsNull());
++    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::Pending(blockman), 0U);
++    const auto raw{blockman.ReadRawBlock(pos)};
++    BOOST_REQUIRE(raw);
++    CBlock read;
++    SpanReader{*raw} >> TX_WITH_WITNESS(read);
++    BOOST_REQUIRE_EQUAL(read.vtx.size(), 1U);
++    BOOST_CHECK(read.vtx[0]->GetHash() == block.vtx[0]->GetHash());
 +}
 +
 +BOOST_FIXTURE_TEST_CASE(buffered_rotation_and_pruning, BufferedBlockStorageSetup)
@@ -1342,18 +1430,20 @@ index 188c975d9c..df9702acea 100644
  {
      // test default
 diff --git a/src/test/policyestimator_tests.cpp b/src/test/policyestimator_tests.cpp
-index d13a0d1ebf..05687021d4 100644
+index d13a0d1ebf..f3c7db9361 100644
 --- a/src/test/policyestimator_tests.cpp
 +++ b/src/test/policyestimator_tests.cpp
-@@ -6,6 +6,7 @@
+@@ -5,7 +5,9 @@
+ #include <policy/fees/block_policy_estimator.h>
  #include <policy/fees/block_policy_estimator_args.h>
  #include <policy/policy.h>
++#include <scheduler.h>
  #include <test/util/txmempool.h>
 +#include <streams.h>
  #include <txmempool.h>
  #include <uint256.h>
  #include <util/time.h>
-@@ -15,6 +16,8 @@
+@@ -15,6 +17,8 @@
  
  #include <boost/test/unit_test.hpp>
  
@@ -1362,7 +1452,7 @@ index d13a0d1ebf..05687021d4 100644
  BOOST_FIXTURE_TEST_SUITE(policyestimator_tests, ChainTestingSetup)
  
  BOOST_AUTO_TEST_CASE(BlockPolicyEstimates)
-@@ -262,4 +265,78 @@ BOOST_AUTO_TEST_CASE(BlockPolicyEstimates)
+@@ -262,4 +266,83 @@ BOOST_AUTO_TEST_CASE(BlockPolicyEstimates)
      }
  }
  
@@ -1376,6 +1466,10 @@ index d13a0d1ebf..05687021d4 100644
 +    const auto path{FeeestPath(*m_node.args).parent_path() / "pristine-fee-estimates.dat"};
 +    Estimator fresh{path, true};
 +    Estimator loaded{path, true};
++    CScheduler scheduler;
++    ValidationSignals signals{std::make_unique<SerialTaskRunner>(scheduler)};
++    signals.RegisterValidationInterface(&fresh);
++    signals.RegisterValidationInterface(&loaded);
 +    const auto snapshot = [](const CBlockPolicyEstimator& estimator) {
 +        AutoFile file{std::tmpfile()};
 +        BOOST_REQUIRE(!file.IsNull());
@@ -1405,9 +1499,9 @@ index d13a0d1ebf..05687021d4 100644
 +    // The deserialized estimator takes the normal update path even when zero.
 +    restore(loaded, fresh);
 +    for (unsigned height{1}; height <= 256; ++height) {
-+        fresh.MempoolTransactionsRemovedForBlock({}, height);
-+        loaded.MempoolTransactionsRemovedForBlock({}, height);
++        signals.MempoolTransactionsRemovedForBlock({}, height);
 +    }
++    signals.FlushBackgroundCallbacks();
 +    equal(true);
 +
 +    CMutableTransaction tx;
@@ -1433,11 +1527,12 @@ index d13a0d1ebf..05687021d4 100644
 +
 +    restore(loaded, fresh);
 +    for (unsigned height{337}; height <= 400; ++height) {
-+        fresh.MempoolTransactionsRemovedForBlock({}, height);
-+        loaded.MempoolTransactionsRemovedForBlock({}, height);
++        signals.MempoolTransactionsRemovedForBlock({}, height);
 +    }
++    signals.FlushBackgroundCallbacks();
 +    equal(false);
 +    BOOST_CHECK_EQUAL(fresh.estimateFee(2).GetFeePerK(), loaded.estimateFee(2).GetFeePerK());
++    signals.UnregisterAllValidationInterfaces();
 +}
 +
  BOOST_AUTO_TEST_SUITE_END()
@@ -1670,6 +1765,80 @@ index fd29792193..0dfd1f7d90 100644
      void SetMsgProc(NetEventsInterface* msgproc)
      {
          m_msgproc = msgproc;
+diff --git a/src/test/validationinterface_tests.cpp b/src/test/validationinterface_tests.cpp
+index 08b6d94eaa..3a30d7ff2b 100644
+--- a/src/test/validationinterface_tests.cpp
++++ b/src/test/validationinterface_tests.cpp
+@@ -4,9 +4,11 @@
+ 
+ #include <boost/test/unit_test.hpp>
+ #include <consensus/validation.h>
++#include <kernel/mempool_entry.h>
+ #include <primitives/block.h>
+ #include <scheduler.h>
+ #include <test/util/setup_common.h>
++#include <test/util/txmempool.h>
+ #include <util/check.h>
+ #include <validationinterface.h>
+ 
+@@ -99,4 +101,57 @@ BOOST_AUTO_TEST_CASE(unregister_all_during_call)
+     BOOST_CHECK(destroyed);
+ }
+ 
++BOOST_AUTO_TEST_CASE(queued_empty_removals_preserve_fifo_and_registration)
++{
++    struct Subscriber final : CValidationInterface {
++        std::vector<std::pair<unsigned, std::vector<Txid>>> received;
++        void MempoolTransactionsRemovedForBlock(const std::vector<RemovedMempoolTransactionInfo>& removed, unsigned height) override
++        {
++            std::vector<Txid> txids;
++            for (const auto& tx : removed) txids.push_back(tx.info.m_tx->GetHash());
++            received.emplace_back(height, std::move(txids));
++        }
++    };
++    CScheduler scheduler;
++    ValidationSignals signals{std::make_unique<SerialTaskRunner>(scheduler)};
++    auto early{std::make_shared<Subscriber>()};
++    auto late{std::make_shared<Subscriber>()};
++    signals.RegisterSharedValidationInterface(early);
++    for (unsigned height{1}; height <= 16; ++height) {
++        signals.MempoolTransactionsRemovedForBlock({}, height);
++    }
++    CMutableTransaction tx;
++    tx.vin.resize(1);
++    tx.vout.resize(1);
++    const auto ref{MakeTransactionRef(tx)};
++    TestMemPoolEntryHelper entry;
++    std::vector<RemovedMempoolTransactionInfo> removed;
++    removed.emplace_back(entry.Fee(2000).Height(16).FromTx(ref));
++    signals.MempoolTransactionsRemovedForBlock(removed, 17);
++    removed.clear(); // Nonempty notifications must retain their payload.
++    bool reached_barrier{false};
++    signals.CallFunctionInValidationInterfaceQueue([&] {
++        reached_barrier = early->received.size() == 17 && late->received.size() == 17;
++        signals.UnregisterSharedValidationInterface(early);
++    });
++    signals.MempoolTransactionsRemovedForBlock({}, 18);
++    // Registration is observed when the callback executes, as for other events.
++    signals.RegisterSharedValidationInterface(late);
++    BOOST_CHECK(early->received.empty());
++    BOOST_CHECK(late->received.empty());
++    BOOST_CHECK_EQUAL(signals.CallbacksPending(), 19U);
++    signals.FlushBackgroundCallbacks();
++    BOOST_CHECK(reached_barrier);
++    BOOST_REQUIRE_EQUAL(early->received.size(), 17U);
++    BOOST_REQUIRE_EQUAL(late->received.size(), 18U);
++    for (unsigned i{0}; i < late->received.size(); ++i) {
++        BOOST_CHECK_EQUAL(late->received[i].first, i + 1);
++        BOOST_CHECK_EQUAL(late->received[i].second.size(), i == 16 ? 1U : 0U);
++    }
++    BOOST_CHECK(late->received[16].second.front() == ref->GetHash());
++    BOOST_CHECK(early->received == std::vector(late->received.begin(), late->received.end() - 1));
++    BOOST_CHECK_EQUAL(signals.CallbacksPending(), 0U);
++    signals.UnregisterAllValidationInterfaces();
++}
++
+ BOOST_AUTO_TEST_SUITE_END()
 diff --git a/src/util/task_runner.h b/src/util/task_runner.h
 index 951381823b..448119aa06 100644
 --- a/src/util/task_runner.h
@@ -1764,7 +1933,7 @@ index 93f7993443..720ae2a375 100644
      CheckBlockIndex();
  
 diff --git a/src/validationinterface.cpp b/src/validationinterface.cpp
-index c7be6abc3a..92c2afa1a9 100644
+index c7be6abc3a..4e94481499 100644
 --- a/src/validationinterface.cpp
 +++ b/src/validationinterface.cpp
 @@ -97,7 +97,19 @@ public:
@@ -1804,6 +1973,27 @@ index c7be6abc3a..92c2afa1a9 100644
  // Use a macro instead of a function for conditional logging to prevent
  // evaluating arguments when logging is not enabled.
  //
+@@ -223,6 +245,20 @@ void ValidationSignals::BlockConnected(const ChainstateRole& role, const std::sh
+ 
+ void ValidationSignals::MempoolTransactionsRemovedForBlock(const std::vector<RemovedMempoolTransactionInfo>& txs_removed_for_block, unsigned int nBlockHeight)
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (txs_removed_for_block.empty()) {
++        // Historical blocks still advance fee-estimator heights. Keep every
++        // queued notification, without storing two copies of an empty vector.
++        static constexpr const char* name{__func__};
++        LOG_EVENT("Enqueuing %s: block height=%s txs removed=%s", name, nBlockHeight, 0);
++        m_internals->m_task_runner->insert([this, nBlockHeight] {
++            LOG_EVENT("%s: block height=%s txs removed=%s", name, nBlockHeight, 0);
++            const std::vector<RemovedMempoolTransactionInfo> empty;
++            m_internals->Iterate([&](CValidationInterface& callbacks) { callbacks.MempoolTransactionsRemovedForBlock(empty, nBlockHeight); });
++        });
++        return;
++    }
++#endif
+     auto event = [txs_removed_for_block, nBlockHeight, this] {
+         m_internals->Iterate([&](CValidationInterface& callbacks) { callbacks.MempoolTransactionsRemovedForBlock(txs_removed_for_block, nBlockHeight); });
+     };
 diff --git a/src/validationinterface.h b/src/validationinterface.h
 index 4777e8dca8..d20cb25da5 100644
 --- a/src/validationinterface.h
