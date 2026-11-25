@@ -1,0 +1,32 @@
+name: Apple Silicon hardware SHA-256 comparison
+'on':
+  push:
+    branches:
+    - automation/en7-arm-sha2
+permissions:
+  contents: read
+jobs:
+  proofs:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - uses: actions/checkout@v6
+      with:
+        repository: decryp2kanon/sugarchain-en
+        ref: 37370faaeff1e79898b266848cc76d3e4b1e22ce
+        path: source
+        sparse-checkout: src/crypto/yespower-1.0.1
+        persist-credentials: false
+    - name: Validate and measure the hardware SHA-256 path
+      shell: bash
+      run: bash diagnostics/run.sh "$GITHUB_WORKSPACE/source" "$RUNNER_TEMP/sha-comparison"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: arm-sha2-comparison
+        path: ${{ runner.temp }}/sha-comparison/evidence
+        if-no-files-found: error
+        retention-days: 14
