@@ -1860,7 +1860,7 @@ void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock>&& sock,
         LOCK(m_nodes_mutex);
         m_nodes.push_back(pnode);
     }
-#if defined(__APPLE__) && defined(__x86_64__)
+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
     // A new peer can have outbound handshake work before its first received
     // message. Process it promptly when the node joins the socket set.
     WakeMessageHandler();
@@ -2123,7 +2123,7 @@ void CConnman::SocketHandler()
         // select(2)). If none are ready, wait for a short while and return
         // empty sets.
         events_per_sock = GenerateWaitSockets(snap.Nodes());
-#if defined(__APPLE__) && defined(__x86_64__)
+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
         if (events_per_sock.empty()) {
             WaitForSocketHandler(timeout);
         } else
@@ -2266,7 +2266,7 @@ void CConnman::ThreadSocketHandler()
     }
 }
 
-#if defined(__APPLE__) && defined(__x86_64__)
+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
 void CConnman::WakeSocketHandler()
 {
     {
@@ -3107,7 +3107,7 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect,
         if (pnode->IsManualOrFullOutboundConn()) ++m_network_conn_counts[pnode->addr.GetNetwork()];
     }
 
-#if defined(__APPLE__) && defined(__x86_64__)
+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
     // A new peer can have outbound handshake work before its first received
     // message. Process it promptly when the node joins the socket set.
     WakeMessageHandler();
@@ -3675,7 +3675,7 @@ void CConnman::Interrupt()
     condMsgProc.notify_all();
 
     (*m_interrupt_net)();
-#if defined(__APPLE__) && defined(__x86_64__)
+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
     WakeSocketHandler();
 #endif
     g_socks5_interrupt();

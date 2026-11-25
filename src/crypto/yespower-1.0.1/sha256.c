@@ -29,6 +29,11 @@
 #include <stdint.h>
 #include <string.h>
 
+#if defined(__APPLE__) && defined(__aarch64__) && defined(__ARM_FEATURE_SHA2)
+#include <arm_neon.h>
+#define YESPOWER_APPLE_SHA2
+#endif
+
 #include "insecure_memzero.h"
 #include "sysendian.h"
 
@@ -143,6 +148,48 @@ SHA256_Transform(uint32_t state[SHA256_ARRAY_MIN(8)],
     const uint8_t block[SHA256_ARRAY_MIN(64)],
     uint32_t W[SHA256_ARRAY_MIN(64)], uint32_t S[SHA256_ARRAY_MIN(8)])
 {
+#ifdef YESPOWER_APPLE_SHA2
+	/* Apple Silicon supplies SHA-256 instructions. Preserve the public state
+	 * layout and big-endian message words used by the scalar implementation. */
+	uint32x4_t a = vld1q_u32(state), b = vld1q_u32(state + 4);
+	const uint32x4_t saved_a = a, saved_b = b;
+	uint32x4_t m0 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block)));
+	uint32x4_t m1 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block + 16)));
+	uint32x4_t m2 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block + 32)));
+	uint32x4_t m3 = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(block + 48)));
+	unsigned i;
+	(void)W;
+	(void)S;
+
+#define SHA2_ROUNDS(message, index) { \
+	uint32x4_t wk = vaddq_u32(message, vld1q_u32(Krnd + (index))); \
+	uint32x4_t previous_a = a; \
+	a = vsha256hq_u32(a, b, wk); \
+	b = vsha256h2q_u32(b, previous_a, wk); \
+}
+#define SHA2_SCHEDULE(message, next, third, fourth) \
+	message = vsha256su1q_u32(vsha256su0q_u32(message, next), third, fourth);
+
+	for (i = 0; i < 48; i += 16) {
+		SHA2_ROUNDS(m0, i)
+		SHA2_SCHEDULE(m0, m1, m2, m3)
+		SHA2_ROUNDS(m1, i + 4)
+		SHA2_SCHEDULE(m1, m2, m3, m0)
+		SHA2_ROUNDS(m2, i + 8)
+		SHA2_SCHEDULE(m2, m3, m0, m1)
+		SHA2_ROUNDS(m3, i + 12)
+		SHA2_SCHEDULE(m3, m0, m1, m2)
+	}
+	SHA2_ROUNDS(m0, 48)
+	SHA2_ROUNDS(m1, 52)
+	SHA2_ROUNDS(m2, 56)
+	SHA2_ROUNDS(m3, 60)
+#undef SHA2_SCHEDULE
+#undef SHA2_ROUNDS
+
+	vst1q_u32(state, vaddq_u32(a, saved_a));
+	vst1q_u32(state + 4, vaddq_u32(b, saved_b));
+#else
 	int i;
 
 	/* 1. Prepare the first part of the message schedule W. */
@@ -199,6 +246,7 @@ SHA256_Transform(uint32_t state[SHA256_ARRAY_MIN(8)],
 	state[5] += S[5];
 	state[6] += S[6];
 	state[7] += S[7];
+#endif
 }
 
 static const uint8_t PAD[64] = {

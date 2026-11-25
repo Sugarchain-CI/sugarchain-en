@@ -105,7 +105,7 @@ BOOST_AUTO_TEST_CASE(message_batches_bound_work_and_respect_termination)
 }
 
 
-#if defined(__APPLE__) && defined(__x86_64__)
+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
 BOOST_AUTO_TEST_CASE(accepted_peer_wakes_message_handler)
 {
     struct Events : NetEventsInterface {

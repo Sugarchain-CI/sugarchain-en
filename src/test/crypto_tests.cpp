@@ -15,6 +15,7 @@
 #include <crypto/sha3.h>
 #include <crypto/sha512.h>
 #include <crypto/muhash.h>
+#include <crypto/yespower-1.0.1/yespower.h>
 #include <random.h>
 #include <streams.h>
 #include <test/util/common.h>
@@ -23,6 +24,7 @@
 #include <util/strencodings.h>
 
 #include <algorithm>
+#include <array>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -375,6 +377,54 @@ static std::string LongTestString()
 const std::string test1 = LongTestString();
 
 BOOST_FIXTURE_TEST_SUITE(crypto_tests, CryptoTest)
+
+BOOST_AUTO_TEST_CASE(yespower_golden_vectors)
+{
+    // Fixed outputs verified with the original Yespower 1.0.1 scalar and SSE2 implementations.
+    // Check both round schedules and scratch-memory reuse across parameter changes.
+    static constexpr uint8_t sugar[]{"Satoshi Nakamoto 31/Oct/2008 Proof-of-work is essentially one-CPU-one-vote"};
+    static constexpr uint8_t binary[]{0, 1, 255, 128, 19};
+    static constexpr struct {
+        yespower_version_t version;
+        uint32_t n, r;
+        size_t length;
+        unsigned personalization;
+        const char* expected;
+    } vectors[]{
+        {YESPOWER_1_0, 2048, 32, 0, 2, "5f678c19124649516d097ab3da31d52d10d06a623c84439c78e726ff04be129e"},
+        {YESPOWER_1_0, 2048, 32, 1, 2, "ff2dce11f42911366fcacd806628c9f012db38696df50e0578a02a88374a63a8"},
+        {YESPOWER_1_0, 2048, 32, 32, 2, "252af8663e27a4e503dcb3a4043e55688a466ae03be84f89a03e8cf287687f0d"},
+        {YESPOWER_1_0, 2048, 32, 64, 2, "a978af87d36890459a5b10a6ceeed9357984e39ad68f318ead6f9dde91eb62e9"},
+        {YESPOWER_1_0, 2048, 32, 80, 2, "ff438e2a4675a4d3f44d499aa953077aab87b91e4fb34dca0b1ded2f348f6be1"},
+        {YESPOWER_1_0, 2048, 32, 255, 2, "9205a8b5995990039829ad9ed986009df7c548dc723ba77f3949e51a37fc43ba"},
+        {YESPOWER_0_5, 1024, 8, 80, 0, "46f5f1b131e4687347d6c56e6c9aac0a4a923066c7a509a649184ce85f0e9238"},
+        {YESPOWER_0_5, 2048, 16, 64, 1, "f57702645c06408e780ff1df9dbce71978c8cd391f313dfd85f1b9d361904f33"},
+        {YESPOWER_0_5, 4096, 32, 81, 2, "68448be666c4ad614663d3ae77b29de90f2320cde857b8bc583027ee658f8b37"},
+        {YESPOWER_1_0, 1024, 8, 31, 0, "c6f29f4548146d80032f9856d510253acbc6de5c16fd4084f648657458c7327e"},
+        {YESPOWER_1_0, 4096, 16, 128, 1, "eab4470692113f15d6603576c322ca3947f9eeeb2af48b49033b24cbc3a52859"},
+        {YESPOWER_1_0, 2048, 24, 256, 2, "5cd63fb1b33a028a2cd21f18edf4bbca9e220c7c43078753534e59424d7df273"},
+    };
+    std::array<uint8_t, 257> bytes{};
+    for (size_t i{0}; i < 256; ++i) bytes[i + 1] = static_cast<uint8_t>(i);
+    struct Local {
+        yespower_local_t memory;
+        Local() { BOOST_REQUIRE_EQUAL(yespower_init_local(&memory), 0); }
+        ~Local() { BOOST_CHECK_EQUAL(yespower_free_local(&memory), 0); }
+    } local;
+    for (const auto& vector : vectors) {
+        const yespower_params_t params{vector.version, vector.n, vector.r,
+            vector.personalization == 0 ? nullptr : vector.personalization == 1 ? binary : sugar,
+            vector.personalization == 0 ? 0 : vector.personalization == 1 ? sizeof(binary) : sizeof(sugar) - 1};
+        BOOST_TEST_CONTEXT("version=" << params.version << " N=" << params.N << " r=" << params.r << " length=" << vector.length) {
+            yespower_binary_t actual;
+            // Offset by one byte so the public input need not be SIMD-aligned.
+            BOOST_REQUIRE_EQUAL(yespower(&local.memory, bytes.data() + 1, vector.length, &params, &actual), 0);
+            BOOST_CHECK_EQUAL(HexStr(actual.uc), vector.expected);
+            BOOST_REQUIRE_EQUAL(yespower_tls(bytes.data() + 1, vector.length, &params, &actual), 0);
+            BOOST_CHECK_EQUAL(HexStr(actual.uc), vector.expected);
+        }
+    }
+}
 
 BOOST_AUTO_TEST_CASE(ripemd160_testvectors) {
     TestRIPEMD160("", "9c1185a5c5e9fc54612808977ee8f548b2258d31");

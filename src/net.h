@@ -1536,7 +1536,7 @@ private:
 
     NodeId GetNewNodeId();
 
-#if defined(__APPLE__) && defined(__x86_64__)
+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
     /** Wake the socket handler if it is waiting without any sockets to poll. */
     void WakeSocketHandler() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
     /** Return false only when the idle wait times out. */
@@ -1713,7 +1713,7 @@ private:
     Mutex mutexMsgProc;
     std::atomic<bool> flagInterruptMsgProc{false};
 
-#if defined(__APPLE__) && defined(__x86_64__)
+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
     std::condition_variable m_socket_handler_cv;
     // Latched until consumed, including publication between snapshot and wait.
     bool m_socket_handler_wake GUARDED_BY(mutexMsgProc){false};
