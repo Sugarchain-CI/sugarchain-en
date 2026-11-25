@@ -102,6 +102,14 @@ public:
     bool AreThreadsServicingQueue() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex);
 
 private:
+#if defined(__APPLE__) && defined(__x86_64__)
+    friend class SerialTaskRunner;
+
+    bool StopRequested() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex)
+    {
+        return WITH_LOCK(newTaskMutex, return stopRequested);
+    }
+#endif
     mutable Mutex newTaskMutex;
     std::condition_variable newTaskScheduled;
     std::multimap<std::chrono::steady_clock::time_point, Function> taskQueue GUARDED_BY(newTaskMutex);
@@ -141,6 +149,9 @@ private:
 #endif
 
     void MaybeScheduleProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
+#ifdef __APPLE__
+    std::function<void()> PopCallback() EXCLUSIVE_LOCKS_REQUIRED(m_callbacks_mutex);
+#endif
     void ProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
 
 public:

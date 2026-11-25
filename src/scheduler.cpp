@@ -159,6 +159,19 @@ void SerialTaskRunner::MaybeScheduleProcessQueue()
 #endif
 }
 
+#ifdef __APPLE__
+std::function<void()> SerialTaskRunner::PopCallback()
+{
+    AssertLockHeld(m_callbacks_mutex);
+    auto callback{std::move(m_callbacks_pending.front())};
+    m_callbacks_pending.pop_front();
+    if (m_capacity_waiters && m_callbacks_pending.size() <= m_capacity_wait_limit) {
+        m_capacity.notify_all();
+    }
+    return callback;
+}
+#endif
+
 void SerialTaskRunner::ProcessQueue()
 {
     std::function<void()> callback;
@@ -171,12 +184,11 @@ void SerialTaskRunner::ProcessQueue()
         if (m_callbacks_pending.empty()) return;
         m_are_callbacks_running = true;
 
+#ifdef __APPLE__
+        callback = PopCallback();
+#else
         callback = std::move(m_callbacks_pending.front());
         m_callbacks_pending.pop_front();
-#ifdef __APPLE__
-        if (m_capacity_waiters != 0 && m_callbacks_pending.size() <= m_capacity_wait_limit) {
-            m_capacity.notify_all();
-        }
 #endif
     }
 
@@ -195,7 +207,24 @@ void SerialTaskRunner::ProcessQueue()
         }
     } raiicallbacksrunning(this);
 
+#if defined(__APPLE__) && defined(__x86_64__)
+    const auto deadline{std::chrono::steady_clock::now() + 1ms};
+#endif
     callback();
+#if defined(__APPLE__) && defined(__x86_64__)
+    callback = {};
+    // Share each scheduler turn among ready callbacks without starving other tasks.
+    for (size_t processed{1}; processed < 8; ++processed) {
+        if (std::chrono::steady_clock::now() >= deadline || m_scheduler.StopRequested()) break;
+        std::function<void()> next;
+        {
+            LOCK(m_callbacks_mutex);
+            if (m_callbacks_pending.empty()) break;
+            next = PopCallback();
+        }
+        next();
+    }
+#endif
 }
 
 void SerialTaskRunner::insert(std::function<void()> func)

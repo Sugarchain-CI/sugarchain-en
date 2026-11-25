@@ -13,6 +13,7 @@
 #include <future>
 #endif
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -223,6 +224,32 @@ BOOST_AUTO_TEST_CASE(validation_worker_capacity_and_shutdown)
     BOOST_CHECK_EQUAL(runner.size(), 0U);
 }
 #endif
+
+BOOST_AUTO_TEST_CASE(serial_callbacks_resume_after_exception_and_stop)
+{
+    CScheduler scheduler;
+    SerialTaskRunner runner{scheduler};
+    std::vector<int> order;
+    runner.insert([&] { order.push_back(1); });
+    runner.insert([&] {
+        order.push_back(2);
+        throw std::runtime_error{"validation callback"};
+    });
+    runner.insert([&] {
+        order.push_back(3);
+        scheduler.stop();
+    });
+    runner.insert([&] { order.push_back(4); });
+
+    BOOST_CHECK_THROW(scheduler.serviceQueue(), std::runtime_error);
+    BOOST_CHECK_EQUAL(order.size(), 2U);
+    scheduler.serviceQueue();
+    BOOST_CHECK_EQUAL(runner.size(), 1U);
+    runner.flush();
+
+    const std::vector<int> expected{1, 2, 3, 4};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+}
 
 BOOST_AUTO_TEST_CASE(mockforward)
 {
