@@ -70,7 +70,7 @@ jobs:
         \ --candidate-bin-dir \"$workspace/profile\" --sender candidate --work-dir\
         \ \"$workspace/profiled\" --blocks 10000 --repeats 1\nfor logfile in \"$workspace/profiled\"\
         /{sender,candidate-1}/regtest/debug.log; do\n  name=$(basename \"$(dirname\
-        \ \"$(dirname \"$logfile\")\")\")\n  awk '/Sync profile/{print}' \"$logfile\"\
+        \ \"$(dirname \"$logfile\")\")\")\n  awk '/STAGEPROFILE/{print}' \"$logfile\"\
         \ > \"$workspace/profiled/$name-profile.txt\"\ndone\n"
     - name: Retain comparison evidence
       if: always()
@@ -79,7 +79,9 @@ jobs:
         name: intel-sync-comparison
         path: '${{ runner.temp }}/macos-subsecond/*/result.json
 
-          ${{ runner.temp }}/macos-subsecond/profiled/*-profile.txt'
+          ${{ runner.temp }}/macos-subsecond/profiled/*-profile.txt
+
+          ${{ runner.temp }}/macos-subsecond/build/Testing/Temporary/LastTest.log'
         if-no-files-found: warn
         retention-days: 7
     - name: Check fee estimation, scheduler and chain storage

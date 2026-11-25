@@ -24,6 +24,106 @@ index 489288037f..6815285b72 100644
      auto& validation_signals = *node.validation_signals;
  
      // Create KernelNotifications object. Important to do this early before
+diff --git a/src/net.cpp b/src/net.cpp
+index 1c0977c828..8af4842de6 100644
+--- a/src/net.cpp
++++ b/src/net.cpp
+@@ -1860,6 +1860,12 @@ void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock>&& sock,
+         LOCK(m_nodes_mutex);
+         m_nodes.push_back(pnode);
+     }
++#if defined(__APPLE__) && defined(__x86_64__)
++    // A new peer can have outbound handshake work before its first received
++    // message. Process it promptly when the node joins the socket set.
++    WakeMessageHandler();
++#endif
++
+     LogDebug(BCLog::NET, "connection from %s accepted\n", addr.ToStringAddrPort());
+     TRACEPOINT(net, inbound_connection,
+         pnode->GetId(),
+@@ -3074,6 +3080,12 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect,
+         if (pnode->IsManualOrFullOutboundConn()) ++m_network_conn_counts[pnode->addr.GetNetwork()];
+     }
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++    // A new peer can have outbound handshake work before its first received
++    // message. Process it promptly when the node joins the socket set.
++    WakeMessageHandler();
++#endif
++
+     TRACEPOINT(net, outbound_connection,
+         pnode->GetId(),
+         pnode->m_addr_name.c_str(),
+diff --git a/src/net.h b/src/net.h
+index 96a171736e..041f63d6e5 100644
+--- a/src/net.h
++++ b/src/net.h
+@@ -1192,7 +1192,7 @@ public:
+                                ConnectionType conn_type,
+                                bool use_v2transport,
+                                const std::optional<Proxy>& proxy_override)
+-        EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
++        EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc, !m_unused_i2p_sessions_mutex);
+ 
+     /// Group of private broadcast related members.
+     class PrivateBroadcast
+@@ -1355,7 +1355,7 @@ public:
+      *                          - Max total outbound connection capacity filled
+      *                          - Max connection capacity for type is filled
+      */
+-    bool AddConnection(const std::string& address, ConnectionType conn_type, bool use_v2transport) EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
++    bool AddConnection(const std::string& address, ConnectionType conn_type, bool use_v2transport) EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc, !m_unused_i2p_sessions_mutex);
+ 
+     size_t GetNodeCount(ConnectionDirection) const;
+     std::map<CNetAddr, LocalServiceInfo> getNetLocalAddresses() const;
+@@ -1428,14 +1428,14 @@ private:
+     bool Bind(const CService& addr, unsigned int flags, NetPermissionFlags permissions);
+     bool InitBinds(const Options& options);
+ 
+-    void ThreadOpenAddedConnections() EXCLUSIVE_LOCKS_REQUIRED(!m_added_nodes_mutex, !m_unused_i2p_sessions_mutex, !m_reconnections_mutex);
++    void ThreadOpenAddedConnections() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc, !m_added_nodes_mutex, !m_unused_i2p_sessions_mutex, !m_reconnections_mutex);
+     void AddAddrFetch(const std::string& strDest) EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex);
+-    void ProcessAddrFetch() EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex, !m_unused_i2p_sessions_mutex);
+-    void ThreadOpenConnections(std::vector<std::string> connect, std::span<const std::string> seed_nodes) EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex, !m_added_nodes_mutex, !m_nodes_mutex, !m_unused_i2p_sessions_mutex, !m_reconnections_mutex);
++    void ProcessAddrFetch() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc, !m_addr_fetches_mutex, !m_unused_i2p_sessions_mutex);
++    void ThreadOpenConnections(std::vector<std::string> connect, std::span<const std::string> seed_nodes) EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc, !m_addr_fetches_mutex, !m_added_nodes_mutex, !m_nodes_mutex, !m_unused_i2p_sessions_mutex, !m_reconnections_mutex);
+     void ThreadMessageHandler() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
+-    void ThreadI2PAcceptIncoming();
+-    void ThreadPrivateBroadcast() EXCLUSIVE_LOCKS_REQUIRED(!m_unused_i2p_sessions_mutex);
+-    void AcceptConnection(const ListenSocket& hListenSocket);
++    void ThreadI2PAcceptIncoming() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
++    void ThreadPrivateBroadcast() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc, !m_unused_i2p_sessions_mutex);
++    void AcceptConnection(const ListenSocket& hListenSocket) EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
+ 
+     /**
+      * Create a `CNode` object from a socket that has just been accepted and add the node to
+@@ -1448,7 +1448,7 @@ private:
+     void CreateNodeFromAcceptedSocket(std::unique_ptr<Sock>&& sock,
+                                       NetPermissionFlags permission_flags,
+                                       const CService& addr_bind,
+-                                      const CService& addr);
++                                      const CService& addr) EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
+ 
+     void DisconnectNodes() EXCLUSIVE_LOCKS_REQUIRED(!m_reconnections_mutex, !m_nodes_mutex);
+     void NotifyNumConnectionsChanged();
+@@ -1480,7 +1480,7 @@ private:
+      * Accept incoming connections, one from each read-ready listening socket.
+      * @param[in] events_per_sock Sockets that are ready for IO.
+      */
+-    void SocketHandlerListening(const Sock::EventsPerSock& events_per_sock);
++    void SocketHandlerListening(const Sock::EventsPerSock& events_per_sock) EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
+ 
+     void ThreadSocketHandler() EXCLUSIVE_LOCKS_REQUIRED(!m_total_bytes_sent_mutex, !mutexMsgProc, !m_nodes_mutex, !m_reconnections_mutex);
+     void ThreadDNSAddressSeed() EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex, !m_nodes_mutex);
+@@ -1797,7 +1797,7 @@ private:
+     std::list<ReconnectionInfo> m_reconnections GUARDED_BY(m_reconnections_mutex);
+ 
+     /** Attempt reconnections, if m_reconnections non-empty. */
+-    void PerformReconnections() EXCLUSIVE_LOCKS_REQUIRED(!m_reconnections_mutex, !m_unused_i2p_sessions_mutex);
++    void PerformReconnections() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc, !m_reconnections_mutex, !m_unused_i2p_sessions_mutex);
+ 
+     /**
+      * Cap on the size of `m_unused_i2p_sessions`, to ensure it does not
 diff --git a/src/node/blockstorage.cpp b/src/node/blockstorage.cpp
 index 80d356384c..15fb396739 100644
 --- a/src/node/blockstorage.cpp
@@ -591,6 +691,153 @@ index f70adcf74a..e7c03e057a 100644
  
      ~AutoFile()
      {
+diff --git a/src/test/net_tests.cpp b/src/test/net_tests.cpp
+index 188c975d9c..2fe71db94c 100644
+--- a/src/test/net_tests.cpp
++++ b/src/test/net_tests.cpp
+@@ -102,6 +102,42 @@ BOOST_AUTO_TEST_CASE(message_batches_bound_work_and_respect_termination)
+     }
+ }
+ 
++
++#if defined(__APPLE__) && defined(__x86_64__)
++BOOST_AUTO_TEST_CASE(accepted_peer_wakes_message_handler)
++{
++    struct Events : NetEventsInterface {
++        unsigned initialized{0};
++        void InitializeNode(const CNode&, ServiceFlags) override { ++initialized; }
++        void FinalizeNode(const CNode&) override {}
++        bool HasAllDesirableServiceFlags(ServiceFlags) const override { return true; }
++        bool ProcessMessages(CNode&, std::atomic<bool>&) override { return false; }
++        bool SendMessages(CNode&) override { return true; }
++    } events;
++    ConnmanTestMsg connman{0, 0, *m_node.addrman, *m_node.netgroupman, Params()};
++    CConnman::Options options;
++    options.m_max_automatic_connections = 32;
++    options.m_msgproc = &events;
++    connman.Init(options);
++    connman.ResetMessageHandlerWake();
++
++    const CAddress addr{LookupNumeric("127.0.0.1:12345"), NODE_NONE};
++    // An invalid test socket needs no host networking. Failure to set TCP_NODELAY
++    // is permitted by the accepted-node initialization path.
++    connman.SetNetworkActive(false);
++    connman.CreateNodeFromAcceptedSocketPublic(std::make_unique<Sock>(INVALID_SOCKET),
++                                               NetPermissionFlags::None, addr, addr);
++    BOOST_CHECK_EQUAL(events.initialized, 0U);
++    BOOST_CHECK(!connman.MessageHandlerWakePending());
++    connman.SetNetworkActive(true);
++    connman.CreateNodeFromAcceptedSocketPublic(std::make_unique<Sock>(INVALID_SOCKET),
++                                               NetPermissionFlags::None, addr, addr);
++    BOOST_CHECK_EQUAL(events.initialized, 1U);
++    BOOST_CHECK_EQUAL(connman.GetNodeCount(ConnectionDirection::In), 1U);
++    BOOST_CHECK(connman.MessageHandlerWakePending());
++}
++#endif
++
+ BOOST_AUTO_TEST_CASE(cnode_listen_port)
+ {
+     // test default
+diff --git a/src/test/policyestimator_tests.cpp b/src/test/policyestimator_tests.cpp
+index d13a0d1ebf..05687021d4 100644
+--- a/src/test/policyestimator_tests.cpp
++++ b/src/test/policyestimator_tests.cpp
+@@ -6,6 +6,7 @@
+ #include <policy/fees/block_policy_estimator_args.h>
+ #include <policy/policy.h>
+ #include <test/util/txmempool.h>
++#include <streams.h>
+ #include <txmempool.h>
+ #include <uint256.h>
+ #include <util/time.h>
+@@ -15,6 +16,8 @@
+ 
+ #include <boost/test/unit_test.hpp>
+ 
++#include <cstdio>
++
+ BOOST_FIXTURE_TEST_SUITE(policyestimator_tests, ChainTestingSetup)
+ 
+ BOOST_AUTO_TEST_CASE(BlockPolicyEstimates)
+@@ -262,4 +265,78 @@ BOOST_AUTO_TEST_CASE(BlockPolicyEstimates)
+     }
+ }
+ 
++BOOST_AUTO_TEST_CASE(pristine_and_loaded_fee_statistics)
++{
++    struct Estimator : CBlockPolicyEstimator {
++        using CBlockPolicyEstimator::CBlockPolicyEstimator;
++        using CBlockPolicyEstimator::MempoolTransactionsRemovedForBlock;
++        using CBlockPolicyEstimator::TransactionAddedToMempool;
++    };
++    const auto path{FeeestPath(*m_node.args).parent_path() / "pristine-fee-estimates.dat"};
++    Estimator fresh{path, true};
++    Estimator loaded{path, true};
++    const auto snapshot = [](const CBlockPolicyEstimator& estimator) {
++        AutoFile file{std::tmpfile()};
++        BOOST_REQUIRE(!file.IsNull());
++        BOOST_REQUIRE(estimator.Write(file));
++        const auto length{file.size()};
++        file.seek(0, SEEK_SET);
++        std::vector<char> bytes(length);
++        file.read(std::as_writable_bytes(std::span{bytes}));
++        return bytes;
++    };
++    const auto restore = [&](Estimator& target, const CBlockPolicyEstimator& source) {
++        AutoFile file{std::tmpfile()};
++        BOOST_REQUIRE(!file.IsNull());
++        BOOST_REQUIRE(source.Write(file));
++        file.seek(0, SEEK_SET);
++        BOOST_REQUIRE(target.Read(file));
++    };
++    const auto equal = [&](bool include_height) {
++        auto a{snapshot(fresh)};
++        auto b{snapshot(loaded)};
++        // Reloading stores the recorded range as historical. The first four
++        // uint32 fields describe that range; the encoded counters follow it.
++        const size_t offset{include_height ? 0U : 16U};
++        BOOST_REQUIRE(a.size() >= offset && b.size() >= offset);
++        BOOST_CHECK_EQUAL_COLLECTIONS(a.begin() + offset, a.end(), b.begin() + offset, b.end());
++    };
++    // The deserialized estimator takes the normal update path even when zero.
++    restore(loaded, fresh);
++    for (unsigned height{1}; height <= 256; ++height) {
++        fresh.MempoolTransactionsRemovedForBlock({}, height);
++        loaded.MempoolTransactionsRemovedForBlock({}, height);
++    }
++    equal(true);
++
++    CMutableTransaction tx;
++    tx.vin.resize(1);
++    tx.vout.resize(1);
++    TestMemPoolEntryHelper entry;
++    for (unsigned height{256}; height < 336; ++height) {
++        std::vector<RemovedMempoolTransactionInfo> confirmed;
++        for (unsigned n{0}; n < 20; ++n) {
++            tx.vin[0].prevout.n = height * 20 + n;
++            const auto ref{MakeTransactionRef(tx)};
++            NewMempoolTransactionInfo added{ref, 2000, GetVirtualTransactionSize(*ref), height,
++                                           false, false, true, true};
++            fresh.TransactionAddedToMempool(added, 0);
++            loaded.TransactionAddedToMempool(added, 0);
++            confirmed.emplace_back(entry.Fee(2000).Height(height).FromTx(ref));
++        }
++        fresh.MempoolTransactionsRemovedForBlock(confirmed, height + 1);
++        loaded.MempoolTransactionsRemovedForBlock(confirmed, height + 1);
++    }
++    equal(true);
++    BOOST_CHECK(fresh.estimateFee(2).GetFeePerK() > 0);
++
++    restore(loaded, fresh);
++    for (unsigned height{337}; height <= 400; ++height) {
++        fresh.MempoolTransactionsRemovedForBlock({}, height);
++        loaded.MempoolTransactionsRemovedForBlock({}, height);
++    }
++    equal(false);
++    BOOST_CHECK_EQUAL(fresh.estimateFee(2).GetFeePerK(), loaded.estimateFee(2).GetFeePerK());
++}
++
+ BOOST_AUTO_TEST_SUITE_END()
 diff --git a/src/test/scheduler_tests.cpp b/src/test/scheduler_tests.cpp
 index c106eca69c..cea3a44d07 100644
 --- a/src/test/scheduler_tests.cpp
@@ -712,7 +959,7 @@ index 951381823b..448119aa06 100644
       * The callback can either be queued for later/asynchronous/threaded
       * processing, or be executed immediately for synchronous processing.
 diff --git a/src/validation.cpp b/src/validation.cpp
-index 93f7993443..bb4960f65f 100644
+index 93f7993443..480f577107 100644
 --- a/src/validation.cpp
 +++ b/src/validation.cpp
 @@ -2718,6 +2718,13 @@ bool Chainstate::FlushStateToDisk(
@@ -729,11 +976,14 @@ index 93f7993443..bb4960f65f 100644
      std::set<int> setFilesToPrune;
      bool full_flush_completed = false;
  
-@@ -3432,7 +3439,12 @@ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCL
+@@ -3432,7 +3439,15 @@ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCL
      AssertLockNotHeld(cs_main);
  
      if (signals.CallbacksPending() > 10) {
-+#ifdef __APPLE__
++#if defined(__APPLE__) && defined(__x86_64__)
++        // Drain the pending burst before the producer resumes filling the bounded queue.
++        signals.WaitForPendingCallbacks(0);
++#elif defined(__APPLE__)
 +        // Leave room for another block's notifications before applying backpressure again.
 +        signals.WaitForPendingCallbacks(8);
 +#else
@@ -742,7 +992,7 @@ index 93f7993443..bb4960f65f 100644
      }
  }
  
-@@ -3463,7 +3475,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+@@ -3463,7 +3478,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
      CBlockIndex *pindexNewTip = nullptr;
      bool exited_ibd{false};
      do {
