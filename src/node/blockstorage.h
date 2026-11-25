@@ -207,6 +207,9 @@ class BlockManager
 {
     friend Chainstate;
     friend ChainstateManager;
+#if defined(__APPLE__) && defined(__x86_64__)
+    friend struct BlockManagerTestAccess;
+#endif
 
 private:
     const CChainParams& GetParams() const { return m_opts.chainparams; }
@@ -241,13 +244,20 @@ private:
     AutoFile OpenUndoFile(const FlatFilePos& pos, bool fReadOnly = false) const;
 
 #if defined(WIN32) || defined(__APPLE__)
-    /** Keep one writable handle per sequence. Each record is flushed before publication. */
+    /** Keep one writable handle per sequence, checking writes before reads and persistence. */
     class WriteFileCache
     {
         std::FILE* m_file{nullptr};
         int m_file_num{-1};
 #ifdef __APPLE__
         std::optional<int64_t> m_file_pos;
+#endif
+#if defined(__APPLE__) && defined(__x86_64__)
+        friend struct BlockManagerTestAccess;
+        static constexpr size_t MAX_PENDING_BYTES{64 * 1024};
+        size_t m_pending_bytes{0};
+        bool m_needs_commit{false};
+        int m_write_error{0};
 #endif
 
     public:
@@ -258,6 +268,11 @@ private:
         AutoFile Open(const FlatFileSeq& sequence, const FlatFilePos& pos, const Obfuscation& obfuscation);
         [[nodiscard]] bool Keep(AutoFile& file, int file_num);
         [[nodiscard]] bool Close(int file_num = -1);
+#if defined(__APPLE__) && defined(__x86_64__)
+        [[nodiscard]] bool Flush(int file_num = -1, bool commit = false);
+        void RecordError();
+        void Abort(AutoFile& file);
+#endif
     };
 
     mutable WriteFileCache m_block_writer GUARDED_BY(cs_LastBlockFile);

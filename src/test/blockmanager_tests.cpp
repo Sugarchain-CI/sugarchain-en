@@ -15,6 +15,11 @@
 #include <util/chaintype.h>
 #include <util/fs.h>
 #include <validation.h>
+#include <streams.h>
+#include <undo.h>
+#if defined(__APPLE__) && defined(__x86_64__)
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <array>
@@ -33,6 +38,49 @@ using node::STORAGE_HEADER_BYTES;
 using node::BlockManager;
 using node::KernelNotifications;
 using node::MAX_BLOCKFILE_SIZE;
+
+#if defined(__APPLE__) && defined(__x86_64__)
+namespace node {
+struct BlockManagerTestAccess {
+    static size_t Pending(BlockManager& manager, bool undo = false)
+    {
+        LOCK(manager.cs_LastBlockFile);
+        return (undo ? manager.m_undo_writer : manager.m_block_writer).m_pending_bytes;
+    }
+    static size_t DirtyFiles(BlockManager& manager) { return manager.m_dirty_fileinfo.size(); }
+    static size_t DirtyIndexes(BlockManager& manager) { return manager.m_dirty_blockindex.size(); }
+    static bool Close(BlockManager& manager, int file_num = -1)
+    {
+        LOCK(manager.cs_LastBlockFile);
+        return manager.m_block_writer.Close(file_num);
+    }
+    static void MakeReadOnly(BlockManager& manager, const fs::path& path)
+    {
+        LOCK(manager.cs_LastBlockFile);
+        FILE* reader{fsbridge::fopen(path, "rb")};
+        BOOST_REQUIRE(reader);
+        BOOST_REQUIRE(manager.m_block_writer.m_file);
+        BOOST_REQUIRE(::dup2(::fileno(reader), ::fileno(manager.m_block_writer.m_file)) >= 0);
+        BOOST_REQUIRE_EQUAL(std::fclose(reader), 0);
+    }
+    static bool WriteUndo(BlockManager& manager, const CBlockUndo& undo, BlockValidationState& state, CBlockIndex& index) EXCLUSIVE_LOCKS_REQUIRED(cs_main)
+    {
+        return manager.WriteBlockUndo(undo, state, index);
+    }
+};
+} // namespace node
+
+struct BufferedBlockStorageSetup : BasicTestingSetup {
+    KernelNotifications notifications{Assert(m_node.shutdown_request), m_node.exit_status, *Assert(m_node.warnings)};
+    BlockManager blockman{*Assert(m_node.shutdown_signal), {
+        .chainparams = Params(),
+        .fast_prune = true,
+        .blocks_dir = m_args.GetBlocksDirPath(),
+        .notifications = notifications,
+        .block_tree_db_params = {.path = m_args.GetDataDirNet() / "buffered-index", .cache_bytes = 0},
+    }};
+};
+#endif
 
 // use BasicTestingSetup here for the data directory configuration, setup, and cleanup
 BOOST_FIXTURE_TEST_SUITE(blockmanager_tests, BasicTestingSetup)
@@ -628,5 +676,165 @@ BOOST_AUTO_TEST_CASE(blockmanager_flush_block_file)
         BOOST_CHECK(!blockman.m_block_tree_db->HasYespowerEvidence(index->GetBlockHeader(), Params().GetConsensus()));
     }
 }
+
+#if defined(__APPLE__) && defined(__x86_64__)
+BOOST_FIXTURE_TEST_CASE(buffered_block_read_visibility, BufferedBlockStorageSetup)
+{
+    CBlock block;
+    block.nVersion = 7;
+    const auto first{blockman.WriteBlock(block, 1)};
+    BOOST_REQUIRE(!first.IsNull());
+    BOOST_REQUIRE_GT(node::BlockManagerTestAccess::Pending(blockman), 0U);
+    // The independent indexed reader must see the pending, XOR-obfuscated record.
+    auto file{blockman.OpenBlockFile(first, true)};
+    BOOST_REQUIRE(!file.IsNull());
+    CBlock read;
+    file >> TX_WITH_WITNESS(read);
+    BOOST_CHECK_EQUAL(read.nVersion, 7);
+    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::Pending(blockman), 0U);
+    BOOST_REQUIRE(blockman.ReadRawBlock(first));
+    block.nVersion = 8;
+    const auto second{blockman.WriteBlock(block, 2)};
+    BOOST_REQUIRE_GT(node::BlockManagerTestAccess::Pending(blockman), 0U);
+    // This also exercises a previously cached positional read handle.
+    const auto raw{blockman.ReadRawBlock(second)};
+    BOOST_REQUIRE(raw);
+    SpanReader{*raw} >> TX_WITH_WITNESS(read);
+    BOOST_CHECK_EQUAL(read.nVersion, 8);
+    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::Pending(blockman), 0U);
+}
+
+BOOST_FIXTURE_TEST_CASE(buffered_undo_read_visibility, BufferedBlockStorageSetup)
+{
+    LOCK(cs_main);
+    CBlock block;
+    const auto pos{blockman.WriteBlock(block, 1)};
+    BOOST_REQUIRE(!pos.IsNull());
+    const auto previous_hash{Params().GenesisBlock().GetHash()};
+    CBlockIndex previous;
+    previous.phashBlock = &previous_hash;
+    CBlockIndex index;
+    index.pprev = &previous;
+    index.nFile = pos.nFile;
+    index.nHeight = 1;
+    CBlockUndo undo;
+    undo.vtxundo.emplace_back();
+    BlockValidationState state;
+    BOOST_REQUIRE(node::BlockManagerTestAccess::WriteUndo(blockman, undo, state, index));
+    BOOST_REQUIRE_GT(node::BlockManagerTestAccess::Pending(blockman, true), 0U);
+    CBlockUndo read;
+    BOOST_REQUIRE(blockman.ReadBlockUndo(read, index));
+    BOOST_CHECK_EQUAL(read.vtxundo.size(), undo.vtxundo.size());
+    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::Pending(blockman, true), 0U);
+}
+
+BOOST_FIXTURE_TEST_CASE(buffered_index_failure_retains_dirty_state, BufferedBlockStorageSetup)
+{
+    LOCK(cs_main);
+    CBlock block;
+    const auto first{blockman.WriteBlock(block, 1)};
+    BOOST_REQUIRE(!first.IsNull());
+    blockman.WriteBlockIndexDB();
+    CBlockFileInfo checkpoint;
+    BOOST_REQUIRE(blockman.m_block_tree_db->ReadBlockFileInfo(first.nFile, checkpoint));
+    BOOST_CHECK_EQUAL(checkpoint.nBlocks, 1U);
+    BOOST_REQUIRE(!blockman.WriteBlock(block, 2).IsNull());
+    CBlockIndex* best_header{nullptr};
+    blockman.AddToBlockIndex(Params().GenesisBlock(), best_header);
+    const auto dirty_indexes{node::BlockManagerTestAccess::DirtyIndexes(blockman)};
+    BOOST_REQUIRE_GT(dirty_indexes, 0U);
+    const auto dirty_files{node::BlockManagerTestAccess::DirtyFiles(blockman)};
+    BOOST_REQUIRE_GT(dirty_files, 0U);
+    node::BlockManagerTestAccess::MakeReadOnly(blockman, blockman.GetBlockPosFilename(first));
+    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
+    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::DirtyFiles(blockman), dirty_files);
+    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::DirtyIndexes(blockman), dirty_indexes);
+    CBlockFileInfo persisted;
+    BOOST_REQUIRE(blockman.m_block_tree_db->ReadBlockFileInfo(first.nFile, persisted));
+    BOOST_CHECK_EQUAL(persisted.nBlocks, checkpoint.nBlocks);
+    BOOST_CHECK_EQUAL(persisted.nSize, checkpoint.nSize);
+    BOOST_CHECK(!node::BlockManagerTestAccess::Close(blockman));
+    // A closed stream, another file number, and a retry must not hide the failure.
+    BOOST_CHECK(!node::BlockManagerTestAccess::Close(blockman, first.nFile + 1));
+    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
+}
+
+BOOST_FIXTURE_TEST_CASE(buffered_write_exception_is_sticky, BufferedBlockStorageSetup)
+{
+    CBlock block;
+    const auto first{blockman.WriteBlock(block, 1)};
+    BOOST_REQUIRE(!first.IsNull());
+    node::BlockManagerTestAccess::MakeReadOnly(blockman, blockman.GetBlockPosFilename(first));
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0].scriptSig.resize(16 * 1024);
+    block.vtx.push_back(MakeTransactionRef(tx));
+    // A large explicit serialization flush fails before Keep(), without rotating.
+    BOOST_CHECK_THROW(blockman.WriteBlock(block, 2), std::ios_base::failure);
+    LOCK(cs_main);
+    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
+    BOOST_CHECK(!node::BlockManagerTestAccess::Close(blockman));
+}
+
+BOOST_FIXTURE_TEST_CASE(buffered_rotation_and_pruning, BufferedBlockStorageSetup)
+{
+    CBlock block;
+    block.nVersion = 9;
+    const auto first{blockman.WriteBlock(block, 1)};
+    BOOST_REQUIRE(!first.IsNull());
+    blockman.GetBlockFileInfo(first.nFile)->nSize = 0x10000;
+    const auto second{blockman.WriteBlock(block, 2)};
+    BOOST_REQUIRE(!second.IsNull());
+    BOOST_CHECK_NE(first.nFile, second.nFile);
+    BOOST_REQUIRE(blockman.ReadRawBlock(first));
+    BOOST_REQUIRE(blockman.ReadRawBlock(second));
+    blockman.UnlinkPrunedFiles({first.nFile});
+    BOOST_CHECK(!fs::exists(blockman.GetBlockPosFilename(first)));
+    BOOST_CHECK(fs::exists(blockman.GetBlockPosFilename(second)));
+}
+
+BOOST_FIXTURE_TEST_CASE(buffered_rotation_failure_is_sticky, BufferedBlockStorageSetup)
+{
+    CBlock block;
+    const auto first{blockman.WriteBlock(block, 1)};
+    BOOST_REQUIRE(!first.IsNull());
+    node::BlockManagerTestAccess::MakeReadOnly(blockman, blockman.GetBlockPosFilename(first));
+    blockman.GetBlockFileInfo(first.nFile)->nSize = 0x10000;
+    BOOST_CHECK(blockman.WriteBlock(block, 2).IsNull());
+    LOCK(cs_main);
+    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
+}
+
+BOOST_FIXTURE_TEST_CASE(buffered_pruning_failure_aborts, BufferedBlockStorageSetup)
+{
+    CBlock block;
+    const auto first{blockman.WriteBlock(block, 1)};
+    BOOST_REQUIRE(!first.IsNull());
+    const auto path{blockman.GetBlockPosFilename(first)};
+    node::BlockManagerTestAccess::MakeReadOnly(blockman, path);
+    BOOST_CHECK_THROW(blockman.UnlinkPrunedFiles({first.nFile}), std::runtime_error);
+    BOOST_CHECK(fs::exists(path));
+    LOCK(cs_main);
+    BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
+}
+
+BOOST_AUTO_TEST_CASE(buffered_serialization_failure_is_not_retried)
+{
+    struct FailingWriter {
+        unsigned attempts{0};
+        void write_buffer(std::span<std::byte>)
+        {
+            ++attempts;
+            throw std::ios_base::failure("injected write failure");
+        }
+    } writer;
+    const auto attempt{[&] {
+        BufferedWriter buffer{writer, 1};
+        buffer << uint8_t{42};
+    }};
+    BOOST_CHECK_THROW(attempt(), std::ios_base::failure);
+    BOOST_CHECK_EQUAL(writer.attempts, 1U);
+}
+#endif
 
 BOOST_AUTO_TEST_SUITE_END()

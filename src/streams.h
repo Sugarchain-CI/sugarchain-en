@@ -691,8 +691,14 @@ public:
 
     void flush()
     {
+#if defined(__APPLE__) && defined(__x86_64__)
+        // A checked explicit flush must not retry failed writes in the destructor.
+        const size_t count{std::exchange(m_buf_pos, 0)};
+        if (count) m_dst.write_buffer(std::span{m_buf}.first(count));
+#else
         if (m_buf_pos) m_dst.write_buffer(std::span{m_buf}.first(m_buf_pos));
         m_buf_pos = 0;
+#endif
     }
 
     void write(std::span<const std::byte> src)
