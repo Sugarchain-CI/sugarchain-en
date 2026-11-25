@@ -1,4 +1,4 @@
-name: Apple Silicon empty-estimator comparison
+name: Apple Silicon callback scheduling comparison
 permissions:
   contents: read
 jobs:
@@ -12,7 +12,7 @@ jobs:
     - uses: actions/checkout@v6
       with:
         repository: decryp2kanon/sugarchain-en
-        ref: 37370faaeff1e79898b266848cc76d3e4b1e22ce
+        ref: d02eee3b73f1736e895888984881ce551ceda345
         path: source
         persist-credentials: false
     - uses: actions/cache/restore@v5

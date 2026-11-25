@@ -7,7 +7,7 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 test "$(uname -s)" = Darwin
 test "$(uname -m)" = arm64
 test "$(sysctl -n sysctl.proc_translated 2>/dev/null || printf 0)" = 0
-test "$(git -C "$source_dir" rev-parse HEAD)" = 37370faaeff1e79898b266848cc76d3e4b1e22ce
+test "$(git -C "$source_dir" rev-parse HEAD)" = d02eee3b73f1736e895888984881ce551ceda345
 git -C "$source_dir" diff --exit-code
 mkdir -p "$work/evidence" "$work/home"
 export CFFIXED_USER_HOME="$work/home"
@@ -29,7 +29,7 @@ done
 } > "$work/evidence/environment.txt"
 cmake -S "$source_dir" -B "$work/build" -G Ninja \
   -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-Werror=thread-safety \
+  -DCMAKE_BUILD_TYPE=Release "-DCMAKE_CXX_FLAGS=-Werror -Werror=thread-safety" -DCMAKE_C_FLAGS=-Werror \
   "-DCMAKE_PREFIX_PATH=$(brew --prefix boost);$(brew --prefix libevent);$(brew --prefix qt);$(brew --prefix qrencode)" \
   -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_C_FLAGS_RELEASE=-O3 \
   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \

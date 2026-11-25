@@ -1,67 +1,115 @@
-diff --git a/src/policy/fees/block_policy_estimator.cpp b/src/policy/fees/block_policy_estimator.cpp
-index da7b4a89db..4eb88561c7 100644
---- a/src/policy/fees/block_policy_estimator.cpp
-+++ b/src/policy/fees/block_policy_estimator.cpp
-@@ -102,7 +102,7 @@ private:
-     // Combine the conf counts with tx counts to calculate the confirmation % for each Y,X
-     // Combine the total value with the tx counts to calculate the avg feerate per bucket
+diff --git a/src/scheduler.cpp b/src/scheduler.cpp
+index c3545ea06a..115b78e51f 100644
+--- a/src/scheduler.cpp
++++ b/src/scheduler.cpp
+@@ -345,7 +345,9 @@ void ValidationTaskRunner::Run(bool drain)
+     while (drain || !m_stopped) {
+         if (m_pending.empty()) {
+             if (drain) return;
++            m_worker_waiting = true;
+             m_available.wait(lock);
++            m_worker_waiting = false;
+             continue;
+         }
  
--#if defined(__APPLE__) && defined(__x86_64__)
-+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
-     // A freshly created estimator has only zero counters. Loading estimates or
-     // recording a transaction permanently enables the normal update path.
-     bool m_pristine{true};
-@@ -213,7 +213,7 @@ void TxConfirmStats::resizeInMemoryCounters(size_t newbuckets) {
- // Roll the unconfirmed txs circular buffer
- void TxConfirmStats::ClearCurrent(unsigned int nBlockHeight)
+@@ -367,7 +369,10 @@ void ValidationTaskRunner::insert(std::function<void()> func)
+     bool wake;
+     {
+         LOCK(m_mutex);
+-        wake = m_pending.empty() && !m_stopped;
++        // An active worker observes newly queued work before it can wait.
++        // Share its wait state and the empty-to-nonempty transition lock so
++        // only a sleeping worker needs a notification.
++        wake = m_worker_waiting && m_pending.empty() && !m_stopped;
+         m_pending.emplace_back(std::move(func));
+     }
+     if (wake) m_available.notify_one();
+diff --git a/src/scheduler.h b/src/scheduler.h
+index af3975f8a7..abaf8a63a8 100644
+--- a/src/scheduler.h
++++ b/src/scheduler.h
+@@ -189,6 +189,7 @@ public:
+ /** A single background worker for the ordered validation callback queue. */
+ class ValidationTaskRunner final : public util::TaskRunnerInterface
  {
--#if defined(__APPLE__) && defined(__x86_64__)
-+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
-     if (m_pristine) return;
- #endif
-     for (unsigned int j = 0; j < buckets.size(); j++) {
-@@ -225,7 +225,7 @@ void TxConfirmStats::ClearCurrent(unsigned int nBlockHeight)
++    friend struct ValidationWorkerTestAccess;
+     Mutex m_mutex;
+     std::condition_variable m_available;
+     std::condition_variable m_capacity;
+@@ -196,6 +197,7 @@ class ValidationTaskRunner final : public util::TaskRunnerInterface
+     size_t m_capacity_wait_limit GUARDED_BY(m_mutex){0};
+     std::list<std::function<void()>> m_pending GUARDED_BY(m_mutex);
+     bool m_stopped GUARDED_BY(m_mutex){false};
++    bool m_worker_waiting GUARDED_BY(m_mutex){false};
+     std::thread m_worker;
  
- void TxConfirmStats::Record(int blocksToConfirm, double feerate)
- {
--#if defined(__APPLE__) && defined(__x86_64__)
-+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
-     m_pristine = false;
+     void Run(bool drain) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+diff --git a/src/test/scheduler_tests.cpp b/src/test/scheduler_tests.cpp
+index 4d9922dc5e..515dc0b3d5 100644
+--- a/src/test/scheduler_tests.cpp
++++ b/src/test/scheduler_tests.cpp
+@@ -35,6 +35,20 @@ struct SchedulerWaiterTestAccess {
+ };
  #endif
-     // blocksToConfirm is 1-based
-@@ -242,7 +242,7 @@ void TxConfirmStats::Record(int blocksToConfirm, double feerate)
  
- void TxConfirmStats::UpdateMovingAverages()
- {
--#if defined(__APPLE__) && defined(__x86_64__)
-+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
-     if (m_pristine) return;
- #endif
-     assert(confAvg.size() == failAvg.size());
-@@ -435,7 +435,7 @@ void TxConfirmStats::Write(AutoFile& fileout) const
++#if defined(__APPLE__) && defined(__aarch64__)
++struct ValidationWorkerTestAccess {
++    static bool WaitForSleeper(ValidationTaskRunner& runner)
++    {
++        const auto deadline{std::chrono::steady_clock::now() + 5s};
++        do {
++            if (WITH_LOCK(runner.m_mutex, return runner.m_worker_waiting)) return true;
++            std::this_thread::yield();
++        } while (std::chrono::steady_clock::now() < deadline);
++        return false;
++    }
++};
++#endif
++
+ BOOST_AUTO_TEST_SUITE(scheduler_tests)
  
- void TxConfirmStats::Read(AutoFile& filein, size_t numBuckets)
- {
--#if defined(__APPLE__) && defined(__x86_64__)
-+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
-     m_pristine = false;
+ static void microTask(CScheduler& s, std::mutex& mutex, int& counter, int delta, std::chrono::steady_clock::time_point rescheduleTime)
+@@ -292,6 +306,43 @@ BOOST_AUTO_TEST_CASE(scheduler_due_tasks_respect_immediate_shutdown)
  #endif
-     // Read data file and do some very basic sanity checking
-@@ -494,7 +494,7 @@ void TxConfirmStats::Read(AutoFile& filein, size_t numBuckets)
  
- unsigned int TxConfirmStats::NewTx(unsigned int nBlockHeight, double val)
+ #if defined(__APPLE__) && defined(__aarch64__)
++BOOST_AUTO_TEST_CASE(validation_worker_wakes_idle_and_observes_active_enqueues)
++{
++    ValidationTaskRunner runner;
++    BOOST_REQUIRE(ValidationWorkerTestAccess::WaitForSleeper(runner));
++    std::vector<int> order;
++    std::promise<void> first_started, release_first, drained;
++    auto started{first_started.get_future()};
++    auto gate{release_first.get_future()};
++    auto finished{drained.get_future()};
++    runner.insert([&] {
++        order.push_back(1);
++        first_started.set_value();
++        gate.wait();
++        runner.insert([&] {
++            order.push_back(19);
++            drained.set_value();
++        });
++    });
++    const auto wake_status{started.wait_for(5s)};
++    for (int i{2}; i <= 18; ++i) {
++        runner.insert([&, i] { order.push_back(i); });
++    }
++    release_first.set_value();
++    const auto drain_status{finished.wait_for(5s)};
++    const bool idle_again{ValidationWorkerTestAccess::WaitForSleeper(runner)};
++    runner.stop();
++    // Keep all captured state alive even if a wakeup or drain failed.
++    runner.flush();
++
++    BOOST_CHECK(wake_status == std::future_status::ready);
++    BOOST_CHECK(drain_status == std::future_status::ready);
++    BOOST_CHECK(idle_again);
++    BOOST_REQUIRE_EQUAL(order.size(), 19U);
++    for (size_t i{0}; i < order.size(); ++i) BOOST_CHECK_EQUAL(order[i], i + 1);
++    BOOST_CHECK_EQUAL(runner.size(), 0U);
++}
++
+ BOOST_AUTO_TEST_CASE(validation_worker_capacity_and_shutdown)
  {
--#if defined(__APPLE__) && defined(__x86_64__)
-+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
-     m_pristine = false;
- #endif
-     unsigned int bucketindex = bucketMap.lower_bound(val)->second;
-@@ -505,7 +505,7 @@ unsigned int TxConfirmStats::NewTx(unsigned int nBlockHeight, double val)
- 
- void TxConfirmStats::removeTx(unsigned int entryHeight, unsigned int nBestSeenHeight, unsigned int bucketindex, bool inBlock)
- {
--#if defined(__APPLE__) && defined(__x86_64__)
-+#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
-     m_pristine = false;
- #endif
-     //nBestSeenHeight is not updated yet for the new block
+     ValidationTaskRunner runner;
