@@ -53,7 +53,7 @@ def mainnet_node_type(smoke):
     return MainnetNode
 
 
-def observe_mainnet(node):
+def observe_mainnet(node, desktop, visuals):
     info = node.wait()
     assert info["chain"] == "main", info
     assert node.rpc("getblockhash", 0) == MAIN_GENESIS
@@ -73,8 +73,9 @@ def observe_mainnet(node):
         if (highest_peers > 0 and highest_headers > 0) or time.monotonic() >= deadline:
             break
         time.sleep(max(0, min(1, deadline - time.monotonic())))
-    # Stop network activity before checking the separate disposable wallet.
+    # Stop network activity as soon as its start is evident or the limit expires.
     assert node.rpc("setnetworkactive", False) is False
+    window_result = capture_node_window(desktop, node.process, "mainnet-01-startup", visuals)
     return {
         "rpc_startup": "passed",
         "initial_sync": "passed" if highest_peers and highest_headers else "inconclusive",
@@ -82,50 +83,240 @@ def observe_mainnet(node):
         "headers_observed": highest_headers,
         "blocks_at_network_stop": last_blocks,
         "observation_limit_seconds": 120,
+        "native_window_responsiveness": window_result,
     }
 
 
-def check_gui_window(process):
-    from ctypes import wintypes
+class WindowsDesktop:
+    def __init__(self, directory):
+        from ctypes import wintypes
 
-    user32 = ctypes.windll.user32
-    callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-    user32.EnumWindows.argtypes = (callback_type, wintypes.LPARAM)
-    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
-    user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
-    user32.SendMessageTimeoutW.argtypes = (
-        wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
-        wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t),
-    )
-    user32.SendMessageTimeoutW.restype = ctypes.c_ssize_t
-    windows = []
+        self.directory = directory
+        self.directory.mkdir()
+        self.user32 = ctypes.windll.user32
+        self.callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        self.owner_type = wintypes.DWORD
+        self.user32.EnumWindows.argtypes = (self.callback_type, wintypes.LPARAM)
+        self.user32.EnumChildWindows.argtypes = (wintypes.HWND, self.callback_type, wintypes.LPARAM)
+        self.user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+        self.user32.GetWindowTextW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+        self.user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+        self.user32.GetDlgItem.argtypes = (wintypes.HWND, ctypes.c_int)
+        self.user32.GetDlgItem.restype = wintypes.HWND
+        self.user32.GetForegroundWindow.restype = wintypes.HWND
+        self.user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+        self.user32.IsWindowEnabled.argtypes = (wintypes.HWND,)
+        self.user32.ShowWindowAsync.argtypes = (wintypes.HWND, ctypes.c_int)
+        self.user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+        self.user32.keybd_event.argtypes = (wintypes.BYTE, wintypes.BYTE, wintypes.DWORD, ctypes.c_size_t)
+        self.user32.PostMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+        self.user32.SendMessageTimeoutW.argtypes = (
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+            wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t),
+        )
+        self.user32.SendMessageTimeoutW.restype = ctypes.c_ssize_t
 
-    @callback_type
-    def collect(handle, _parameter):
-        owner = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
-        if owner.value == process.pid:
-            title = ctypes.create_unicode_buffer(256)
-            user32.GetWindowTextW(handle, title, len(title))
-            if "Sugarchain" in title.value:
-                windows.append(handle)
-        return True
+    def message(self, handle, message, wparam=0, lparam=0, timeout=2000):
+        reply = ctypes.c_size_t()
+        if not self.user32.SendMessageTimeoutW(
+            handle, message, wparam, lparam, 2, timeout, ctypes.byref(reply),
+        ):
+            raise RuntimeError("The native window did not answer its message")
+        return reply.value
 
-    deadline = time.monotonic() + 5
-    while not windows:
-        user32.EnumWindows(collect, 0)
-        if time.monotonic() >= deadline:
-            break
-        if not windows:
+    def controls(self, dialog):
+        children = []
+
+        @self.callback_type
+        def collect(handle, _parameter):
+            if self.user32.IsWindowVisible(handle):
+                children.append(handle)
+            return True
+
+        self.user32.EnumChildWindows(dialog, collect, 0)
+        return children
+
+    def control_text(self, handle):
+        title = ctypes.create_unicode_buffer(1024)
+        self.message(handle, 0x000D, len(title), ctypes.addressof(title), timeout=1000)
+        return title.value.replace("&", "").strip()
+
+    def find(self, process, title="Sugarchain", timeout=8, exclude=None):
+        windows = []
+
+        @self.callback_type
+        def collect(handle, _parameter):
+            if handle == exclude or not self.user32.IsWindowVisible(handle):
+                return True
+            owner = self.owner_type()
+            self.user32.GetWindowThreadProcessId(handle, ctypes.byref(owner))
+            if owner.value == process.pid:
+                caption = ctypes.create_unicode_buffer(256)
+                self.user32.GetWindowTextW(handle, caption, len(caption))
+                if title.casefold() in caption.value.casefold():
+                    windows.append(handle)
+            return True
+
+        deadline = time.monotonic() + timeout
+        while process.poll() is None and time.monotonic() < deadline:
+            self.user32.EnumWindows(collect, 0)
+            if windows:
+                return windows[0]
+            time.sleep(0.15)
+        raise RuntimeError(f"The runner did not expose a window titled {title}")
+
+    def screenshot(self, handle, name):
+        from PIL import ImageGrab
+
+        self.message(handle, 0)
+        image = ImageGrab.grab(window=handle).convert("RGB")
+        if min(image.size) < 100 or all(low == high for low, high in image.getextrema()):
+            raise RuntimeError("The window capture was empty")
+        path = self.directory / f"{name}.png"
+        image.save(path)
+        return {"screenshot": path.name, "width": image.width, "height": image.height}
+
+    def keystroke(self, handle, key, alt=False):
+        # Keep generated desktop input inside the selected program window.
+        if self.user32.GetForegroundWindow() != handle:
+            self.user32.ShowWindowAsync(handle, 9)
+            self.user32.SetForegroundWindow(handle)
+        deadline = time.monotonic() + 3
+        while self.user32.GetForegroundWindow() != handle:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("The runner did not focus the application window")
+            time.sleep(0.05)
+        if alt:
+            self.user32.keybd_event(0x12, 0, 0, 0)
+        self.user32.keybd_event(key, 0, 0, 0)
+        self.user32.keybd_event(key, 0, 2, 0)
+        if alt:
+            self.user32.keybd_event(0x12, 0, 2, 0)
+
+    def button(self, window, label, timeout=10):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            candidates = [self.user32.GetDlgItem(window, 1), *self.controls(window)]
+            for handle in filter(None, candidates):
+                control_class = ctypes.create_unicode_buffer(64)
+                self.user32.GetClassNameW(handle, control_class, len(control_class))
+                if (control_class.value.casefold() == "button" and self.user32.IsWindowEnabled(handle)
+                        and self.control_text(handle).startswith(label)):
+                    return handle
+            time.sleep(0.15)
+        raise RuntimeError(f"The installer action {label} was not available")
+
+    def page(self, window, *labels, timeout=10):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for handle in self.controls(window):
+                text = self.control_text(handle).casefold()
+                if any(label in text for label in labels):
+                    return
             time.sleep(0.1)
-    if not windows:
-        return "inconclusive: no application window exposed by runner desktop"
-    reply = ctypes.c_size_t()
-    # WM_NULL confirms that the application window can process a message.
-    assert user32.SendMessageTimeoutW(windows[0], 0, 0, 0, 2, 2000, ctypes.byref(reply)), (
-        "Sugarchain application window did not respond"
-    )
+        raise RuntimeError(f"The installer page did not show {labels}")
+
+    def click_button(self, handle):
+        if not self.user32.PostMessageW(handle, 0x00F5, 0, 0):
+            raise RuntimeError("The runner did not deliver an installer button click")
+
+
+def capture_screenshot(desktop, window, name, evidence):
+    try:
+        evidence[name] = {"status": "captured", **desktop.screenshot(window, name)}
+    except (ImportError, OSError, RuntimeError, ValueError) as error:
+        evidence[name] = {"status": "inconclusive", "reason": str(error)}
+
+
+def capture_node_window(desktop, process, name, evidence):
+    try:
+        window = desktop.find(process)
+        desktop.user32.ShowWindowAsync(window, 9)
+        desktop.message(window, 0)
+        capture_screenshot(desktop, window, name, evidence)
+        return "passed"
+    except RuntimeError as error:
+        evidence[name] = {"status": "inconclusive", "reason": str(error)}
+        return "inconclusive"
+
+
+def capture_wallet_pages(desktop, process, evidence):
+    try:
+        window = desktop.find(process)
+        desktop.message(window, 0)
+    except RuntimeError as error:
+        evidence["regtest-window"] = {"status": "inconclusive", "reason": str(error)}
+        return "inconclusive"
+    pages = ("overview", "send", "receive", "transactions")
+    for shortcut, page in enumerate(pages, start=1):
+        name = f"regtest-{shortcut:02d}-{page}"
+        try:
+            desktop.keystroke(window, ord(str(shortcut)), alt=True)
+            time.sleep(0.35)
+            capture_screenshot(desktop, window, name, evidence)
+            evidence[name]["input"] = f"Alt+{shortcut}"
+        except RuntimeError as error:
+            evidence[name] = {"status": "inconclusive", "reason": str(error)}
+    name = "regtest-05-about"
+    try:
+        desktop.keystroke(window, ord("H"), alt=True)
+        time.sleep(0.3)
+        desktop.keystroke(window, ord("A"))
+        dialog = desktop.find(process, "About", exclude=window)
+        capture_screenshot(desktop, dialog, name, evidence)
+        desktop.user32.PostMessageW(dialog, 0x0010, 0, 0)
+    except RuntimeError as error:
+        evidence[name] = {"status": "inconclusive", "reason": str(error)}
     return "passed"
+
+
+def interactive_install(installer_path, gui, desktop, evidence):
+    try:
+        process = subprocess.Popen([str(installer_path)])
+    except OSError as error:
+        evidence["installer-navigation"] = {"status": "inconclusive", "reason": str(error)}
+        return "silent fallback"
+    started_installation = False
+    try:
+        dialog = desktop.find(process, "Setup")
+        next_button = desktop.button(dialog, "Next")
+        capture_screenshot(desktop, dialog, "installer-01-welcome", evidence)
+        desktop.click_button(next_button)
+        desktop.page(dialog, "destination folder", "choose install location")
+        capture_screenshot(desktop, dialog, "installer-02-destination", evidence)
+        desktop.click_button(desktop.button(dialog, "Next"))
+        install_button = desktop.button(dialog, "Install")
+        capture_screenshot(desktop, dialog, "installer-03-start-menu", evidence)
+        desktop.click_button(install_button)
+        started_installation = True
+        try:
+            desktop.page(dialog, "installing", timeout=3)
+            capture_screenshot(desktop, dialog, "installer-04-install-progress", evidence)
+        except RuntimeError as error:
+            evidence["installer-04-install-progress"] = {"status": "inconclusive", "reason": str(error)}
+        finish = desktop.button(dialog, "Finish", timeout=120)
+        capture_screenshot(desktop, dialog, "installer-05-finish", evidence)
+        run_checkbox = next((
+            handle for handle in desktop.controls(dialog)
+            if desktop.control_text(handle) == "Run Sugarchain"
+        ), None)
+        if not run_checkbox:
+            raise RuntimeError("The Run Sugarchain checkbox was not exposed")
+        desktop.message(run_checkbox, 0x00F1, 0)
+        if desktop.message(run_checkbox, 0x00F0) != 0:
+            raise RuntimeError("The installer Run Sugarchain option remained selected")
+        desktop.click_button(finish)
+        assert process.wait(timeout=15) == 0
+        return "interactive"
+    except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+        evidence["installer-navigation"] = {"status": "inconclusive", "reason": str(error)}
+        if started_installation and not gui.exists():
+            raise RuntimeError("The interactive installation did not reach the installed GUI") from error
+        return "interactive partial" if started_installation else "silent fallback"
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=15)
 
 
 def regtest_transfer(node):
@@ -179,22 +370,26 @@ def check_windows(crt, assets, work, smoke, installer):
     )
     assert not install.exists(), f"Expected a fresh runner: {install}"
     assert not start_menu.exists(), f"Expected a fresh Start Menu: {start_menu}"
-    installer.run_nsis(installer_path)
     gui = install / "sugarchain-qt.exe"
+    desktop = WindowsDesktop(work / "screenshots")
+    visuals = {}
+    installer_mode = interactive_install(installer_path, gui, desktop, visuals)
+    if installer_mode == "silent fallback":
+        installer.run_nsis(installer_path)
     assert gui.is_file() and start_menu.is_file()
 
     core = mainnet_node_type(smoke)
     with core(gui, work / "mainnet", "main", gui=True) as mainnet:
-        mainnet_result = observe_mainnet(mainnet)
-        mainnet_result["native_window_responsiveness"] = check_gui_window(mainnet.process)
+        mainnet_result = observe_mainnet(mainnet, desktop, visuals)
         mainnet.rpc("createwallet", "receive-only", False, False, "", False, True, True)
         mainnet.wallet = "receive-only"
         main_address = mainnet.rpc("getnewaddress", "", "bech32")
         assert main_address.startswith("sugar1q"), main_address
         assert mainnet.rpc("getaddressinfo", main_address)["ismine"]
+        capture_node_window(desktop, mainnet.process, "mainnet-02-wallet", visuals)
         with smoke.Node(gui, work / "regtest", "regtest", gui=True) as regtest:
             address, txid = regtest_transfer(regtest)
-            regtest_window = check_gui_window(regtest.process)
+            regtest_window = capture_wallet_pages(desktop, regtest.process, visuals)
             assert not mainnet.rpc("validateaddress", address)["isvalid"]
             assert not regtest.rpc("validateaddress", main_address)["isvalid"]
             regtest.wallet = "sender"
@@ -233,7 +428,7 @@ def check_windows(crt, assets, work, smoke, installer):
     ) as node:
         assert node.wait()["chain"] == "regtest"
         assert node.rpc("getblockcount") == 0
-        portable_window = check_gui_window(node.process)
+        portable_window = capture_node_window(desktop, node.process, "portable-01-startup", visuals)
     assert node.process.returncode == 0
 
     return {
@@ -241,7 +436,7 @@ def check_windows(crt, assets, work, smoke, installer):
         "portable_asset": archive.name,
         "install_default_directory": str(install),
         "start_menu": "passed",
-        "installer_mode": "silent",
+        "installer_mode": installer_mode,
         "mainnet": {
             **mainnet_result, "address_prefix": "sugar1q", "clean_shutdown": True,
         },
@@ -257,7 +452,8 @@ def check_windows(crt, assets, work, smoke, installer):
         "uninstall_preserved_wallet_and_settings": True,
         "portable_gui_startup": "passed",
         "portable_window_responsiveness": portable_window,
-        "interaction": "Native GUI processes with wallet actions driven through RPC",
+        "visual_checks": visuals,
+        "wallet_rpc_checks": "Address generation, mining, confirmed transfer, restore, restart and cross-network rejection",
     }
 
 

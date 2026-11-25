@@ -29,6 +29,9 @@ jobs:
           $stem = "sugarchain-en-31.1.1-windows-x86_64-$env:RELEASE_CRT"
           py -3 .github/public-release-smoke/fetch-public-assets.py --output "$env:RUNNER_TEMP/public-downloads" "$stem-setup.exe" "$stem-portable.zip"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install test screenshot support
+        shell: pwsh
+        run: py -3 -m pip install --disable-pip-version-check Pillow
       - name: Check Windows installed and portable runtime
         shell: pwsh
         run: |
@@ -42,6 +45,7 @@ jobs:
           path: |
             ${{ runner.temp }}/public-downloads/integrity.json
             ${{ runner.temp }}/public-windows-runtime/result.json
+            ${{ runner.temp }}/public-windows-runtime/screenshots/*.png
           if-no-files-found: ignore
 
   macos:
@@ -89,4 +93,5 @@ jobs:
           path: |
             ${{ runner.temp }}/public-downloads/integrity.json
             ${{ runner.temp }}/public-macos-runtime/results.json
+            ${{ runner.temp }}/public-macos-runtime/screenshots/*.png
           if-no-files-found: ignore

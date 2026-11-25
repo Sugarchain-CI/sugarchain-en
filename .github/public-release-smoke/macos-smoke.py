@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -18,12 +19,137 @@ SUBSIDY = Decimal("42.94967296")
 AMOUNT = Decimal("1.00000000")
 MAINNET_WINDOW_SECONDS = 110
 STARTUP_SECONDS = 50
-UI_LIMIT = "Cocoa app started and interacted through its RPC server. GUI button and dialog input was not tested."
+WINDOW_HELPER = r"""
+import ApplicationServices
+import CoreGraphics
+import Foundation
+
+let pid = pid_t(CommandLine.arguments[1])!
+if CommandLine.arguments.count == 2 {
+    let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+    for window in (windows as? [[String: Any]] ?? []) {
+        guard window[kCGWindowOwnerPID as String] as? Int == Int(pid),
+              window[kCGWindowLayer as String] as? Int == 0,
+              let bounds = window[kCGWindowBounds as String] as? [String: Double],
+              (bounds["Width"] ?? 0) >= 120, (bounds["Height"] ?? 0) >= 80,
+              let number = window[kCGWindowNumber as String] as? Int else { continue }
+        print(number)
+        exit(0)
+    }
+    print("No visible application window")
+    exit(2)
+}
+
+guard AXIsProcessTrusted() else {
+    print("Accessibility permission unavailable")
+    exit(3)
+}
+
+func attribute(_ element: AXUIElement, _ key: String) -> CFTypeRef? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, key as CFString, &value) == .success else {
+        return nil
+    }
+    return value
+}
+
+let target = CommandLine.arguments[2].lowercased()
+let application = AXUIElementCreateApplication(pid)
+AXUIElementSetMessagingTimeout(application, 0.5)
+var pending = [(application, 0)]
+if let bar = attribute(application, kAXMenuBarAttribute), CFGetTypeID(bar) == AXUIElementGetTypeID() {
+    pending.append((unsafeBitCast(bar, to: AXUIElement.self), 0))
+}
+for _ in 0..<450 {
+    guard let (element, depth) = pending.popLast() else { break }
+    let role = attribute(element, kAXRoleAttribute) as? String ?? ""
+    if ["AXButton", "AXRadioButton", "AXTab", "AXMenuItem"].contains(role) {
+        for key in [kAXTitleAttribute, kAXDescriptionAttribute, kAXHelpAttribute] {
+            let title = (attribute(element, key) as? String ?? "").replacingOccurrences(of: "&", with: "").lowercased()
+            if title == target || (target == "about" && title.hasPrefix("about sugarchain")) {
+                if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
+                    print("Pressed \(title)")
+                    exit(0)
+                }
+            }
+        }
+    }
+    if depth < 16, let children = attribute(element, kAXChildrenAttribute) as? [AXUIElement] {
+        pending.append(contentsOf: children.reversed().map { ($0, depth + 1) })
+    }
+}
+print("No accessible control for \(target)")
+exit(4)
+"""
 
 
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+class VisualChecks:
+    def __init__(self, scratch, output):
+        self.records = {
+            name: {"status": "not_run", "reason": "The required application state was not reached"}
+            for name in (
+                "mainnet-startup", "mainnet-sync", "regtest-wallet", "regtest-overview",
+                "regtest-send", "regtest-receive", "regtest-transactions", "regtest-about",
+            )
+        }
+        self.root = output / "screenshots"
+        self.root.mkdir(exist_ok=True)
+        self.helper = scratch / "window-inspector"
+        source = scratch / "window-inspector.swift"
+        source.write_text(WINDOW_HELPER, encoding="utf-8")
+        try:
+            self.command(["/usr/bin/xcrun", "swiftc", str(source), "-o", str(self.helper)], timeout=30)
+            self.helper_error = None
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+            self.helper_error = str(error)[-400:]
+
+    @staticmethod
+    def command(args, *, timeout=4):
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        if result.returncode:
+            raise RuntimeError((result.stderr or result.stdout).strip() or f"Return code {result.returncode}")
+        return result.stdout.strip()
+
+    def window(self, pid):
+        if self.helper_error:
+            raise RuntimeError(self.helper_error)
+        return int(self.command([str(self.helper), str(pid)]))
+
+    def screenshot(self, pid, name, *, different_window=None):
+        path = self.root / f"{name}.png"
+        try:
+            window = self.window(pid)
+            require(window != different_window, "The About window did not appear separately")
+            self.command(["/usr/sbin/screencapture", "-x", "-o", "-l", str(window), str(path)])
+            with path.open("rb") as image:
+                header = image.read(24)
+            require(header.startswith(b"\x89PNG\r\n\x1a\n") and len(header) == 24, "Screenshot did not produce a PNG")
+            width, height = struct.unpack(">II", header[16:24])
+            require(width >= 120 and height >= 80, "Screenshot dimensions were too small")
+            self.records[name] = {"status": "captured", "path": f"screenshots/{path.name}", "width": width, "height": height}
+        except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as error:
+            path.unlink(missing_ok=True)
+            self.records[name] = {"status": "not_run", "reason": str(error)[-400:]}
+
+    def wallet_views(self, pid):
+        self.screenshot(pid, "regtest-wallet")
+        for view in ("overview", "send", "receive", "transactions", "about"):
+            name = f"regtest-{view}"
+            try:
+                if self.helper_error:
+                    raise RuntimeError(self.helper_error)
+                old_window = self.window(pid) if view == "about" else None
+                pressed = self.command([str(self.helper), str(pid), view])
+                time.sleep(0.5)
+                self.screenshot(pid, name, different_window=old_window)
+                self.records[name]["navigation"] = pressed
+            except (RuntimeError, ValueError, OSError, subprocess.TimeoutExpired) as error:
+                self.records[name] = {"status": "not_run", "reason": str(error)[-400:]}
 
 
 class GuiNode:
@@ -106,7 +232,7 @@ class GuiNode:
                 raise
 
 
-def test_regtest(gui, cli, datadir, evidence):
+def test_regtest(gui, cli, datadir, evidence, visuals):
     with GuiNode(gui, cli, datadir, "regtest") as node:
         info = node.ready(time.monotonic() + STARTUP_SECONDS)
         require(info["chain"] == "regtest" and info["blocks"] == 0, f"Expected fresh regtest, got {info['chain']}")
@@ -137,11 +263,12 @@ def test_regtest(gui, cli, datadir, evidence):
         ownership = node.rpc("getaddressinfo", receiver, wallet="restored")["ismine"]
         require(ownership and restored == original == AMOUNT, "Restored wallet did not match receiver address ownership and balance")
         evidence["backup_restore"] = {"owns_receive_address": ownership, "confirmed_balance_sugar": str(restored)}
+        visuals.wallet_views(node.process.pid)
     evidence["shutdown"] = "passed"
     return receiver
 
 
-def test_mainnet(gui, cli, datadir, regtest_address, evidence):
+def test_mainnet(gui, cli, datadir, regtest_address, evidence, visuals):
     start = time.monotonic()
     with GuiNode(gui, cli, datadir, "main") as node:
         deadline = start + MAINNET_WINDOW_SECONDS
@@ -153,6 +280,8 @@ def test_mainnet(gui, cli, datadir, regtest_address, evidence):
         require(address.startswith("sugar1q"), "Unexpected mainnet address prefix")
         require(node.rpc("validateaddress", address)["isvalid"], "Mainnet rejected its own receive address")
         evidence.update({"startup": "passed", "receive_address": address, "initial_headers": initial["headers"]})
+        if time.monotonic() + 12 < deadline:
+            visuals.screenshot(node.process.pid, "mainnet-startup")
         if regtest_address:
             require(not node.rpc("validateaddress", regtest_address)["isvalid"], "Mainnet accepted a regtest address")
             evidence["rejects_regtest_address"] = True
@@ -174,6 +303,8 @@ def test_mainnet(gui, cli, datadir, regtest_address, evidence):
             "observation_seconds": round(time.monotonic() - start, 1),
         })
         node.rpc("setnetworkactive", "false", timeout=3)
+        if evidence["initial_sync"] == "passed":
+            visuals.screenshot(node.process.pid, "mainnet-sync")
     evidence["shutdown"] = "passed"
     return address
 
@@ -230,7 +361,6 @@ def main():
         "tag": "v31.1.1-en.1",
         "architecture": platform.machine(),
         "platform": platform.platform(),
-        "ui": UI_LIMIT,
     }
     with tempfile.TemporaryDirectory(prefix="sugarchain-public-macos-", dir=os.environ["RUNNER_TEMP"]) as temp:
         area = Path(temp)
@@ -259,10 +389,12 @@ def main():
         except (OSError, subprocess.TimeoutExpired) as error:
             integrity["gatekeeper_policy_assessment"] = {"status": "not_run", "error": str(error)[-200:]}
         if integrity["status"] == "passed":
+            visuals = VisualChecks(area, output)
+            result["ui"] = visuals.records
             regtest_data = area / "regtest-data"
             mainnet_data = area / "mainnet-data"
-            receiver = run_check(result, "regtest", lambda row: test_regtest(gui, cli, regtest_data, row))
-            mainnet_address = run_check(result, "mainnet", lambda row: test_mainnet(gui, cli, mainnet_data, receiver, row))
+            receiver = run_check(result, "regtest", lambda row: test_regtest(gui, cli, regtest_data, row, visuals))
+            mainnet_address = run_check(result, "mainnet", lambda row: test_mainnet(gui, cli, mainnet_data, receiver, row, visuals))
             if receiver:
                 run_check(result, "restart", lambda row: test_restart(gui, cli, regtest_data, mainnet_address, result["regtest"], row))
             else:

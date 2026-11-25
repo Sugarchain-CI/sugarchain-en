@@ -48,6 +48,12 @@ def checksums(directory):
     unsigned = directory / "SHA256SUMS"
     signature = directory / "SHA256SUMS.asc"
     gpg = gpg_path()
+    cygpath = Path(gpg).with_name("cygpath.exe")
+
+    def gpg_filename(path):
+        if os.name == "nt" and cygpath.is_file():
+            return subprocess.check_output([str(cygpath), "-u", str(path)], text=True, timeout=10).strip()
+        return str(path)
     subprocess_env = os.environ.copy()
     subprocess_env["LC_ALL"] = "C"
     with tempfile.TemporaryDirectory(prefix=".pgp-", dir=directory, ignore_cleanup_errors=True) as temp:
@@ -55,13 +61,14 @@ def checksums(directory):
         key = temporary / "signing-key.gpg"
         verified = temporary / "verified-sha256sums"
         download(KEY_URL, key)
-        command = [gpg, "--no-options", "--homedir", temp, "--batch", "--no-tty"]
+        home = gpg_filename(temporary)
+        command = [gpg, "--no-options", "--homedir", home, "--batch", "--no-tty"]
         try:
             subprocess.run(
-                [*command, "--import", str(key)], check=True, timeout=60, env=subprocess_env,
+                [*command, "--import", gpg_filename(key)], check=True, timeout=60, env=subprocess_env,
             )
             result = subprocess.run(
-                [*command, "--status-fd", "1", "--output", str(verified), "--decrypt", str(signature)],
+                [*command, "--status-fd", "1", "--output", gpg_filename(verified), "--decrypt", gpg_filename(signature)],
                 check=True, capture_output=True, encoding="ascii", errors="replace",
                 timeout=60, env=subprocess_env,
             )
@@ -80,7 +87,7 @@ def checksums(directory):
             gpgconf = Path(gpg).with_name(executable)
             if gpgconf.is_file():
                 subprocess.run(
-                    [str(gpgconf), "--homedir", temp, "--kill", "all"],
+                    [str(gpgconf), "--homedir", home, "--kill", "all"],
                     check=False, timeout=30, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
     entries = {}
