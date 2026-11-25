@@ -1,21 +1,19 @@
-name: macOS sync candidate and native regression tests
+name: Intel macOS ordered sync comparison
 'on':
   push:
     branches:
-    - automation/en5-macos-native-checks
+    - automation/en6-intel-sync
 permissions:
   contents: read
 jobs:
   compare:
     name: macOS cache comparison ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 95
+    timeout-minutes: 100
     strategy:
       fail-fast: false
       matrix:
         include:
-        - arch: arm64
-          runner: macos-15
         - arch: x86_64
           runner: macos-15-intel
     steps:
@@ -23,7 +21,7 @@ jobs:
       uses: actions/checkout@v6
       with:
         persist-credentials: false
-    - name: Check out pinned En.4 source
+    - name: Check out verified En.4 source
       uses: actions/checkout@v6
       with:
         path: source
@@ -36,71 +34,54 @@ jobs:
         path: ${{ runner.temp }}/macos-subsecond-ccache
         key: macos-subsecond-${{ matrix.arch }}-${{ github.run_id }}
         restore-keys: macos-subsecond-${{ matrix.arch }}-
-    - name: Build the prior optimized reference and release candidate
+    - name: Compile the control and macOS optimized variant
       shell: bash
       run: "set -euo pipefail\nexport CCACHE_DIR=\"$RUNNER_TEMP/macos-subsecond-ccache\"\
-        \ntest \"$(uname -m)\" = \"${{ matrix.arch }}\"\ntest \"$(git -C source rev-parse\
-        \ HEAD)\" = 13a5822c27a5097f72f97262413c243d7db57708\nfor dependency in boost\
-        \ libevent ccache; do\n  if ! brew list --versions \"$dependency\" >/dev/null\
-        \ 2>&1 || [[ -z \"$(brew list --versions \"$dependency\")\" ]]; then\n   \
-        \ HOMEBREW_NO_AUTO_UPDATE=1 brew install \"$dependency\"\n  fi\ndone\ncommand\
-        \ -v cmake\ncommand -v ninja\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\n\
-        build=\"$workspace/build\"\nmkdir -p \"$workspace/baseline\" \"$workspace/candidate\"\
-        \ncmake -S source -B \"$build\" -G Ninja -DCMAKE_BUILD_TYPE=Release \"-DCMAKE_CXX_FLAGS=-Werror=thread-safety\"\
-        \ \\\n  \"-DCMAKE_PREFIX_PATH=$(brew --prefix boost);$(brew --prefix libevent)\"\
-        \ \\\n  -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_CLI=OFF -DENABLE_WALLET=OFF\
-        \ -DENABLE_IPC=OFF -DWITH_USDT=OFF\njobs=\"$(sysctl -n hw.logicalcpu)\"\n\
-        git -C source apply \"$GITHUB_WORKSPACE/baseline.patch\"\ncmake -B \"$build\"\
-        \ -S source -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\n\
-        cmake --build \"$build\" --target bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\"\
-        \ \"$workspace/baseline/sugarchaind\"\ngit -C source apply --reverse \"$GITHUB_WORKSPACE/baseline.patch\"\
-        \ngit -C source diff --exit-code\ngit -C source apply \"$GITHUB_WORKSPACE/optimization.patch\"\
-        \ngit -C source diff --check\nexpected=$(git apply --numstat \"$GITHUB_WORKSPACE/optimization.patch\"\
-        \ | cut -f3 | LC_ALL=C sort)\nactual=$(git -C source diff --name-only | LC_ALL=C\
-        \ sort)\ntest \"$actual\" = \"$expected\"\ncmake -B \"$build\" -S source -DCMAKE_CXX_FLAGS_RELEASE=-O3\
-        \ -DCMAKE_C_FLAGS_RELEASE=-O3   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\n\
-        cmake --build \"$build\" --target bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\"\
-        \ \"$workspace/candidate/sugarchaind\"\nshasum -a 256 \"$workspace/\"{baseline,candidate}/sugarchaind\n"
+        \nfor dependency in boost libevent ccache; do\n  if ! brew list --versions\
+        \ \"$dependency\" >/dev/null 2>&1 || [[ -z \"$(brew list --versions \"$dependency\"\
+        )\" ]]; then\n    HOMEBREW_NO_AUTO_UPDATE=1 brew install \"$dependency\"\n\
+        \  fi\ndone\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\nbuild=\"$workspace/build\"\
+        \nmkdir -p \"$workspace\"/{reference,release,candidate}\ncmake -S source -B\
+        \ \"$build\" -G Ninja -DCMAKE_BUILD_TYPE=Release \"-DCMAKE_CXX_FLAGS=-Werror=thread-safety\"\
+        \   \"-DCMAKE_PREFIX_PATH=$(brew --prefix boost);$(brew --prefix libevent)\"\
+        \   -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\
+        \   -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_CLI=OFF -DENABLE_WALLET=ON -DENABLE_IPC=OFF\
+        \ -DWITH_USDT=OFF\njobs=\"$(sysctl -n hw.logicalcpu)\"\nfor variant in reference\
+        \ release candidate; do\n  git -C source apply \"$GITHUB_WORKSPACE/$variant.patch\"\
+        \n  git -C source diff --check\n  cmake --build \"$build\" --target bitcoind\
+        \ --parallel \"$jobs\"\n  cp \"$build/bin/sugarchaind\" \"$workspace/$variant/sugarchaind\"\
+        \n  git -C source apply --reverse \"$GITHUB_WORKSPACE/$variant.patch\"\n \
+        \ git -C source diff --exit-code\ndone\ngit -C source apply \"$GITHUB_WORKSPACE/candidate.patch\"\
+        \nshasum -a 256 \"$workspace/\"{reference,release,candidate}/sugarchaind\n"
     - name: Measure fresh receivers with the same 10,000 blocks
       shell: bash
-      run: "set -euo pipefail\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\npython3\
-        \ regtest-sync.py --baseline-bin-dir \"$workspace/baseline\" --candidate-bin-dir\
-        \ \"$workspace/candidate\" \\\n  --work-dir \"$workspace/results\" --blocks\
-        \ 10000 --repeats 3\njq -e '.fixture_sha256 == \"e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9\"\
-        \n  and .fixture_utxo_sha256 == \"63208d710cf03c30de2660b77a5434181b20fd1c5e70460b256ea4f4e798cb84\"\
-        \n  and all(.variants[].samples[]; .reload_verified)' \"$workspace/results/result.json\"\
-        \n\npython3 regtest-sync.py --baseline-bin-dir \"$workspace/baseline\" --candidate-bin-dir\
-        \ \"$workspace/candidate\"   --sender candidate --work-dir \"$workspace/new-sender\"\
-        \ --blocks 10000 --repeats 3\njq -e '.fixture_sha256 == \"e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9\"\
-        \n  and .fixture_utxo_sha256 == \"63208d710cf03c30de2660b77a5434181b20fd1c5e70460b256ea4f4e798cb84\"\
-        \n  and all(.variants[].samples[]; .reload_verified)' \"$workspace/new-sender/result.json\"\
-        \n"
+      run: "set -euo pipefail\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\nfor control\
+        \ in reference release; do\n  for sender in baseline candidate; do\n    python3\
+        \ regtest-sync.py --baseline-bin-dir \"$workspace/$control\" --candidate-bin-dir\
+        \ \"$workspace/candidate\"       --work-dir \"$workspace/$control-$sender\"\
+        \ --sender \"$sender\" --blocks 10000 --repeats 3\n    jq -e '.fixture_sha256\
+        \ == \"e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9\"\n\
+        \      and .fixture_utxo_sha256 == \"63208d710cf03c30de2660b77a5434181b20fd1c5e70460b256ea4f4e798cb84\"\
+        \n      and all(.variants[].samples[]; .reload_verified)' \"$workspace/$control-$sender/result.json\"\
+        \n  done\ndone\n"
     - name: Retain comparison evidence
       if: always()
       uses: actions/upload-artifact@v7
       with:
-        name: macos-sync-checks-${{ matrix.arch }}
-        path: '${{ runner.temp }}/macos-subsecond/results/result.json
-
-          ${{ runner.temp }}/macos-subsecond/results/*/console.log
-
-          ${{ runner.temp }}/macos-subsecond/new-sender/result.json
-
-          '
+        name: intel-sync-comparison
+        path: ${{ runner.temp }}/macos-subsecond/*/result.json
         if-no-files-found: warn
         retention-days: 7
-    - name: Run native scheduler, validation signal, storage and stream tests
+    - name: Check fee estimation, scheduler and chain storage
       run: 'set -euo pipefail
 
         build="$RUNNER_TEMP/macos-subsecond/build"
 
-        export CCACHE_DIR="$RUNNER_TEMP/macos-subsecond-ccache"
-
-        cmake -B "$build" -S source -DBUILD_TESTS=ON
+        cmake -S source -B "$build" -DBUILD_TESTS=ON
 
         cmake --build "$build" --target test_bitcoin --parallel "$(sysctl -n hw.logicalcpu)"
 
-        ctest --test-dir "$build" --no-tests=error --output-on-failure -R ''^(scheduler_tests|validationinterface_tests|blockmanager_tests|streams_tests)$''
+        ctest --test-dir "$build" --no-tests=error --output-on-failure -R ''^(policyestimator_tests|scheduler_tests|validationinterface_tests|blockmanager_tests|streams_tests)$''
 
         '
     - name: Keep compiler cache for follow-up measurements

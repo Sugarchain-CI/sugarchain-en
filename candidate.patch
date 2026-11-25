@@ -1,0 +1,822 @@
+diff --git a/src/init.cpp b/src/init.cpp
+index 489288037f..6815285b72 100644
+--- a/src/init.cpp
++++ b/src/init.cpp
+@@ -329,6 +329,9 @@ void Shutdown(NodeContext& node)
+     // the scheduler. After this point, SyncWithValidationInterfaceQueue() should not be called anymore
+     // as this would prevent the shutdown from completing.
+     if (node.scheduler) node.scheduler->stop();
++#if defined(__APPLE__) && defined(__aarch64__)
++    if (node.validation_signals) node.validation_signals->StopBackgroundCallbacks();
++#endif
+ 
+     // After the threads that potentially access these pointers have been stopped,
+     // destruct and reset all to nullptr.
+@@ -1503,7 +1506,11 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
+     }
+ 
+     assert(!node.validation_signals);
++#if defined(__APPLE__) && defined(__aarch64__)
++    node.validation_signals = std::make_unique<ValidationSignals>(std::make_unique<ValidationTaskRunner>());
++#else
+     node.validation_signals = std::make_unique<ValidationSignals>(std::make_unique<SerialTaskRunner>(scheduler));
++#endif
+     auto& validation_signals = *node.validation_signals;
+ 
+     // Create KernelNotifications object. Important to do this early before
+diff --git a/src/node/blockstorage.cpp b/src/node/blockstorage.cpp
+index 80d356384c..15fb396739 100644
+--- a/src/node/blockstorage.cpp
++++ b/src/node/blockstorage.cpp
+@@ -68,6 +68,10 @@
+ #include <unordered_map>
+ #include <utility>
+ 
++#ifdef __APPLE__
++#include <unistd.h>
++#endif
++
+ namespace kernel {
+ namespace {
+ std::string FormatGroupedCount(uint64_t count)
+@@ -972,6 +976,9 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
+         LOCK(cs_LastBlockFile);
+         const bool block_closed{m_block_writer.Close()};
+         const bool undo_closed{m_undo_writer.Close()};
++#ifdef __APPLE__
++        m_block_read_file.reset();
++#endif
+         if (!block_closed || !undo_closed) return false;
+     }
+ #endif
+@@ -1277,6 +1284,9 @@ void BlockManager::UnlinkPrunedFiles(const std::set<int>& setFilesToPrune) const
+         const bool block_closed{m_block_writer.Close(*it)};
+         const bool undo_closed{m_undo_writer.Close(*it)};
+         if (!block_closed || !undo_closed) continue;
++#endif
++#ifdef __APPLE__
++        if (m_block_read_file_num == *it) m_block_read_file.reset();
+ #endif
+         FlatFilePos pos(*it, 0);
+         const bool removed_blockfile{fs::remove(m_block_file_seq.FileName(pos), ec)};
+@@ -1306,6 +1316,12 @@ bool BlockManager::WriteFileCache::Close(int file_num)
+ AutoFile BlockManager::WriteFileCache::Open(const FlatFileSeq& sequence, const FlatFilePos& pos, const Obfuscation& obfuscation)
+ {
+     if (m_file && pos.nFile == m_file_num) {
++#ifdef __APPLE__
++        // Keep flushed the previous record, so the stream is ready for an append.
++        if (m_file_pos && *m_file_pos == pos.nPos) {
++            return AutoFile{std::exchange(m_file, nullptr), obfuscation, *m_file_pos};
++        }
++#endif
+         // Use the absolute offset so AutoFile starts with the correct XOR position.
+         if (std::fseek(m_file, pos.nPos, SEEK_SET) == 0) {
+             return AutoFile{std::exchange(m_file, nullptr), obfuscation};
+@@ -1321,6 +1337,9 @@ AutoFile BlockManager::WriteFileCache::Open(const FlatFileSeq& sequence, const F
+ bool BlockManager::WriteFileCache::Keep(AutoFile& file, int file_num)
+ {
+     assert(!m_file);
++#ifdef __APPLE__
++    m_file_pos = file.GetPosition();
++#endif
+     m_file = file.release();
+     m_file_num = file_num;
+     // Publish bytes to other handles before exposing the record's index.
+@@ -1514,7 +1533,12 @@ bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationSt
+             return FatalError(m_opts.notifications, state, _("Failed to write undo data."));
+         }
+         {
++#ifdef __APPLE__
++            // A spare byte keeps smaller records on the scope-exit flush path.
++            BufferedWriter fileout{file, std::min<size_t>(size_t{blockundo_size} + UNDO_DATA_DISK_OVERHEAD + 1, 64 * 1024)};
++#else
+             BufferedWriter fileout{file};
++#endif
+ 
+             // Write index header
+             fileout << GetParams().MessageStart() << blockundo_size;
+@@ -1629,17 +1653,64 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
+         LogError("Failed for %s while reading raw block storage header", pos.ToString());
+         return util::Unexpected{ReadRawError::IO};
+     }
++#ifdef __APPLE__
++    std::shared_ptr<std::FILE> read_handle;
++    {
++        LOCK(cs_LastBlockFile);
++        if (!m_block_read_file || m_block_read_file_num != pos.nFile) {
++            auto* opened{m_block_file_seq.Open({pos.nFile, 0}, /*read_only=*/true)};
++            if (!opened) {
++                LogError("OpenBlockFile failed for %s while reading raw block", pos.ToString());
++                return util::Unexpected{ReadRawError::IO};
++            }
++            m_block_read_file.reset(opened, [](std::FILE* stream) {
++                if (std::fclose(stream) != 0) {
++                    LogError("Failed to close cached block reader: %s", SysErrorString(errno));
++                }
++            });
++            m_block_read_file_num = pos.nFile;
++        }
++        read_handle = m_block_read_file;
++    }
++
++    const int fd{::fileno(read_handle.get())};
++    off_t read_offset{pos.nPos - STORAGE_HEADER_BYTES};
++    const auto read_bytes = [&](std::span<std::byte> dst) {
++        // Positional reads leave the cached stream cursor untouched and see
++        // newly flushed records without stale stdio read-ahead.
++        auto remaining = dst;
++        while (!remaining.empty()) {
++            const ssize_t count{::pread(fd, remaining.data(), remaining.size(),
++                read_offset + static_cast<off_t>(dst.size() - remaining.size()))};
++            if (count < 0) {
++                if (errno == EINTR) continue;
++                throw std::ios_base::failure("pread failed: " + SysErrorString(errno));
++            }
++            if (count == 0) throw std::ios_base::failure("Unexpected end of block file");
++            remaining = remaining.subspan(static_cast<size_t>(count));
++        }
++        m_obfuscation(dst, read_offset);
++        read_offset += static_cast<off_t>(dst.size());
++    };
++#else
+     AutoFile filein{OpenBlockFile({pos.nFile, pos.nPos - STORAGE_HEADER_BYTES}, /*fReadOnly=*/true)};
+     if (filein.IsNull()) {
+         LogError("OpenBlockFile failed for %s while reading raw block", pos.ToString());
+         return util::Unexpected{ReadRawError::IO};
+     }
+ 
++#endif
+     try {
+         MessageStartChars blk_start;
+         unsigned int blk_size;
+ 
++#ifdef __APPLE__
++        std::array<std::byte, STORAGE_HEADER_BYTES> header;
++        read_bytes(header);
++        SpanReader{header} >> blk_start >> blk_size;
++#else
+         filein >> blk_start >> blk_size;
++#endif
+ 
+         if (blk_start != GetParams().MessageStart()) {
+             LogError("Block magic mismatch for %s: %s versus expected %s while reading raw block",
+@@ -1658,12 +1729,20 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
+             if (size == 0 || SaturatingAdd(offset, size) > blk_size) {
+                 return util::Unexpected{ReadRawError::BadPartRange}; // Avoid logging - offset/size come from untrusted REST input
+             }
++#ifdef __APPLE__
++            read_offset += static_cast<off_t>(offset);
++#else
+             filein.seek(offset, SEEK_CUR);
++#endif
+             blk_size = size;
+         }
+ 
+         std::vector<std::byte> data(blk_size); // Zeroing of memory is intentional here
++#ifdef __APPLE__
++        read_bytes(data);
++#else
+         filein.read(data);
++#endif
+         return data;
+     } catch (const std::exception& e) {
+         LogError("Read from block file failed: %s for %s while reading raw block", e.what(), pos.ToString());
+@@ -1693,7 +1772,11 @@ FlatFilePos BlockManager::WriteBlock(const CBlock& block, int nHeight)
+         return FlatFilePos();
+     }
+     {
++#ifdef __APPLE__
++        BufferedWriter fileout{file, std::min<size_t>(size_t{block_size} + STORAGE_HEADER_BYTES + 1, 64 * 1024)};
++#else
+         BufferedWriter fileout{file};
++#endif
+ 
+         // Write index header
+         fileout << GetParams().MessageStart() << block_size;
+diff --git a/src/node/blockstorage.h b/src/node/blockstorage.h
+index 21d11decc0..91ef0b0601 100644
+--- a/src/node/blockstorage.h
++++ b/src/node/blockstorage.h
+@@ -246,6 +246,9 @@ private:
+     {
+         std::FILE* m_file{nullptr};
+         int m_file_num{-1};
++#ifdef __APPLE__
++        std::optional<int64_t> m_file_pos;
++#endif
+ 
+     public:
+         WriteFileCache() = default;
+@@ -261,6 +264,12 @@ private:
+     mutable WriteFileCache m_undo_writer GUARDED_BY(cs_LastBlockFile);
+ #endif
+ 
++#ifdef __APPLE__
++    // Keep one read-only file available and let each read own its reference.
++    mutable std::shared_ptr<std::FILE> m_block_read_file GUARDED_BY(cs_LastBlockFile);
++    mutable int m_block_read_file_num GUARDED_BY(cs_LastBlockFile){-1};
++#endif
++
+     /* Calculate the block/rev files to delete based on height specified by user with RPC command pruneblockchain */
+     void FindFilesToPruneManual(
+         std::set<int>& setFilesToPrune,
+diff --git a/src/policy/fees/block_policy_estimator.cpp b/src/policy/fees/block_policy_estimator.cpp
+index c364ae6bbd..da7b4a89db 100644
+--- a/src/policy/fees/block_policy_estimator.cpp
++++ b/src/policy/fees/block_policy_estimator.cpp
+@@ -102,6 +102,12 @@ private:
+     // Combine the conf counts with tx counts to calculate the confirmation % for each Y,X
+     // Combine the total value with the tx counts to calculate the avg feerate per bucket
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++    // A freshly created estimator has only zero counters. Loading estimates or
++    // recording a transaction permanently enables the normal update path.
++    bool m_pristine{true};
++#endif
++
+     double decay;
+ 
+     // Resolution (# of blocks) with which confirmations are tracked
+@@ -207,6 +213,9 @@ void TxConfirmStats::resizeInMemoryCounters(size_t newbuckets) {
+ // Roll the unconfirmed txs circular buffer
+ void TxConfirmStats::ClearCurrent(unsigned int nBlockHeight)
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (m_pristine) return;
++#endif
+     for (unsigned int j = 0; j < buckets.size(); j++) {
+         oldUnconfTxs[j] += unconfTxs[nBlockHeight % unconfTxs.size()][j];
+         unconfTxs[nBlockHeight%unconfTxs.size()][j] = 0;
+@@ -216,6 +225,9 @@ void TxConfirmStats::ClearCurrent(unsigned int nBlockHeight)
+ 
+ void TxConfirmStats::Record(int blocksToConfirm, double feerate)
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    m_pristine = false;
++#endif
+     // blocksToConfirm is 1-based
+     if (blocksToConfirm < 1)
+         return;
+@@ -230,6 +242,9 @@ void TxConfirmStats::Record(int blocksToConfirm, double feerate)
+ 
+ void TxConfirmStats::UpdateMovingAverages()
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (m_pristine) return;
++#endif
+     assert(confAvg.size() == failAvg.size());
+     for (unsigned int j = 0; j < buckets.size(); j++) {
+         for (unsigned int i = 0; i < confAvg.size(); i++) {
+@@ -420,6 +435,9 @@ void TxConfirmStats::Write(AutoFile& fileout) const
+ 
+ void TxConfirmStats::Read(AutoFile& filein, size_t numBuckets)
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    m_pristine = false;
++#endif
+     // Read data file and do some very basic sanity checking
+     // buckets and bucketMap are not updated yet, so don't access them
+     // If there is a read failure, we'll just discard this entire object anyway
+@@ -476,6 +494,9 @@ void TxConfirmStats::Read(AutoFile& filein, size_t numBuckets)
+ 
+ unsigned int TxConfirmStats::NewTx(unsigned int nBlockHeight, double val)
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    m_pristine = false;
++#endif
+     unsigned int bucketindex = bucketMap.lower_bound(val)->second;
+     unsigned int blockIndex = nBlockHeight % unconfTxs.size();
+     unconfTxs[blockIndex][bucketindex]++;
+@@ -484,6 +505,9 @@ unsigned int TxConfirmStats::NewTx(unsigned int nBlockHeight, double val)
+ 
+ void TxConfirmStats::removeTx(unsigned int entryHeight, unsigned int nBestSeenHeight, unsigned int bucketindex, bool inBlock)
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    m_pristine = false;
++#endif
+     //nBestSeenHeight is not updated yet for the new block
+     int blocksAgo = nBestSeenHeight - entryHeight;
+     if (nBestSeenHeight == 0)  // the BlockPolicyEstimator hasn't seen any blocks yet
+diff --git a/src/scheduler.cpp b/src/scheduler.cpp
+index 5a3b7218ca..f8f956cf86 100644
+--- a/src/scheduler.cpp
++++ b/src/scheduler.cpp
+@@ -7,6 +7,7 @@
+ #include <sync.h>
+ #include <util/time.h>
+ 
++#include <algorithm>
+ #include <cassert>
+ #include <functional>
+ #include <utility>
+@@ -138,26 +139,57 @@ void SerialTaskRunner::MaybeScheduleProcessQueue()
+ {
+     {
+         LOCK(m_callbacks_mutex);
+-        // Try to avoid scheduling too many copies here, but if we
+-        // accidentally have two ProcessQueue's scheduled at once its
+-        // not a big deal.
+         if (m_are_callbacks_running) return;
+         if (m_callbacks_pending.empty()) return;
++#ifdef __APPLE__
++        if (m_process_queue_scheduled) return;
++        m_process_queue_scheduled = true;
++#endif
++    }
++#ifdef __APPLE__
++    try {
++#endif
++        m_scheduler.schedule([this] { this->ProcessQueue(); }, std::chrono::steady_clock::now());
++#ifdef __APPLE__
++    } catch (...) {
++        LOCK(m_callbacks_mutex);
++        m_process_queue_scheduled = false;
++        throw;
++    }
++#endif
++}
++
++#ifdef __APPLE__
++std::function<void()> SerialTaskRunner::PopCallback()
++{
++    AssertLockHeld(m_callbacks_mutex);
++    auto callback{std::move(m_callbacks_pending.front())};
++    m_callbacks_pending.pop_front();
++    if (m_capacity_waiters && m_callbacks_pending.size() <= m_capacity_wait_limit) {
++        m_capacity.notify_all();
+     }
+-    m_scheduler.schedule([this] { this->ProcessQueue(); }, std::chrono::steady_clock::now());
++    return callback;
+ }
++#endif
+ 
+ void SerialTaskRunner::ProcessQueue()
+ {
+     std::function<void()> callback;
+     {
+         LOCK(m_callbacks_mutex);
++#ifdef __APPLE__
++        m_process_queue_scheduled = false;
++#endif
+         if (m_are_callbacks_running) return;
+         if (m_callbacks_pending.empty()) return;
+         m_are_callbacks_running = true;
+ 
++#ifdef __APPLE__
++        callback = PopCallback();
++#else
+         callback = std::move(m_callbacks_pending.front());
+         m_callbacks_pending.pop_front();
++#endif
+     }
+ 
+     // RAII the setting of fCallbacksRunning and calling MaybeScheduleProcessQueue
+@@ -175,7 +207,24 @@ void SerialTaskRunner::ProcessQueue()
+         }
+     } raiicallbacksrunning(this);
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++    const auto deadline{std::chrono::steady_clock::now() + 1ms};
++#endif
+     callback();
++#if defined(__APPLE__) && defined(__x86_64__)
++    callback = {};
++    // Share each scheduler turn among ready callbacks without starving other tasks.
++    for (size_t processed{1}; processed < 8; ++processed) {
++        if (std::chrono::steady_clock::now() >= deadline || m_scheduler.StopRequested()) break;
++        std::function<void()> next;
++        {
++            LOCK(m_callbacks_mutex);
++            if (m_callbacks_pending.empty()) break;
++            next = PopCallback();
++        }
++        next();
++    }
++#endif
+ }
+ 
+ void SerialTaskRunner::insert(std::function<void()> func)
+@@ -203,3 +252,99 @@ size_t SerialTaskRunner::size()
+     LOCK(m_callbacks_mutex);
+     return m_callbacks_pending.size();
+ }
++
++#ifdef __APPLE__
++bool SerialTaskRunner::waitForPendingAtMost(size_t limit)
++{
++    WAIT_LOCK(m_callbacks_mutex, lock);
++    if (m_callbacks_pending.size() <= limit) return true;
++
++    ++m_capacity_waiters;
++    m_capacity_wait_limit = std::max(m_capacity_wait_limit, limit);
++    m_capacity.wait(lock, [this, limit]() EXCLUSIVE_LOCKS_REQUIRED(m_callbacks_mutex) {
++        return m_callbacks_pending.size() <= limit;
++    });
++    if (--m_capacity_waiters == 0) m_capacity_wait_limit = 0;
++    return true;
++}
++#endif
++
++#if defined(__APPLE__) && defined(__aarch64__)
++ValidationTaskRunner::ValidationTaskRunner() : m_worker{[this] { Run(/*drain=*/false); }} {}
++
++ValidationTaskRunner::~ValidationTaskRunner()
++{
++    stop();
++}
++
++void ValidationTaskRunner::Run(bool drain)
++{
++    WAIT_LOCK(m_mutex, lock);
++    while (drain || !m_stopped) {
++        if (m_pending.empty()) {
++            if (drain) return;
++            m_available.wait(lock);
++            continue;
++        }
++
++        auto callback{std::move(m_pending.front())};
++        m_pending.pop_front();
++        if (m_capacity_waiters != 0 && m_pending.size() <= m_capacity_wait_limit) {
++            m_capacity.notify_all();
++        }
++        {
++            REVERSE_LOCK(lock, m_mutex);
++            auto task{std::move(callback)};
++            task();
++        }
++    }
++}
++
++void ValidationTaskRunner::insert(std::function<void()> func)
++{
++    bool wake;
++    {
++        LOCK(m_mutex);
++        wake = m_pending.empty() && !m_stopped;
++        m_pending.emplace_back(std::move(func));
++    }
++    if (wake) m_available.notify_one();
++}
++
++void ValidationTaskRunner::stop()
++{
++    {
++        LOCK(m_mutex);
++        m_stopped = true;
++    }
++    m_available.notify_one();
++    m_capacity.notify_all();
++    if (m_worker.joinable()) m_worker.join();
++}
++
++void ValidationTaskRunner::flush()
++{
++    assert(!m_worker.joinable());
++    Run(/*drain=*/true);
++}
++
++size_t ValidationTaskRunner::size()
++{
++    LOCK(m_mutex);
++    return m_pending.size();
++}
++
++bool ValidationTaskRunner::waitForPendingAtMost(size_t limit)
++{
++    WAIT_LOCK(m_mutex, lock);
++    if (m_stopped || m_pending.size() <= limit) return true;
++
++    ++m_capacity_waiters;
++    m_capacity_wait_limit = std::max(m_capacity_wait_limit, limit);
++    m_capacity.wait(lock, [this, limit]() EXCLUSIVE_LOCKS_REQUIRED(m_mutex) {
++        return m_stopped || m_pending.size() <= limit;
++    });
++    if (--m_capacity_waiters == 0) m_capacity_wait_limit = 0;
++    return true;
++}
++#endif
+diff --git a/src/scheduler.h b/src/scheduler.h
+index 79b8afd2ad..6ab66665fe 100644
+--- a/src/scheduler.h
++++ b/src/scheduler.h
+@@ -102,6 +102,14 @@ public:
+     bool AreThreadsServicingQueue() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex);
+ 
+ private:
++#if defined(__APPLE__) && defined(__x86_64__)
++    friend class SerialTaskRunner;
++
++    bool StopRequested() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex)
++    {
++        return WITH_LOCK(newTaskMutex, return stopRequested);
++    }
++#endif
+     mutable Mutex newTaskMutex;
+     std::condition_variable newTaskScheduled;
+     std::multimap<std::chrono::steady_clock::time_point, Function> taskQueue GUARDED_BY(newTaskMutex);
+@@ -133,8 +141,17 @@ private:
+     // our own queue here :(
+     std::list<std::function<void()>> m_callbacks_pending GUARDED_BY(m_callbacks_mutex);
+     bool m_are_callbacks_running GUARDED_BY(m_callbacks_mutex) = false;
++#ifdef __APPLE__
++    bool m_process_queue_scheduled GUARDED_BY(m_callbacks_mutex){false};
++    std::condition_variable m_capacity;
++    size_t m_capacity_waiters GUARDED_BY(m_callbacks_mutex){0};
++    size_t m_capacity_wait_limit GUARDED_BY(m_callbacks_mutex){0};
++#endif
+ 
+     void MaybeScheduleProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
++#ifdef __APPLE__
++    std::function<void()> PopCallback() EXCLUSIVE_LOCKS_REQUIRED(m_callbacks_mutex);
++#endif
+     void ProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
+ 
+ public:
+@@ -155,6 +172,36 @@ public:
+     void flush() override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
+ 
+     size_t size() override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
++#ifdef __APPLE__
++    bool waitForPendingAtMost(size_t limit) override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
++#endif
++};
++
++#if defined(__APPLE__) && defined(__aarch64__)
++/** A single background worker for the ordered validation callback queue. */
++class ValidationTaskRunner final : public util::TaskRunnerInterface
++{
++    Mutex m_mutex;
++    std::condition_variable m_available;
++    std::condition_variable m_capacity;
++    size_t m_capacity_waiters GUARDED_BY(m_mutex){0};
++    size_t m_capacity_wait_limit GUARDED_BY(m_mutex){0};
++    std::list<std::function<void()>> m_pending GUARDED_BY(m_mutex);
++    bool m_stopped GUARDED_BY(m_mutex){false};
++    std::thread m_worker;
++
++    void Run(bool drain) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
++
++public:
++    ValidationTaskRunner();
++    ~ValidationTaskRunner() override;
++
++    void insert(std::function<void()> func) override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
++    void stop() override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
++    void flush() override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
++    size_t size() override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
++    bool waitForPendingAtMost(size_t limit) override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+ };
++#endif
+ 
+ #endif // BITCOIN_SCHEDULER_H
+diff --git a/src/streams.h b/src/streams.h
+index f70adcf74a..e7c03e057a 100644
+--- a/src/streams.h
++++ b/src/streams.h
+@@ -379,6 +379,16 @@ protected:
+ 
+ public:
+     explicit AutoFile(std::FILE* file, const Obfuscation& obfuscation = {});
++#ifdef __APPLE__
++    AutoFile(std::FILE* file, const Obfuscation& obfuscation, int64_t position)
++        : m_file{file}, m_obfuscation{obfuscation}, m_position{position}
++    {
++        assert(file);
++    }
++
++    /** The logical stream offset, when available. Includes buffered writes. */
++    [[nodiscard]] std::optional<int64_t> GetPosition() const { return m_position; }
++#endif
+ 
+     ~AutoFile()
+     {
+diff --git a/src/test/scheduler_tests.cpp b/src/test/scheduler_tests.cpp
+index c106eca69c..cea3a44d07 100644
+--- a/src/test/scheduler_tests.cpp
++++ b/src/test/scheduler_tests.cpp
+@@ -9,7 +9,11 @@
+ #include <boost/test/unit_test.hpp>
+ 
+ #include <functional>
++#if defined(__APPLE__) && defined(__aarch64__)
++#include <future>
++#endif
+ #include <mutex>
++#include <stdexcept>
+ #include <thread>
+ #include <vector>
+ 
+@@ -171,6 +175,82 @@ BOOST_AUTO_TEST_CASE(singlethreadedscheduler_ordered)
+     BOOST_CHECK_EQUAL(counter2, 100);
+ }
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++BOOST_AUTO_TEST_CASE(validation_worker_capacity_and_shutdown)
++{
++    ValidationTaskRunner runner;
++    std::vector<int> order;
++    std::thread::id worker_id;
++    std::thread::id draining_id;
++    std::promise<void> first_started, release_first, release_last;
++    auto first_gate{release_first.get_future()};
++    auto last_gate{release_last.get_future()};
++
++    runner.insert([&] {
++        worker_id = std::this_thread::get_id();
++        order.push_back(1);
++        first_started.set_value();
++        first_gate.wait();
++    });
++    first_started.get_future().wait();
++    runner.insert([&] {
++        order.push_back(2);
++        // The last callback waits inside its body. Queue capacity is released
++        // on dequeue, so the producer can unblock it without draining the FIFO.
++        last_gate.wait();
++    });
++    const size_t held_pending{runner.size()};
++    release_first.set_value();
++    const bool capacity_released{runner.waitForPendingAtMost(0)};
++    release_last.set_value();
++    runner.stop();
++
++    // Shutdown can still enqueue final chainstate notifications. The caller
++    // drains them after the worker has stopped, including nested notifications.
++    runner.insert([&] {
++        draining_id = std::this_thread::get_id();
++        order.push_back(3);
++        runner.insert([&] { order.push_back(5); });
++    });
++    runner.insert([&] { order.push_back(4); });
++    BOOST_CHECK_EQUAL(runner.size(), 2U);
++    runner.flush();
++    const std::vector<int> expected{1, 2, 3, 4, 5};
++    BOOST_CHECK_EQUAL(held_pending, 1U);
++    BOOST_CHECK(capacity_released);
++    BOOST_CHECK(worker_id != std::this_thread::get_id());
++    BOOST_CHECK(draining_id == std::this_thread::get_id());
++    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
++    BOOST_CHECK_EQUAL(runner.size(), 0U);
++}
++#endif
++
++BOOST_AUTO_TEST_CASE(serial_callbacks_resume_after_exception_and_stop)
++{
++    CScheduler scheduler;
++    SerialTaskRunner runner{scheduler};
++    std::vector<int> order;
++    runner.insert([&] { order.push_back(1); });
++    runner.insert([&] {
++        order.push_back(2);
++        throw std::runtime_error{"validation callback"};
++    });
++    runner.insert([&] {
++        order.push_back(3);
++        scheduler.stop();
++    });
++    runner.insert([&] { order.push_back(4); });
++
++    BOOST_CHECK_THROW(scheduler.serviceQueue(), std::runtime_error);
++    BOOST_CHECK_EQUAL(order.size(), 2U);
++    scheduler.serviceQueue();
++    BOOST_CHECK_EQUAL(runner.size(), 1U);
++    runner.flush();
++
++    const std::vector<int> expected{1, 2, 3, 4};
++    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
++}
++
+ BOOST_AUTO_TEST_CASE(mockforward)
+ {
+     CScheduler scheduler;
+diff --git a/src/util/task_runner.h b/src/util/task_runner.h
+index 951381823b..448119aa06 100644
+--- a/src/util/task_runner.h
++++ b/src/util/task_runner.h
+@@ -21,6 +21,16 @@ class TaskRunnerInterface
+ public:
+     virtual ~TaskRunnerInterface() = default;
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++    /** Stop the background worker before the caller flushes remaining tasks. */
++    virtual void stop() {}
++#endif
++
++#ifdef __APPLE__
++    /** Wait for the pending count to fall to the limit if supported by this live task runner. */
++    virtual bool waitForPendingAtMost(size_t) { return false; }
++#endif
++
+     /**
+      * The callback can either be queued for later/asynchronous/threaded
+      * processing, or be executed immediately for synchronous processing.
+diff --git a/src/validation.cpp b/src/validation.cpp
+index 93f7993443..bb4960f65f 100644
+--- a/src/validation.cpp
++++ b/src/validation.cpp
+@@ -2718,6 +2718,13 @@ bool Chainstate::FlushStateToDisk(
+ {
+     LOCK(cs_main);
+     assert(this->CanFlushToDisk());
++#ifdef __APPLE__
++    // NONE can only prune or initialize the periodic write deadline.
++    if (mode == FlushStateMode::NONE && !m_blockman.IsPruneMode() &&
++        m_next_write != NodeClock::time_point::max()) {
++        return true;
++    }
++#endif
+     std::set<int> setFilesToPrune;
+     bool full_flush_completed = false;
+ 
+@@ -3432,7 +3439,12 @@ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCL
+     AssertLockNotHeld(cs_main);
+ 
+     if (signals.CallbacksPending() > 10) {
++#ifdef __APPLE__
++        // Leave room for another block's notifications before applying backpressure again.
++        signals.WaitForPendingCallbacks(8);
++#else
+         signals.SyncWithValidationInterfaceQueue();
++#endif
+     }
+ }
+ 
+@@ -3463,7 +3475,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+     CBlockIndex *pindexNewTip = nullptr;
+     bool exited_ibd{false};
+     do {
+-        // Block until the validation queue drains. This should largely
++        // Wait for room in the validation queue. This should largely
+         // never happen in normal operation, however may happen during
+         // reindex, causing memory blowup if we run too far ahead.
+         // Note that if a validationinterface callback ends up calling
+diff --git a/src/validationinterface.cpp b/src/validationinterface.cpp
+index c7be6abc3a..92c2afa1a9 100644
+--- a/src/validationinterface.cpp
++++ b/src/validationinterface.cpp
+@@ -97,7 +97,19 @@ public:
+ ValidationSignals::ValidationSignals(std::unique_ptr<util::TaskRunnerInterface> task_runner)
+     : m_internals{std::make_unique<ValidationSignalsImpl>(std::move(task_runner))} {}
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++ValidationSignals::~ValidationSignals()
++{
++    StopBackgroundCallbacks();
++}
++
++void ValidationSignals::StopBackgroundCallbacks()
++{
++    m_internals->m_task_runner->stop();
++}
++#else
+ ValidationSignals::~ValidationSignals() = default;
++#endif
+ 
+ void ValidationSignals::FlushBackgroundCallbacks()
+ {
+@@ -154,6 +166,16 @@ void ValidationSignals::SyncWithValidationInterfaceQueue()
+     promise.get_future().wait();
+ }
+ 
++#ifdef __APPLE__
++void ValidationSignals::WaitForPendingCallbacks(size_t limit)
++{
++    AssertLockNotHeld(cs_main);
++    if (!m_internals->m_task_runner->waitForPendingAtMost(limit)) {
++        SyncWithValidationInterfaceQueue();
++    }
++}
++#endif
++
+ // Use a macro instead of a function for conditional logging to prevent
+ // evaluating arguments when logging is not enabled.
+ //
+diff --git a/src/validationinterface.h b/src/validationinterface.h
+index 4777e8dca8..d20cb25da5 100644
+--- a/src/validationinterface.h
++++ b/src/validationinterface.h
+@@ -178,6 +178,11 @@ public:
+     /** Call any remaining callbacks on the calling thread */
+     void FlushBackgroundCallbacks();
+ 
++#if defined(__APPLE__) && defined(__aarch64__)
++    /** Stop the background dispatcher before tearing down validation subscribers. */
++    void StopBackgroundCallbacks();
++#endif
++
+     size_t CallbacksPending();
+ 
+     /** Register subscriber */
+@@ -218,6 +223,11 @@ public:
+      */
+     void SyncWithValidationInterfaceQueue() LOCKS_EXCLUDED(cs_main);
+ 
++#ifdef __APPLE__
++    /** Make room in the callback queue without waiting for all previously queued events. */
++    void WaitForPendingCallbacks(size_t limit) LOCKS_EXCLUDED(cs_main);
++#endif
++
+     void UpdatedBlockTip(const CBlockIndex *, const CBlockIndex *, bool fInitialDownload);
+     void ActiveTipChange(const CBlockIndex&, bool);
+     void TransactionAddedToMempool(const NewMempoolTransactionInfo&, uint64_t mempool_sequence);
