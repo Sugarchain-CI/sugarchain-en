@@ -1864,6 +1864,7 @@ void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock>&& sock,
     // A new peer can have outbound handshake work before its first received
     // message. Process it promptly when the node joins the socket set.
     WakeMessageHandler();
+    WakeSocketHandler();
 #endif
 
     LogDebug(BCLog::NET, "connection from %s accepted\n", addr.ToStringAddrPort());
@@ -2122,6 +2123,11 @@ void CConnman::SocketHandler()
         // select(2)). If none are ready, wait for a short while and return
         // empty sets.
         events_per_sock = GenerateWaitSockets(snap.Nodes());
+#if defined(__APPLE__) && defined(__x86_64__)
+        if (events_per_sock.empty()) {
+            WaitForSocketHandler(timeout);
+        } else
+#endif
         if (events_per_sock.empty() || !events_per_sock.begin()->first->WaitMany(timeout, events_per_sock)) {
             m_interrupt_net->sleep_for(timeout);
         }
@@ -2259,6 +2265,27 @@ void CConnman::ThreadSocketHandler()
         SocketHandler();
     }
 }
+
+#if defined(__APPLE__) && defined(__x86_64__)
+void CConnman::WakeSocketHandler()
+{
+    {
+        LOCK(mutexMsgProc);
+        m_socket_handler_wake = true;
+    }
+    m_socket_handler_cv.notify_one();
+}
+
+bool CConnman::WaitForSocketHandler(std::chrono::milliseconds timeout)
+{
+    WAIT_LOCK(mutexMsgProc, lock);
+    const bool woke{m_socket_handler_cv.wait_for(lock, timeout, [this]() EXCLUSIVE_LOCKS_REQUIRED(mutexMsgProc) {
+        return m_socket_handler_wake || m_interrupt_net->interrupted();
+    })};
+    m_socket_handler_wake = false;
+    return woke;
+}
+#endif
 
 void CConnman::WakeMessageHandler()
 {
@@ -3084,6 +3111,7 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect,
     // A new peer can have outbound handshake work before its first received
     // message. Process it promptly when the node joins the socket set.
     WakeMessageHandler();
+    WakeSocketHandler();
 #endif
 
     TRACEPOINT(net, outbound_connection,
@@ -3647,6 +3675,9 @@ void CConnman::Interrupt()
     condMsgProc.notify_all();
 
     (*m_interrupt_net)();
+#if defined(__APPLE__) && defined(__x86_64__)
+    WakeSocketHandler();
+#endif
     g_socks5_interrupt();
 
     if (semOutbound) {

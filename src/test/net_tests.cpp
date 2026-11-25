@@ -23,6 +23,7 @@
 #include <test/util/validation.h>
 #include <util/strencodings.h>
 #include <util/string.h>
+#include <util/threadinterrupt.h>
 #include <validation.h>
 
 #include <boost/test/unit_test.hpp>
@@ -31,6 +32,7 @@
 #include <chrono>
 #include <cstdint>
 #include <ios>
+#include <future>
 #include <memory>
 #include <map>
 #include <optional>
@@ -128,12 +130,59 @@ BOOST_AUTO_TEST_CASE(accepted_peer_wakes_message_handler)
                                                NetPermissionFlags::None, addr, addr);
     BOOST_CHECK_EQUAL(events.initialized, 0U);
     BOOST_CHECK(!connman.MessageHandlerWakePending());
+    BOOST_CHECK(!connman.SocketHandlerWakePending());
     connman.SetNetworkActive(true);
     connman.CreateNodeFromAcceptedSocketPublic(std::make_unique<ZeroSock>(),
                                                NetPermissionFlags::None, addr, addr);
     BOOST_CHECK_EQUAL(events.initialized, 1U);
     BOOST_CHECK_EQUAL(connman.GetNodeCount(ConnectionDirection::In), 1U);
     BOOST_CHECK(connman.MessageHandlerWakePending());
+    BOOST_CHECK(connman.SocketHandlerWakePending());
+    // A publication before the wait must remain latched even with no timeout.
+    BOOST_CHECK(connman.WaitForSocketHandlerPublic(0ms));
+    BOOST_CHECK(!connman.SocketHandlerWakePending());
+    BOOST_CHECK(!connman.WaitForSocketHandlerPublic(0ms));
+}
+
+BOOST_AUTO_TEST_CASE(socket_handler_idle_wait_wakes_and_interrupts)
+{
+    struct ObservedInterrupt : CThreadInterrupt {
+        mutable std::promise<void> predicate_checked;
+        mutable std::atomic<bool> observe{false};
+        bool interrupted() const override
+        {
+            // Called while the idle-wait mutex is held: publication must then
+            // either satisfy the predicate or notify after wait releases it.
+            if (observe.exchange(false)) predicate_checked.set_value();
+            return CThreadInterrupt::interrupted();
+        }
+    };
+    for (bool shutdown : {false, true}) {
+        auto interrupt{std::make_shared<ObservedInterrupt>()};
+        ConnmanTestMsg connman{0, 0, *m_node.addrman, *m_node.netgroupman, Params(), /*network_active=*/true, interrupt};
+        auto checked{interrupt->predicate_checked.get_future()};
+        interrupt->observe = true;
+        std::promise<bool> finished;
+        auto result{finished.get_future()};
+        std::thread waiter{[&] { finished.set_value(connman.WaitForSocketHandlerPublic(5s)); }};
+        const bool entered{checked.wait_for(2s) == std::future_status::ready};
+        if (shutdown) connman.Interrupt();
+        else connman.WakeSocketHandlerPublic();
+        const bool completed{result.wait_for(2s) == std::future_status::ready};
+        // Ensure a failed assertion cannot leave a joinable thread behind.
+        if (!completed) connman.Interrupt();
+        waiter.join();
+        BOOST_CHECK(entered);
+        BOOST_CHECK(completed);
+        BOOST_CHECK(result.get());
+        if (shutdown) {
+            BOOST_CHECK(interrupt->interrupted());
+            BOOST_CHECK(connman.WaitForSocketHandlerPublic(0ms));
+        } else {
+            BOOST_CHECK(!connman.WaitForSocketHandlerPublic(0ms));
+        }
+        BOOST_CHECK(!connman.SocketHandlerWakePending());
+    }
 }
 #endif
 

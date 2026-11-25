@@ -1536,6 +1536,13 @@ private:
 
     NodeId GetNewNodeId();
 
+#if defined(__APPLE__) && defined(__x86_64__)
+    /** Wake the socket handler if it is waiting without any sockets to poll. */
+    void WakeSocketHandler() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
+    /** Return false only when the idle wait times out. */
+    bool WaitForSocketHandler(std::chrono::milliseconds timeout) EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
+#endif
+
     /** (Try to) send data from node's vSendMsg. Returns (bytes_sent, data_left). */
     std::pair<size_t, bool> SocketSendData(CNode& node) const EXCLUSIVE_LOCKS_REQUIRED(node.cs_vSend);
 
@@ -1705,6 +1712,12 @@ private:
     std::condition_variable condMsgProc;
     Mutex mutexMsgProc;
     std::atomic<bool> flagInterruptMsgProc{false};
+
+#if defined(__APPLE__) && defined(__x86_64__)
+    std::condition_variable m_socket_handler_cv;
+    // Latched until consumed, including publication between snapshot and wait.
+    bool m_socket_handler_wake GUARDED_BY(mutexMsgProc){false};
+#endif
 
     /**
      * This is signaled when network activity should cease.

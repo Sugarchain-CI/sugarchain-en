@@ -38,6 +38,9 @@ struct ConnmanTestMsg : public CConnman {
 #if defined(__APPLE__) && defined(__x86_64__)
     void ResetMessageHandlerWake() { WITH_LOCK(mutexMsgProc, fMsgProcWake = false); }
     bool MessageHandlerWakePending() { return WITH_LOCK(mutexMsgProc, return fMsgProcWake); }
+    bool SocketHandlerWakePending() { return WITH_LOCK(mutexMsgProc, return m_socket_handler_wake); }
+    void WakeSocketHandlerPublic() { WakeSocketHandler(); }
+    bool WaitForSocketHandlerPublic(std::chrono::milliseconds timeout) { return WaitForSocketHandler(timeout); }
 #endif
 
     void SetMsgProc(NetEventsInterface* msgproc)
