@@ -1,0 +1,88 @@
+name: Regtest synchronization benchmark (macOS)
+'on':
+  push:
+    branches:
+      - automation/regtest-sync-macos-20261125
+
+permissions:
+  contents: read
+
+jobs:
+  regtest:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+            sha256: 4f848bf7edc19cd15de9e5d8ff3d4c7882244a5ba58b14711f0957893e2102e5
+          - arch: x86_64
+            runner: macos-15-intel
+            sha256: d694e7fa15c097e0ed3689a6629e38fe0fcc1e08fc56849115ee67209b0e4c03
+    defaults:
+      run:
+        shell: bash
+    env:
+      BENCH_ARCH: ${{ matrix.arch }}
+      BENCH_RUNNER: ${{ matrix.runner }}
+      ASSET_SHA256: ${{ matrix.sha256 }}
+      RELEASE: v31.1.2-en.1
+    steps:
+      - name: Check out benchmark
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Download and verify the published CLI archive
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$BENCH_ARCH"
+          asset="sugarchain-en-31.1.2-macos-$BENCH_ARCH-cli"
+          curl --retry 4 --retry-all-errors --connect-timeout 20 -fsSL \
+            "https://github.com/decryp2kanon/sugarchain-en/releases/download/$RELEASE/$asset.tar.gz" \
+            -o "$RUNNER_TEMP/$asset.tar.gz"
+          printf '%s  %s\n' "$ASSET_SHA256" "$RUNNER_TEMP/$asset.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/$asset.tar.gz" -C "$RUNNER_TEMP"
+          printf 'BENCH_BIN_DIR=%s\n' "$RUNNER_TEMP/$asset/bin" >> "$GITHUB_ENV"
+      - name: Measure Regtest synchronization
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/regtest-evidence"
+          mkdir "$result"
+          python3 - "$result/environment.json" <<'PY'
+          import json
+          import os
+          import platform
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          def sysctl(name):
+              return subprocess.check_output(["sysctl", "-n", name], text=True).strip()
+
+          environment = {
+              "architecture": platform.machine(),
+              "cpu": sysctl("machdep.cpu.brand_string"),
+              "logical_cpus": int(sysctl("hw.logicalcpu")),
+              "memory_bytes": int(sysctl("hw.memsize")),
+              "macos_version": platform.mac_ver()[0],
+              "runner": os.environ["BENCH_RUNNER"],
+              "image_version": os.environ.get("ImageVersion"),
+              "asset_sha256": os.environ["ASSET_SHA256"],
+              "release": os.environ["RELEASE"],
+          }
+          Path(sys.argv[1]).write_text(json.dumps(environment, indent=2) + "\n", encoding="utf-8")
+          print(json.dumps(environment))
+          PY
+          python3 regtest-sync.py --bin-dir "$BENCH_BIN_DIR" --work-dir "$RUNNER_TEMP/regtest-run" \
+            --blocks 10000 --repeats 3
+          cp "$RUNNER_TEMP/regtest-run/result.json" "$result/"
+      - name: Retain benchmark results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: regtest-macos-${{ matrix.arch }}
+          path: ${{ runner.temp }}/regtest-evidence/
+          if-no-files-found: warn
