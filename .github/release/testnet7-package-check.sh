@@ -43,7 +43,7 @@ XML
 done
 
 export BITCOIND="$bin/sugarchaind" BITCOINCLI="$bin/sugarchain-cli"
-python3 test/functional/test_runner.py --configfile=build/test/config.ini -j 1 \
+python3 build/test/functional/test_runner.py -j 1 \
     --tmpdirprefix="$RUNNER_TEMP" --resultsfile=out/testnet7-results.csv feature_sugarchain_testnet.py
 python3 - <<'PY'
 import csv

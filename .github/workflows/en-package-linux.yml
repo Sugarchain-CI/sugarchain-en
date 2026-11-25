@@ -15,18 +15,6 @@ jobs:
         - host: x86_64-linux-gnu
           runner: ubuntu-24.04
           emulator: native
-        - host: aarch64-linux-gnu
-          runner: ubuntu-24.04-arm
-          emulator: native
-        - host: arm-linux-gnueabihf
-          runner: ubuntu-24.04
-          emulator: qemu-arm
-        - host: riscv64-linux-gnu
-          runner: ubuntu-24.04
-          emulator: qemu-riscv64
-        - host: powerpc64-linux-gnu
-          runner: ubuntu-24.04
-          emulator: qemu-ppc64
     env:
       RELEASE_HOST: ${{ matrix.host }}
       RELEASE_EMULATOR: ${{ matrix.emulator }}
@@ -94,7 +82,7 @@ jobs:
 'on':
   push:
     branches:
-    - release-packaging/31.1.2-en.1
+    - release-packaging/31.1.2-en.1-x86-retry
     paths:
     - .github/workflows/en-package-linux.yml
     - .github/release/**
