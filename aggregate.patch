@@ -1,0 +1,80 @@
+--- a/src/validation.cpp
++++ b/src/validation.cpp
+@@ -3431,8 +3431,17 @@
+ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCLUDED(cs_main) {
+     AssertLockNotHeld(cs_main);
+ 
++    static thread_local size_t count{0};
++    static thread_local size_t paused{0};
++    static thread_local SteadyClock::duration waits{};
+     if (signals.CallbacksPending() > 10) {
++        const auto started{SteadyClock::now()};
+         signals.SyncWithValidationInterfaceQueue();
++        waits += SteadyClock::now() - started;
++        ++paused;
++    }
++    if (++count % 5000 == 0) {
++        LogInfo("Aggregate sync profile queue calls=%u paused=%u waits_ms=%.2f", count, paused, Ticks<MillisecondsDouble>(waits));
+     }
+ }
+ 
+@@ -4540,6 +4549,9 @@
+ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& block, bool force_processing, bool min_pow_checked, bool* new_block)
+ {
+     AssertLockNotHeld(cs_main);
++    const auto started{SteadyClock::now()};
++    static thread_local size_t processed{0};
++    static thread_local SteadyClock::duration accept_time{}, activation_time{}, total_time{};
+ 
+     {
+         CBlockIndex *pindex = nullptr;
+@@ -4574,6 +4586,7 @@
+         }
+     }
+ 
++    const auto accepted{SteadyClock::now()};
+     NotifyHeaderTip();
+ 
+     BlockValidationState state; // Only used to report errors, not invalidity - ignore it
+@@ -4589,6 +4602,17 @@
+         return false;
+      }
+ 
++    if (new_block && *new_block) {
++        const auto completed{SteadyClock::now()};
++        accept_time += accepted - started;
++        activation_time += completed - accepted;
++        total_time += completed - started;
++        if (++processed % 5000 == 0) {
++            LogInfo("Aggregate sync profile block count=%u accept_ms=%.2f activate_ms=%.2f total_ms=%.2f",
++                    processed, Ticks<MillisecondsDouble>(accept_time), Ticks<MillisecondsDouble>(activation_time),
++                    Ticks<MillisecondsDouble>(total_time));
++        }
++    }
+     return true;
+ }
+ 
+--- a/src/node/blockstorage.cpp
++++ b/src/node/blockstorage.cpp
+@@ -1622,6 +1622,9 @@
+ 
+ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& pos, std::optional<std::pair<size_t, size_t>> block_part) const
+ {
++    const auto started{std::chrono::steady_clock::now()};
++    static thread_local size_t records{0};
++    static thread_local std::chrono::steady_clock::duration read_time{};
+     if (pos.nPos < STORAGE_HEADER_BYTES) {
+         // If nPos is less than STORAGE_HEADER_BYTES, we can't read the header that precedes the block data
+         // This would cause an unsigned integer underflow when trying to position the file cursor
+@@ -1664,6 +1667,11 @@
+ 
+         std::vector<std::byte> data(blk_size); // Zeroing of memory is intentional here
+         filein.read(data);
++        read_time += std::chrono::steady_clock::now() - started;
++        if (++records % 5000 == 0) {
++            const auto milliseconds{std::chrono::duration<double, std::milli>{read_time}.count()};
++            LogInfo("Aggregate sync profile disk reads=%u reads_ms=%.2f", records, milliseconds);
++        }
+         return data;
+     } catch (const std::exception& e) {
+         LogError("Read from block file failed: %s for %s while reading raw block", e.what(), pos.ToString());

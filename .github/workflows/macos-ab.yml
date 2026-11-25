@@ -1,0 +1,82 @@
+name: macOS subsecond Regtest optimization A/B
+'on':
+  push:
+    branches:
+    - automation/regtest-en4-macos-subsecond-20261125
+permissions:
+  contents: read
+jobs:
+  compare:
+    name: macOS cache comparison ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: arm64
+          runner: macos-15
+        - arch: x86_64
+          runner: macos-15-intel
+    steps:
+    - name: Check out benchmark inputs
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Check out unchanged En.3 source
+      uses: actions/checkout@v6
+      with:
+        path: source
+        repository: decryp2kanon/sugarchain-en
+        ref: 13a5822c27a5097f72f97262413c243d7db57708
+        persist-credentials: false
+    - name: Compile the control and macOS optimized variant
+      shell: bash
+      run: "set -euo pipefail\ntest \"$(uname -m)\" = \"${{ matrix.arch }}\"\ntest\
+        \ \"$(git -C source rev-parse HEAD)\" = 13a5822c27a5097f72f97262413c243d7db57708\n\
+        for dependency in boost libevent; do\n  if ! brew list --versions \"$dependency\"\
+        \ >/dev/null 2>&1 || [[ -z \"$(brew list --versions \"$dependency\")\" ]];\
+        \ then\n    HOMEBREW_NO_AUTO_UPDATE=1 brew install \"$dependency\"\n  fi\n\
+        done\ncommand -v cmake\ncommand -v ninja\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\
+        \nbuild=\"$workspace/build\"\nmkdir -p \"$workspace/baseline\" \"$workspace/candidate\"\
+        \ncmake -S source -B \"$build\" -G Ninja -DCMAKE_BUILD_TYPE=Release \"-DCMAKE_CXX_FLAGS=-Werror=thread-safety\"\
+        \ \\\n  \"-DCMAKE_PREFIX_PATH=$(brew --prefix boost);$(brew --prefix libevent)\"\
+        \ \\\n  -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_CLI=OFF -DENABLE_WALLET=OFF\
+        \ -DENABLE_IPC=OFF -DWITH_USDT=OFF\njobs=\"$(sysctl -n hw.logicalcpu)\"\n\
+        cmake --build \"$build\" --target bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\"\
+        \ \"$workspace/baseline/sugarchaind\"\nmkdir -p \"$workspace/profile\"\ngit\
+        \ -C source apply \"$GITHUB_WORKSPACE/aggregate.patch\"\ncmake --build \"\
+        $build\" --target bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\"\
+        \ \"$workspace/profile/sugarchaind\"\ngit -C source apply -R \"$GITHUB_WORKSPACE/aggregate.patch\"\
+        \ngit -C source apply \"$GITHUB_WORKSPACE/optimization.patch\"\ngit -C source\
+        \ diff --check\ntest \"$(git -C source diff --name-only | wc -l | tr -d '\
+        \ ')\" = 2\ncmake --build \"$build\" --target bitcoind --parallel \"$jobs\"\
+        \ncp \"$build/bin/sugarchaind\" \"$workspace/candidate/sugarchaind\"\nshasum\
+        \ -a 256 \"$workspace/\"{baseline,candidate}/sugarchaind\n"
+    - name: Measure fresh receivers with the same 10,000 blocks
+      shell: bash
+      run: "set -euo pipefail\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\npython3\
+        \ regtest-sync.py --baseline-bin-dir \"$workspace/baseline\" --candidate-bin-dir\
+        \ \"$workspace/candidate\" \\\n  --work-dir \"$workspace/results\" --blocks\
+        \ 10000 --repeats 3\njq -e '.fixture_sha256 == \"e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9\"\
+        \n  and .fixture_utxo_sha256 == \"63208d710cf03c30de2660b77a5434181b20fd1c5e70460b256ea4f4e798cb84\"\
+        \n  and all(.variants[].samples[]; .reload_verified)' \"$workspace/results/result.json\"\
+        \n\npython3 regtest-sync.py --baseline-bin-dir \"$workspace/baseline\" --candidate-bin-dir\
+        \ \"$workspace/profile\"   --work-dir \"$workspace/profile-results\" --blocks\
+        \ 10000 --repeats 1\nfind \"$workspace/profile-results\" -name debug.log -exec\
+        \ grep -H 'Aggregate sync profile' {} + > \"$workspace/results/aggregate.txt\"\
+        \ || true\ntest -s \"$workspace/results/aggregate.txt\"\n"
+    - name: Retain comparison evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: macos-subsecond-${{ matrix.arch }}
+        path: '${{ runner.temp }}/macos-subsecond/results/result.json
+
+          ${{ runner.temp }}/macos-subsecond/results/*/console.log
+
+          ${{ runner.temp }}/macos-subsecond/results/aggregate.txt
+
+          '
+        if-no-files-found: warn
+        retention-days: 7

@@ -1,0 +1,103 @@
+--- a/src/streams.h
++++ b/src/streams.h
+@@ -379,6 +379,16 @@
+ 
+ public:
+     explicit AutoFile(std::FILE* file, const Obfuscation& obfuscation = {});
++#ifdef __APPLE__
++    AutoFile(std::FILE* file, const Obfuscation& obfuscation, int64_t position)
++        : m_file{file}, m_obfuscation{obfuscation}, m_position{position}
++    {
++        assert(file);
++    }
++
++    /** The logical stream offset, when available. Includes buffered writes. */
++    [[nodiscard]] std::optional<int64_t> GetPosition() const { return m_position; }
++#endif
+ 
+     ~AutoFile()
+     {
+--- a/src/node/blockstorage.h
++++ b/src/node/blockstorage.h
+@@ -246,6 +246,9 @@
+     {
+         std::FILE* m_file{nullptr};
+         int m_file_num{-1};
++#ifdef __APPLE__
++        std::optional<int64_t> m_file_pos;
++#endif
+ 
+     public:
+         WriteFileCache() = default;
+--- a/src/node/blockstorage.cpp
++++ b/src/node/blockstorage.cpp
+@@ -1306,6 +1306,12 @@
+ AutoFile BlockManager::WriteFileCache::Open(const FlatFileSeq& sequence, const FlatFilePos& pos, const Obfuscation& obfuscation)
+ {
+     if (m_file && pos.nFile == m_file_num) {
++#ifdef __APPLE__
++        // Keep flushed the previous record, so the stream is ready for an append.
++        if (m_file_pos && *m_file_pos == pos.nPos) {
++            return AutoFile{std::exchange(m_file, nullptr), obfuscation, *m_file_pos};
++        }
++#endif
+         // Use the absolute offset so AutoFile starts with the correct XOR position.
+         if (std::fseek(m_file, pos.nPos, SEEK_SET) == 0) {
+             return AutoFile{std::exchange(m_file, nullptr), obfuscation};
+@@ -1321,6 +1327,9 @@
+ bool BlockManager::WriteFileCache::Keep(AutoFile& file, int file_num)
+ {
+     assert(!m_file);
++#ifdef __APPLE__
++    m_file_pos = file.GetPosition();
++#endif
+     m_file = file.release();
+     m_file_num = file_num;
+     // Publish bytes to other handles before exposing the record's index.
+--- a/src/scheduler.cpp
++++ b/src/scheduler.cpp
+@@ -175,7 +175,27 @@
+         }
+     } raiicallbacksrunning(this);
+ 
++#ifdef __APPLE__
++    const auto deadline{std::chrono::steady_clock::now() + 1ms};
++#endif
+     callback();
++#ifdef __APPLE__
++    callback = {};
++    // Amortize scheduler wakeups while leaving time for other scheduled work.
++    constexpr size_t max_callbacks{8};
++    for (size_t processed{1}; processed < max_callbacks; ++processed) {
++        if (std::chrono::steady_clock::now() >= deadline || m_scheduler.StopRequested()) break;
++
++        std::function<void()> next;
++        {
++            LOCK(m_callbacks_mutex);
++            if (m_callbacks_pending.empty()) break;
++            next = std::move(m_callbacks_pending.front());
++            m_callbacks_pending.pop_front();
++        }
++        next();
++    }
++#endif
+ }
+ 
+ void SerialTaskRunner::insert(std::function<void()> func)
+--- a/src/scheduler.h
++++ b/src/scheduler.h
+@@ -102,6 +102,14 @@
+     bool AreThreadsServicingQueue() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex);
+ 
+ private:
++#ifdef __APPLE__
++    friend class SerialTaskRunner;
++
++    bool StopRequested() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex)
++    {
++        return WITH_LOCK(newTaskMutex, return stopRequested);
++    }
++#endif
+     mutable Mutex newTaskMutex;
+     std::condition_variable newTaskScheduled;
+     std::multimap<std::chrono::steady_clock::time_point, Function> taskQueue GUARDED_BY(newTaskMutex);
