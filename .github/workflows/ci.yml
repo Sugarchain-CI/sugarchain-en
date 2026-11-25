@@ -1,4 +1,4 @@
-name: Published 31.1.1 Windows wizard runtime
+name: Published Windows final installer page
 permissions:
   contents: read
 jobs:
@@ -11,7 +11,6 @@ jobs:
       matrix:
         crt:
         - ucrt
-        - msvcrt
     env:
       RELEASE_CRT: ${{ matrix.crt }}
     steps:
@@ -53,5 +52,5 @@ jobs:
 'on':
   push:
     branches:
-    - release-validation/windows-wizard-31.1.1
+    - release-validation/windows-final-page-31.1.1
   workflow_dispatch: null

@@ -346,7 +346,7 @@ def interactive_install(installer_path, gui, desktop, evidence):
         start_menu_checkboxes = desktop.checkboxes(dialog)
         desktop.mouse_click(dialog, desktop.forward_button(dialog))
         started_installation = True
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + 40
         progress_name = "installer-04-install-progress"
         while process.poll() is None and time.monotonic() < deadline:
             if progress_name not in evidence and any(
@@ -354,6 +354,8 @@ def interactive_install(installer_path, gui, desktop, evidence):
                 for handle in desktop.controls(dialog)
             ):
                 capture_screenshot(desktop, dialog, progress_name, evidence)
+            if gui.is_file() and "installer-after-files" not in evidence:
+                capture_screenshot(desktop, dialog, "installer-after-files", evidence)
             finish_checkboxes = desktop.checkboxes(dialog) - start_menu_checkboxes
             if len(finish_checkboxes) == 1 and gui.is_file():
                 try:
@@ -363,6 +365,8 @@ def interactive_install(installer_path, gui, desktop, evidence):
                     pass
             time.sleep(0.15)
         else:
+            if process.poll() is None and gui.is_file():
+                capture_screenshot(desktop, dialog, "installer-last-visible-page", evidence)
             raise RuntimeError("The installer Finish page was not exposed")
         evidence.setdefault(progress_name, {"status": "inconclusive", "reason": "The installation progress page was transient"})
         capture_screenshot(desktop, dialog, "installer-05-finish", evidence)
