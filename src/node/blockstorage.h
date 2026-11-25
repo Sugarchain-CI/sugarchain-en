@@ -264,6 +264,12 @@ private:
     mutable WriteFileCache m_undo_writer GUARDED_BY(cs_LastBlockFile);
 #endif
 
+#ifdef __APPLE__
+    // Keep one read-only file available and let each read own its reference.
+    mutable std::shared_ptr<std::FILE> m_block_read_file GUARDED_BY(cs_LastBlockFile);
+    mutable int m_block_read_file_num GUARDED_BY(cs_LastBlockFile){-1};
+#endif
+
     /* Calculate the block/rev files to delete based on height specified by user with RPC command pruneblockchain */
     void FindFilesToPruneManual(
         std::set<int>& setFilesToPrune,

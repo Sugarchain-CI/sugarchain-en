@@ -68,6 +68,10 @@
 #include <unordered_map>
 #include <utility>
 
+#ifdef __APPLE__
+#include <unistd.h>
+#endif
+
 namespace kernel {
 namespace {
 std::string FormatGroupedCount(uint64_t count)
@@ -972,6 +976,9 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
         LOCK(cs_LastBlockFile);
         const bool block_closed{m_block_writer.Close()};
         const bool undo_closed{m_undo_writer.Close()};
+#ifdef __APPLE__
+        m_block_read_file.reset();
+#endif
         if (!block_closed || !undo_closed) return false;
     }
 #endif
@@ -1277,6 +1284,9 @@ void BlockManager::UnlinkPrunedFiles(const std::set<int>& setFilesToPrune) const
         const bool block_closed{m_block_writer.Close(*it)};
         const bool undo_closed{m_undo_writer.Close(*it)};
         if (!block_closed || !undo_closed) continue;
+#endif
+#ifdef __APPLE__
+        if (m_block_read_file_num == *it) m_block_read_file.reset();
 #endif
         FlatFilePos pos(*it, 0);
         const bool removed_blockfile{fs::remove(m_block_file_seq.FileName(pos), ec)};
@@ -1638,17 +1648,64 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
         LogError("Failed for %s while reading raw block storage header", pos.ToString());
         return util::Unexpected{ReadRawError::IO};
     }
+#ifdef __APPLE__
+    std::shared_ptr<std::FILE> read_handle;
+    {
+        LOCK(cs_LastBlockFile);
+        if (!m_block_read_file || m_block_read_file_num != pos.nFile) {
+            auto* opened{m_block_file_seq.Open({pos.nFile, 0}, /*read_only=*/true)};
+            if (!opened) {
+                LogError("OpenBlockFile failed for %s while reading raw block", pos.ToString());
+                return util::Unexpected{ReadRawError::IO};
+            }
+            m_block_read_file.reset(opened, [](std::FILE* stream) {
+                if (std::fclose(stream) != 0) {
+                    LogError("Failed to close cached block reader: %s", SysErrorString(errno));
+                }
+            });
+            m_block_read_file_num = pos.nFile;
+        }
+        read_handle = m_block_read_file;
+    }
+
+    const int fd{::fileno(read_handle.get())};
+    off_t read_offset{pos.nPos - STORAGE_HEADER_BYTES};
+    const auto read_bytes = [&](std::span<std::byte> dst) {
+        // Positional reads leave the cached stream cursor untouched and see
+        // newly flushed records without stale stdio read-ahead.
+        auto remaining = dst;
+        while (!remaining.empty()) {
+            const ssize_t count{::pread(fd, remaining.data(), remaining.size(),
+                read_offset + static_cast<off_t>(dst.size() - remaining.size()))};
+            if (count < 0) {
+                if (errno == EINTR) continue;
+                throw std::ios_base::failure("pread failed: " + SysErrorString(errno));
+            }
+            if (count == 0) throw std::ios_base::failure("Unexpected end of block file");
+            remaining = remaining.subspan(static_cast<size_t>(count));
+        }
+        m_obfuscation(dst, read_offset);
+        read_offset += static_cast<off_t>(dst.size());
+    };
+#else
     AutoFile filein{OpenBlockFile({pos.nFile, pos.nPos - STORAGE_HEADER_BYTES}, /*fReadOnly=*/true)};
     if (filein.IsNull()) {
         LogError("OpenBlockFile failed for %s while reading raw block", pos.ToString());
         return util::Unexpected{ReadRawError::IO};
     }
 
+#endif
     try {
         MessageStartChars blk_start;
         unsigned int blk_size;
 
+#ifdef __APPLE__
+        std::array<std::byte, STORAGE_HEADER_BYTES> header;
+        read_bytes(header);
+        SpanReader{header} >> blk_start >> blk_size;
+#else
         filein >> blk_start >> blk_size;
+#endif
 
         if (blk_start != GetParams().MessageStart()) {
             LogError("Block magic mismatch for %s: %s versus expected %s while reading raw block",
@@ -1667,12 +1724,20 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
             if (size == 0 || SaturatingAdd(offset, size) > blk_size) {
                 return util::Unexpected{ReadRawError::BadPartRange}; // Avoid logging - offset/size come from untrusted REST input
             }
+#ifdef __APPLE__
+            read_offset += static_cast<off_t>(offset);
+#else
             filein.seek(offset, SEEK_CUR);
+#endif
             blk_size = size;
         }
 
         std::vector<std::byte> data(blk_size); // Zeroing of memory is intentional here
+#ifdef __APPLE__
+        read_bytes(data);
+#else
         filein.read(data);
+#endif
         return data;
     } catch (const std::exception& e) {
         LogError("Read from block file failed: %s for %s while reading raw block", e.what(), pos.ToString());
