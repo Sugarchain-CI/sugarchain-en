@@ -15,7 +15,6 @@ from urllib.request import Request, urlopen
 
 
 TAG = "v31.1.1-en.1"
-RELEASE = f"https://github.com/decryp2kanon/sugarchain-en/releases/download/{TAG}/"
 KEY_URL = "https://github.com/decryp2kanon.gpg"
 SIGNER = "CF8F465D97437DA3BB25534D92F37F683E41E891"
 ASSET_NAME = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]*")
@@ -105,8 +104,10 @@ def checksums(directory):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--tag", choices=("v31.1.0-en.1", TAG), default=TAG)
     parser.add_argument("assets", nargs="+", metavar="ASSET")
     args = parser.parse_args()
+    release_url = f"https://github.com/decryp2kanon/sugarchain-en/releases/download/{args.tag}/"
     if len(set(args.assets)) != len(args.assets):
         parser.error("Asset names must be unique")
     if any(not ASSET_NAME.fullmatch(name) for name in args.assets):
@@ -114,14 +115,14 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     for manifest in ("SHA256SUMS", "SHA256SUMS.asc"):
-        download(RELEASE + manifest, output / manifest)
+        download(release_url + manifest, output / manifest)
     entries = checksums(output)
-    report = {"tag": TAG, "signer_fingerprint": SIGNER, "assets": {}}
+    report = {"tag": args.tag, "signer_fingerprint": SIGNER, "assets": {}}
     for name in args.assets:
         if name not in entries:
             raise RuntimeError(f"No signed checksum for {name}")
         asset = output / name
-        download(RELEASE + name, asset)
+        download(release_url + name, asset)
         with asset.open("rb") as stream:
             actual = hashlib.file_digest(stream, "sha256").hexdigest()
         if actual != entries[name]:

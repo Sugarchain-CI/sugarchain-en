@@ -1,57 +1,52 @@
-name: Published 31.1.1 Windows wizard runtime
+name: Published Windows upgrade runtime
+on:
+  push:
+    branches: [release-validation/windows-upgrade-31.1.1]
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  windows:
-    name: Published Windows x86-64 (${{ matrix.crt }})
+  upgrade:
+    name: Published Windows upgrade (${{ matrix.crt }})
     runs-on: windows-2025
-    timeout-minutes: 20
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        crt:
-        - ucrt
-        - msvcrt
+        crt: [ucrt, msvcrt]
     env:
       RELEASE_CRT: ${{ matrix.crt }}
     steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-    - name: Fetch and verify the public Windows downloads
-      shell: pwsh
-      run: '$stem = "sugarchain-en-31.1.1-windows-x86_64-$env:RELEASE_CRT"
-
-        py -3 .github/public-release-smoke/fetch-public-assets.py --output "$env:RUNNER_TEMP/public-downloads" "$stem-setup.exe" "$stem-portable.zip"
-
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-        '
-    - name: Install test screenshot support
-      shell: pwsh
-      run: py -3 -m pip install --disable-pip-version-check Pillow
-    - name: Check Windows installed and portable runtime
-      shell: pwsh
-      run: 'py -3 .github/public-release-smoke/windows-smoke.py --source "$env:GITHUB_WORKSPACE" --assets "$env:RUNNER_TEMP/public-downloads" --workdir "$env:RUNNER_TEMP/public-windows-runtime" --crt "$env:RELEASE_CRT"
-
-        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-        '
-    - name: Upload Windows verification results
-      if: always()
-      uses: actions/upload-artifact@v7
-      with:
-        name: published-windows-${{ matrix.crt }}-results
-        path: '${{ runner.temp }}/public-downloads/integrity.json
-
-          ${{ runner.temp }}/public-windows-runtime/result.json
-
-          ${{ runner.temp }}/public-windows-runtime/screenshots/*.png
-
-          '
-        if-no-files-found: ignore
-'on':
-  push:
-    branches:
-    - release-validation/windows-wizard-31.1.1
-  workflow_dispatch: null
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Verify both published installers
+        shell: pwsh
+        run: |
+          $old = "sugarchain-en-31.1.0-windows-x86_64-$env:RELEASE_CRT-setup.exe"
+          $new = "sugarchain-en-31.1.1-windows-x86_64-$env:RELEASE_CRT-setup.exe"
+          py -3 .github/public-release-smoke/fetch-public-assets.py --tag v31.1.0-en.1 --output "$env:RUNNER_TEMP/old-downloads" "$old"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          py -3 .github/public-release-smoke/fetch-public-assets.py --output "$env:RUNNER_TEMP/new-downloads" "$new"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install screenshot support
+        shell: pwsh
+        run: py -3 -m pip install --disable-pip-version-check Pillow
+      - name: Check upgrade and wallet preservation
+        shell: pwsh
+        run: |
+          $old = "sugarchain-en-31.1.0-windows-x86_64-$env:RELEASE_CRT-setup.exe"
+          $new = "sugarchain-en-31.1.1-windows-x86_64-$env:RELEASE_CRT-setup.exe"
+          py -3 .github/public-release-smoke/windows-upgrade.py --source "$env:GITHUB_WORKSPACE" --old-installer "$env:RUNNER_TEMP/old-downloads/$old" --new-installer "$env:RUNNER_TEMP/new-downloads/$new" --workdir "$env:RUNNER_TEMP/public-windows-upgrade"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Save upgrade evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: published-windows-upgrade-${{ matrix.crt }}-results
+          path: |
+            ${{ runner.temp }}/old-downloads/integrity.json
+            ${{ runner.temp }}/new-downloads/integrity.json
+            ${{ runner.temp }}/public-windows-upgrade/result.json
+            ${{ runner.temp }}/public-windows-upgrade/screenshots/*.png
+          if-no-files-found: ignore
