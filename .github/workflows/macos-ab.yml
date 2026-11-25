@@ -1,4 +1,4 @@
-name: macOS subsecond optimized native build comparison
+name: macOS background validation worker and storage comparison
 'on':
   push:
     branches:
@@ -76,7 +76,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v7
       with:
-        name: macos-subsecond-optimized-${{ matrix.arch }}
+        name: macos-subsecond-worker-${{ matrix.arch }}
         path: '${{ runner.temp }}/macos-subsecond/results/result.json
 
           ${{ runner.temp }}/macos-subsecond/results/*/console.log
