@@ -5,6 +5,7 @@
 #include <policy/fees/block_policy_estimator.h>
 #include <policy/fees/block_policy_estimator_args.h>
 #include <policy/policy.h>
+#include <scheduler.h>
 #include <test/util/txmempool.h>
 #include <streams.h>
 #include <txmempool.h>
@@ -275,6 +276,10 @@ BOOST_AUTO_TEST_CASE(pristine_and_loaded_fee_statistics)
     const auto path{FeeestPath(*m_node.args).parent_path() / "pristine-fee-estimates.dat"};
     Estimator fresh{path, true};
     Estimator loaded{path, true};
+    CScheduler scheduler;
+    ValidationSignals signals{std::make_unique<SerialTaskRunner>(scheduler)};
+    signals.RegisterValidationInterface(&fresh);
+    signals.RegisterValidationInterface(&loaded);
     const auto snapshot = [](const CBlockPolicyEstimator& estimator) {
         AutoFile file{std::tmpfile()};
         BOOST_REQUIRE(!file.IsNull());
@@ -304,9 +309,9 @@ BOOST_AUTO_TEST_CASE(pristine_and_loaded_fee_statistics)
     // The deserialized estimator takes the normal update path even when zero.
     restore(loaded, fresh);
     for (unsigned height{1}; height <= 256; ++height) {
-        fresh.MempoolTransactionsRemovedForBlock({}, height);
-        loaded.MempoolTransactionsRemovedForBlock({}, height);
+        signals.MempoolTransactionsRemovedForBlock({}, height);
     }
+    signals.FlushBackgroundCallbacks();
     equal(true);
 
     CMutableTransaction tx;
@@ -332,11 +337,12 @@ BOOST_AUTO_TEST_CASE(pristine_and_loaded_fee_statistics)
 
     restore(loaded, fresh);
     for (unsigned height{337}; height <= 400; ++height) {
-        fresh.MempoolTransactionsRemovedForBlock({}, height);
-        loaded.MempoolTransactionsRemovedForBlock({}, height);
+        signals.MempoolTransactionsRemovedForBlock({}, height);
     }
+    signals.FlushBackgroundCallbacks();
     equal(false);
     BOOST_CHECK_EQUAL(fresh.estimateFee(2).GetFeePerK(), loaded.estimateFee(2).GetFeePerK());
+    signals.UnregisterAllValidationInterfaces();
 }
 
 BOOST_AUTO_TEST_SUITE_END()
