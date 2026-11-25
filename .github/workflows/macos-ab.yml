@@ -1,97 +1,141 @@
-name: Intel macOS checked storage and scheduler comparison
+name: Intel exact-package versus native compiler diagnostic
 'on':
   push:
     branches:
     - automation/en6-intel-sync-round2-fixed
+  workflow_dispatch: {}
 permissions:
   contents: read
+  actions: read
 jobs:
   compare:
-    name: macOS cache comparison ${{ matrix.arch }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 100
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-        - arch: x86_64
-          runner: macos-15-intel
+    name: Compare exact-source Intel package and native build
+    runs-on: macos-15-intel
+    timeout-minutes: 90
     steps:
-    - name: Check out benchmark inputs
+    - name: Check out diagnostic inputs
       uses: actions/checkout@v6
       with:
         persist-credentials: false
-    - name: Check out verified En.4 source
+    - name: Check out the exact packaged source
       uses: actions/checkout@v6
       with:
-        path: source
         repository: decryp2kanon/sugarchain-en
-        ref: 13a5822c27a5097f72f97262413c243d7db57708
+        ref: 8400a011d8d4879fb606d50c263b6e4801213605
+        path: source
         persist-credentials: false
+    - name: Download the exact En.6 Intel package artifact
+      uses: actions/download-artifact@v8
+      with:
+        name: release-mac-x86_64
+        path: incoming
+        run-id: 45677529513
+        repository: Sugarchain-CI/sugarchain-en
+        github-token: ${{ github.token }}
+    - name: Verify exact source and signed package inputs
+      shell: bash
+      run: 'set -euo pipefail
+
+        test "$(git -C source rev-parse HEAD)" = 8400a011d8d4879fb606d50c263b6e4801213605
+
+        test "$(git -C source rev-parse HEAD^{tree})" = 5f379fc7f32383077053a5d4cb47414ce53af5f2
+
+        test "$(uname -m)" = x86_64
+
+        python3 check-package-native-inputs.py incoming
+
+        work="$RUNNER_TEMP/package-native-comparison"
+
+        mkdir -p "$work"/packaged "$work"/native/bin "$work"/evidence
+
+        tar -xzf incoming/sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz -C "$work/packaged"
+
+        daemon="$work/packaged/sugarchain-en-31.1.2-macos-x86_64-cli/bin/sugarchaind"
+
+        test "$(lipo -archs "$daemon")" = x86_64
+
+        codesign --verify --strict "$daemon"
+
+        shasum -a 256 "$daemon" > "$work/evidence/packaged-daemon.sha256"
+
+        cp incoming/package.sha256 incoming/release-source-sha.txt incoming/release-source-tree.txt
+        "$work/evidence/"
+
+        cp incoming/regtest-benchmark.json "$work/evidence/original-packaged-benchmark.json"
+
+        '
     - name: Restore compiler cache
       uses: actions/cache/restore@v5
       with:
         path: ${{ runner.temp }}/macos-subsecond-ccache
-        key: macos-subsecond-${{ matrix.arch }}-${{ github.run_id }}
-        restore-keys: macos-subsecond-${{ matrix.arch }}-
-    - name: Compile the control and macOS optimized variant
+        key: macos-subsecond-x86_64-${{ github.run_id }}
+        restore-keys: macos-subsecond-x86_64-
+    - name: Compile the exact source with the native Apple compiler
       shell: bash
       run: "set -euo pipefail\nexport CCACHE_DIR=\"$RUNNER_TEMP/macos-subsecond-ccache\"\
         \nfor dependency in boost libevent ccache; do\n  if ! brew list --versions\
         \ \"$dependency\" >/dev/null 2>&1 || [[ -z \"$(brew list --versions \"$dependency\"\
         )\" ]]; then\n    HOMEBREW_NO_AUTO_UPDATE=1 brew install \"$dependency\"\n\
-        \  fi\ndone\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\nbuild=\"$workspace/build\"\
-        \nmkdir -p \"$workspace\"/{reference,release,candidate}\ncmake -S source -B\
-        \ \"$build\" -G Ninja -DCMAKE_BUILD_TYPE=Release \"-DCMAKE_CXX_FLAGS=-Werror=thread-safety\"\
+        \  fi\ndone\nwork=\"$RUNNER_TEMP/package-native-comparison\"\nbuild=\"$work/build\"\
+        \nevidence=\"$work/evidence\"\n{\n  date -u\n  uname -a\n  sw_vers\n  sysctl\
+        \ hw.model hw.logicalcpu hw.memsize machdep.cpu.brand_string\n  xcodebuild\
+        \ -version\n  xcrun --show-sdk-path\n  xcrun --show-sdk-version\n  xcrun clang++\
+        \ --version\n  brew list --versions boost libevent ccache\n} > \"$evidence/host-toolchain.txt\"\
+        \ncmake -S source -B \"$build\" -G Ninja   -DCMAKE_C_COMPILER=/usr/bin/clang\
+        \ -DCMAKE_CXX_COMPILER=/usr/bin/clang++   -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-Werror=thread-safety\
         \   \"-DCMAKE_PREFIX_PATH=$(brew --prefix boost);$(brew --prefix libevent)\"\
-        \   -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\
-        \   -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_CLI=OFF -DENABLE_WALLET=ON -DENABLE_IPC=OFF\
-        \ -DWITH_USDT=OFF\njobs=\"$(sysctl -n hw.logicalcpu)\"\nfor variant in release\
-        \ candidate; do\n  git -C source apply \"$GITHUB_WORKSPACE/$variant.patch\"\
-        \n  git -C source diff --check\n  cmake --build \"$build\" --target bitcoind\
-        \ --parallel \"$jobs\"\n  cp \"$build/bin/sugarchaind\" \"$workspace/$variant/sugarchaind\"\
-        \n  git -C source apply --reverse \"$GITHUB_WORKSPACE/$variant.patch\"\n \
-        \ git -C source diff --exit-code\ndone\ngit -C source apply \"$GITHUB_WORKSPACE/candidate.patch\"\
-        \nshasum -a 256 \"$workspace/\"{release,candidate}/sugarchaind\n"
-    - name: Measure fresh receivers with the same 10,000 blocks
+        \   -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_C_FLAGS_RELEASE=-O3   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\
+        \ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON   -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0\
+        \ -DCMAKE_OSX_ARCHITECTURES=x86_64   -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON\
+        \   -DBUILD_GUI=OFF -DBUILD_GUI_TESTS=OFF -DBUILD_TESTS=OFF -DBUILD_BENCH=OFF\
+        \   -DBUILD_FUZZ_BINARY=OFF -DBUILD_CLI=OFF -DBUILD_TX=ON -DBUILD_UTIL=ON\
+        \   -DBUILD_WALLET_TOOL=ON -DENABLE_WALLET=ON -DENABLE_IPC=OFF -DWITH_USDT=OFF\n\
+        cp \"$build/compile_commands.json\" \"$evidence/commands-tests-off.json\"\n\
+        cp \"$build/src/bitcoin-build-config.h\" \"$evidence/config-tests-off.h\"\n\
+        cmake -S source -B \"$build\" -DBUILD_TESTS=ON\ncp \"$build/compile_commands.json\"\
+        \ \"$evidence/commands-tests-on.json\"\ncp \"$build/src/bitcoin-build-config.h\"\
+        \ \"$evidence/config-tests-on.h\"\ncp \"$build/CMakeCache.txt\" \"$evidence/CMakeCache.txt\"\
+        \npython3 check-native-config.py \"$evidence\"\ncmake --build \"$build\" --target\
+        \ bitcoind --parallel \"$(sysctl -n hw.logicalcpu)\"\ngit -C source diff --exit-code\n\
+        install -m755 \"$build/bin/sugarchaind\" \"$work/native/bin/sugarchaind\"\n\
+        codesign --force --sign - --timestamp=none \"$work/native/bin/sugarchaind\"\
+        \ncodesign --verify --strict \"$work/native/bin/sugarchaind\"\ntest \"$(lipo\
+        \ -archs \"$work/native/bin/sugarchaind\")\" = x86_64\n{\n  otool -L \"$work/native/bin/sugarchaind\"\
+        \n  otool -l \"$work/native/bin/sugarchaind\"\n} > \"$evidence/native-linkage.txt\"\
+        \n{\n  otool -L \"$work/packaged/sugarchain-en-31.1.2-macos-x86_64-cli/bin/sugarchaind\"\
+        \n  otool -l \"$work/packaged/sugarchain-en-31.1.2-macos-x86_64-cli/bin/sugarchaind\"\
+        \n} > \"$evidence/packaged-linkage.txt\"\nCOPYFILE_DISABLE=1 tar -czf \"$work/native.tar.gz\"\
+        \ -C \"$work\" native\nshasum -a 256 \"$work/native.tar.gz\" \"$work/native/bin/sugarchaind\"\
+        \ > \"$evidence/native.sha256\"\n"
+    - name: Compare both receiver builds in both sender modes
       shell: bash
-      run: "set -euo pipefail\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\nfor control\
-        \ in release; do\n  for sender in baseline candidate; do\n    python3 regtest-sync.py\
-        \ --baseline-bin-dir \"$workspace/$control\" --candidate-bin-dir \"$workspace/candidate\"\
-        \       --work-dir \"$workspace/$control-$sender\" --sender \"$sender\" --blocks\
-        \ 10000 --repeats 3\n    jq -e '.fixture_sha256 == \"e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9\"\
-        \n      and .fixture_utxo_sha256 == \"63208d710cf03c30de2660b77a5434181b20fd1c5e70460b256ea4f4e798cb84\"\
-        \n      and all(.variants[].samples[]; .reload_verified)' \"$workspace/$control-$sender/result.json\"\
-        \n  done\ndone\n"
-    - name: Retain comparison evidence
+      run: "set -euo pipefail\nwork=\"$RUNNER_TEMP/package-native-comparison\"\nfor\
+        \ sender in baseline candidate; do\n  python3 package-native-sync.py     --baseline-bin-dir\
+        \ \"$work/packaged/sugarchain-en-31.1.2-macos-x86_64-cli/bin\"     --baseline-archive\
+        \ incoming/sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz     --candidate-bin-dir\
+        \ \"$work/native/bin\" --candidate-archive \"$work/native.tar.gz\"     --work-dir\
+        \ \"$work/paired-$sender\" --sender \"$sender\" --blocks 10000 --repeats 3\n\
+        done\npython3 collect-package-native-results.py \"$work\"\n"
+    - name: Retain same-host package and compiler evidence
       if: always()
       uses: actions/upload-artifact@v7
       with:
-        name: intel-sync-comparison
-        path: ${{ runner.temp }}/macos-subsecond/*/result.json
-        if-no-files-found: warn
-        retention-days: 7
-    - name: Check fee estimation, scheduler and chain storage
-      run: 'set -euo pipefail
+        name: intel-package-native-comparison
+        path: '${{ runner.temp }}/package-native-comparison/evidence
 
-        build="$RUNNER_TEMP/macos-subsecond/build"
+          ${{ runner.temp }}/package-native-comparison/paired-baseline
 
-        cmake -S source -B "$build" -DBUILD_TESTS=ON
+          ${{ runner.temp }}/package-native-comparison/paired-candidate
 
-        cmake --build "$build" --target test_bitcoin --parallel "$(sysctl -n hw.logicalcpu)"
+          ${{ runner.temp }}/package-native-comparison/comparison-summary.json
 
-        ctest --test-dir "$build" --no-tests=error --output-on-failure -R ''^(policyestimator_tests|scheduler_tests|validationinterface_tests|blockmanager_tests|streams_tests|net_tests|disconnected_transactions|mempool_tests)$''
-
-        '
-    - name: Preserve native regression results
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: intel-native-regression-results
-        path: ${{ runner.temp }}/macos-subsecond/build/Testing/Temporary/LastTest.log
-    - name: Keep compiler cache for follow-up measurements
+          ${{ runner.temp }}/package-native-comparison/native.tar.gz'
+        include-hidden-files: true
+        if-no-files-found: error
+        retention-days: 14
+    - name: Save the compiler cache
       if: always()
       uses: actions/cache/save@v5
       with:
         path: ${{ runner.temp }}/macos-subsecond-ccache
-        key: macos-subsecond-${{ matrix.arch }}-${{ github.run_id }}
+        key: macos-subsecond-x86_64-${{ github.run_id }}
