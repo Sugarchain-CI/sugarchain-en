@@ -38,13 +38,26 @@ jobs:
           cmake --build build --parallel 4 --target bitcoind bitcoin-cli
       - name: Check Testnet5 startup, mining, relay and wallet
         run: |
+          set -o pipefail
           build/test/functional/test_runner.py --jobs 1 --timeout-factor=2 --combinedlogslen=0 \
+            --tmpdirprefix "$RUNNER_TEMP" --resultsfile testnet-results.csv \
             feature_sugarchain_testnet.py | tee testnet-ci.log
-          grep -Eq 'feature_sugarchain_testnet.py passed' testnet-ci.log
+          python3 - <<'PY'
+          import csv
+          from pathlib import Path
+
+          with Path("testnet-results.csv").open(newline="") as source:
+              rows = list(csv.DictReader(source))
+          assert [(row["test"], row["status"]) for row in rows] == [
+              ("feature_sugarchain_testnet.py", "Passed"), ("ALL", "Passed")
+          ], rows
+          PY
       - name: Preserve the targeted test log
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: testnet5-functional-evidence
-          path: testnet-ci.log
+          path: |
+            testnet-ci.log
+            testnet-results.csv
           if-no-files-found: ignore
