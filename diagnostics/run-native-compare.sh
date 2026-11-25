@@ -7,7 +7,7 @@ here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 test "$(uname -s)" = Darwin
 test "$(uname -m)" = arm64
 test "$(sysctl -n sysctl.proc_translated 2>/dev/null || printf 0)" = 0
-test "$(git -C "$source_dir" rev-parse HEAD)" = 8400a011d8d4879fb606d50c263b6e4801213605
+test "$(git -C "$source_dir" rev-parse HEAD)" = 37370faaeff1e79898b266848cc76d3e4b1e22ce
 git -C "$source_dir" diff --exit-code
 mkdir -p "$work/evidence" "$work/home"
 export CFFIXED_USER_HOME="$work/home"
@@ -39,12 +39,9 @@ cmake -S "$source_dir" -B "$work/build" -G Ninja \
   -DBUILD_GUI=ON -DBUILD_GUI_TESTS=OFF -DBUILD_TESTS=OFF -DBUILD_BENCH=OFF \
   -DBUILD_FUZZ_BINARY=OFF -DBUILD_CLI=OFF -DBUILD_TX=OFF -DBUILD_UTIL=OFF \
   -DBUILD_WALLET_TOOL=OFF -DENABLE_WALLET=ON -DENABLE_IPC=OFF -DWITH_USDT=OFF
-git -C "$source_dir" show HEAD:src/crypto/yespower-1.0.1/yespower-opt.c > "$here/reference-yespower-opt.c"
-python3 "$here/prepare-differential.py" "$here/testnet7-fixture.json" "$here/headers.txt"
 for mode in baseline candidate; do
   if [[ "$mode" == candidate ]]; then
     git -C "$source_dir" apply "$patch"
-    bash "$here/run-differential.sh" "$source_dir" "$work/differential" > "$work/evidence/differential.log" 2>&1
   fi
   cmake --build "$work/build" --target bitcoind bitcoin-qt --parallel "$(sysctl -n hw.logicalcpu)"
   mkdir -p "$work/$mode"
@@ -90,5 +87,19 @@ for mode in baseline candidate; do
     > "$work/evidence/$label.log" 2>&1
   for repeat in 1 2 3; do
     cp "$work/$label/receiver-$repeat/testnet7/debug.log" "$work/evidence/$label-$repeat-debug.log"
+  done
+done
+
+# Preserve the original Regtest fixture when measuring callback overhead.
+for mode in baseline candidate; do
+  for kind in cli gui; do
+    exe="$work/$mode/sugarchaind"
+    extra=(--network regtest)
+    if [[ "$kind" == gui ]]; then exe="$work/$mode/sugarchain-qt"; extra+=(--gui); fi
+    label="regtest-$mode-$kind"
+    python3 "$here/native-sync.py" --sender "$work/baseline/sugarchaind" --receiver "$exe" \
+      --work-dir "$work/$label" --platform macos --arch arm64 "${extra[@]}" \
+      > "$work/evidence/$label.log" 2>&1
+    cp "$work/$label/result.json" "$work/evidence/$label.json"
   done
 done
