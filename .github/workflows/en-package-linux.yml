@@ -64,11 +64,6 @@ jobs:
         xvfb-run -a bash ../build-tools/.github/release/package-linux.sh
 
         '
-    - name: Verify packaged Linux Qt fonts and Testnet7
-      if: matrix.host == 'x86_64-linux-gnu'
-      shell: bash
-      working-directory: source
-      run: xvfb-run -a bash ../build-tools/.github/release/testnet7-package-check.sh
     - name: Record package inputs
       shell: bash
       run: git -C source rev-parse HEAD > source/out/release-source-sha.txt
@@ -79,10 +74,22 @@ jobs:
         path: source/out/*
         if-no-files-found: error
         compression-level: 0
+    - name: Verify packaged Linux Qt fonts and Testnet7
+      if: matrix.host == 'x86_64-linux-gnu'
+      shell: bash
+      working-directory: source
+      run: xvfb-run -a bash ../build-tools/.github/release/testnet7-package-check.sh
+    - name: Retain the Testnet7 result
+      uses: actions/upload-artifact@v7
+      with:
+        name: release-testnet7-evidence
+        path: source/out/testnet7-results.csv
+        if-no-files-found: error
+        compression-level: 0
 'on':
   push:
     branches:
-    - release-packaging/31.1.2-en.1-x86-retry
+    - release-packaging/31.1.2-en.1-x86-final
     paths:
     - .github/workflows/en-package-linux.yml
     - .github/release/**
