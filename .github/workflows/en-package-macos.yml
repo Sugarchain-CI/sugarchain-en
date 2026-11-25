@@ -25,7 +25,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 8a2b4e2efafa6254d9b5abc5730f14c72d8afb42
+        ref: 496f41971274712a98f45d1f0d49c796788aaf49
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -34,9 +34,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "8a2b4e2efafa6254d9b5abc5730f14c72d8afb42"
+        test "$actual" = "496f41971274712a98f45d1f0d49c796788aaf49"
 
-        test "$(git rev-parse HEAD^{tree})" = "611161b0b65fad12f6d9ea4db2ac0d6222227e3f"
+        test "$(git rev-parse HEAD^{tree})" = "64c7c568b2b1fd05e76473017100963418a6e7d2"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - uses: ./.github/actions/configure-environment
@@ -69,7 +69,7 @@ jobs:
         provider: gha
     - name: Cross-build with the repository's Darwin depends toolchain
       shell: bash
-      run: "test \"$(git rev-parse HEAD)\" = 8a2b4e2efafa6254d9b5abc5730f14c72d8afb42\n\
+      run: "test \"$(git rev-parse HEAD)\" = 496f41971274712a98f45d1f0d49c796788aaf49\n\
         source ./ci/test/00_setup_env.sh\nexport GOAL=\"install deploy\"\nexport BASE_OUTDIR=\"\
         $BASE_BUILD_DIR/installed\"\nexport BITCOIN_CONFIG=\"\n  -DCMAKE_BUILD_TYPE=Release\
         \ -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\
@@ -156,7 +156,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 8a2b4e2efafa6254d9b5abc5730f14c72d8afb42
+        ref: 496f41971274712a98f45d1f0d49c796788aaf49
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -165,9 +165,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "8a2b4e2efafa6254d9b5abc5730f14c72d8afb42"
+        test "$actual" = "496f41971274712a98f45d1f0d49c796788aaf49"
 
-        test "$(git rev-parse HEAD^{tree})" = "611161b0b65fad12f6d9ea4db2ac0d6222227e3f"
+        test "$(git rev-parse HEAD^{tree})" = "64c7c568b2b1fd05e76473017100963418a6e7d2"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - name: Check out the exact release diagnostics overlay
