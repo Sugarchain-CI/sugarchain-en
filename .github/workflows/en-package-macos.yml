@@ -25,7 +25,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 37370faaeff1e79898b266848cc76d3e4b1e22ce
+        ref: 8a2b4e2efafa6254d9b5abc5730f14c72d8afb42
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -34,9 +34,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "37370faaeff1e79898b266848cc76d3e4b1e22ce"
+        test "$actual" = "8a2b4e2efafa6254d9b5abc5730f14c72d8afb42"
 
-        test "$(git rev-parse HEAD^{tree})" = "4f00b0981f4fa0b4040e75ad3b42393ea809399e"
+        test "$(git rev-parse HEAD^{tree})" = "611161b0b65fad12f6d9ea4db2ac0d6222227e3f"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - uses: ./.github/actions/configure-environment
@@ -69,7 +69,7 @@ jobs:
         provider: gha
     - name: Cross-build with the repository's Darwin depends toolchain
       shell: bash
-      run: "test \"$(git rev-parse HEAD)\" = 37370faaeff1e79898b266848cc76d3e4b1e22ce\n\
+      run: "test \"$(git rev-parse HEAD)\" = 8a2b4e2efafa6254d9b5abc5730f14c72d8afb42\n\
         source ./ci/test/00_setup_env.sh\nexport GOAL=\"install deploy\"\nexport BASE_OUTDIR=\"\
         $BASE_BUILD_DIR/installed\"\nexport BITCOIN_CONFIG=\"\n  -DCMAKE_BUILD_TYPE=Release\
         \ -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\
@@ -82,16 +82,24 @@ jobs:
         \ ./ci/test/02_run_container.py\n\npython3 - \"$BASE_BUILD_DIR/compile_commands.json\"\
         \ <<'PY'\nimport json\nfrom pathlib import Path\nimport shutil\nimport re\n\
         import shlex\nimport sys\n\ncommands = json.loads(Path(sys.argv[1]).read_text())\n\
-        for name in (\"validation.cpp\", \"yespower-opt.c\"):\n    matching = [row\
-        \ for row in commands if Path(row[\"file\"]).name == name]\n    if not matching:\n\
-        \        sys.exit(f\"Missing release translation unit: {name}\")\n    for\
-        \ row in matching:\n        args = row.get(\"arguments\") or shlex.split(row[\"\
+        for name in (\"validation.cpp\", \"yespower-opt.c\", \"sha256.c\"):\n    matching\
+        \ = [row for row in commands if Path(row[\"file\"]).name == name]\n    if\
+        \ not matching:\n        sys.exit(f\"Missing release translation unit: {name}\"\
+        )\n    for row in matching:\n        args = row.get(\"arguments\") or shlex.split(row[\"\
         command\"])\n        levels = [arg for arg in args if re.fullmatch(r\"-O([0-9]|s|z|g|fast)?\"\
         , arg)]\n        if not levels or levels[-1] != \"-O3\" or not any(arg in\
         \ (\"-flto\", \"-flto=thin\", \"-flto=full\") for arg in args):\n        \
         \    sys.exit(f\"Expected optimized IPO code generation for {name}: {levels}\"\
-        )\n    print(f\"Verified Release -O3 and IPO for {name}\")\nPY\n\ntest -x\
-        \ \"$BASE_BUILD_DIR/bin/test_bitcoin\"\n"
+        )\n        if name == \"sha256.c\" and \"yespower-1.0.1\" in row[\"file\"\
+        ]:\n            object_path = Path(row[\"directory\"]) / args[args.index(\"\
+        -o\") + 1]\n            bitcode = object_path.read_bytes()\n            for\
+        \ instruction in (\"sha256h\", \"sha256h2\", \"sha256su0\", \"sha256su1\"\
+        ):\n                intrinsic = (\"llvm.aarch64.crypto.\" + instruction).encode()\n\
+        \                if intrinsic not in bitcode:\n                    sys.exit(f\"\
+        Missing hardware SHA-256 intrinsic in {object_path}: {instruction}\")\n  \
+        \          print(\"Verified hardware SHA-256 intrinsics in the cross-built\
+        \ Yespower LTO object\")\n    print(f\"Verified Release -O3 and IPO for {name}\"\
+        )\nPY\n\ntest -x \"$BASE_BUILD_DIR/bin/test_bitcoin\"\n"
     - name: Collect the cross-built GUI and command-line programs
       shell: bash
       run: "mkdir -p transfer/cli/bin transfer/cli/share/man/man1\ncp \"$(cat \"$BASE_BUILD_DIR/macos-archive-path.txt\"\
@@ -148,7 +156,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 37370faaeff1e79898b266848cc76d3e4b1e22ce
+        ref: 8a2b4e2efafa6254d9b5abc5730f14c72d8afb42
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -157,9 +165,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "37370faaeff1e79898b266848cc76d3e4b1e22ce"
+        test "$actual" = "8a2b4e2efafa6254d9b5abc5730f14c72d8afb42"
 
-        test "$(git rev-parse HEAD^{tree})" = "4f00b0981f4fa0b4040e75ad3b42393ea809399e"
+        test "$(git rev-parse HEAD^{tree})" = "611161b0b65fad12f6d9ea4db2ac0d6222227e3f"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - name: Check out the exact release diagnostics overlay
