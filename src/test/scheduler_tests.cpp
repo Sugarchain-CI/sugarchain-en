@@ -9,13 +9,31 @@
 #include <boost/test/unit_test.hpp>
 
 #include <functional>
-#if defined(__APPLE__) && defined(__aarch64__)
+#ifdef __APPLE__
 #include <future>
 #endif
 #include <mutex>
 #include <stdexcept>
 #include <thread>
 #include <vector>
+
+#if defined(__APPLE__) && defined(__x86_64__)
+struct SchedulerWaiterTestAccess {
+    static bool WaitForSleeper(CScheduler& scheduler)
+    {
+        const auto deadline{std::chrono::steady_clock::now() + 5s};
+        do {
+            if (WITH_LOCK(scheduler.newTaskMutex, return scheduler.m_waiting_threads != 0)) return true;
+            std::this_thread::yield();
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+    static size_t WaitingThreads(CScheduler& scheduler)
+    {
+        return WITH_LOCK(scheduler.newTaskMutex, return scheduler.m_waiting_threads);
+    }
+};
+#endif
 
 BOOST_AUTO_TEST_SUITE(scheduler_tests)
 
@@ -175,6 +193,104 @@ BOOST_AUTO_TEST_CASE(singlethreadedscheduler_ordered)
     BOOST_CHECK_EQUAL(counter2, 100);
 }
 
+#if defined(__APPLE__) && defined(__x86_64__)
+BOOST_AUTO_TEST_CASE(scheduler_wakes_other_worker_while_callback_blocked)
+{
+    CScheduler scheduler;
+    std::promise<void> first_started, release_first, second_finished;
+    auto first_ready{first_started.get_future()};
+    auto release{release_first.get_future()};
+    auto second_ready{second_finished.get_future()};
+    scheduler.scheduleFromNow([&] {
+        first_started.set_value();
+        release.wait();
+    }, 0ms);
+    std::thread first_worker{[&] { scheduler.serviceQueue(); }};
+    std::thread second_worker{[&] { scheduler.serviceQueue(); }};
+    const auto started{first_ready.wait_for(5s)};
+    const bool sleeping{SchedulerWaiterTestAccess::WaitForSleeper(scheduler)};
+    // The blocked callback cannot service this task. A different worker must
+    // wake even though another task is currently executing.
+    scheduler.scheduleFromNow([&] { second_finished.set_value(); }, 0ms);
+    const auto finished{second_ready.wait_for(5s)};
+    release_first.set_value();
+    scheduler.StopWhenDrained();
+    first_worker.join();
+    second_worker.join();
+    BOOST_CHECK(started == std::future_status::ready);
+    BOOST_CHECK(sleeping);
+    BOOST_CHECK(finished == std::future_status::ready);
+    BOOST_CHECK_EQUAL(SchedulerWaiterTestAccess::WaitingThreads(scheduler), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(scheduler_new_earliest_deadline_wakes_worker)
+{
+    CScheduler scheduler;
+    std::promise<void> immediate_finished;
+    auto finished{immediate_finished.get_future()};
+    bool future_ran{false};
+    scheduler.scheduleFromNow([&] { future_ran = true; }, 1h);
+    std::thread worker{[&] { scheduler.serviceQueue(); }};
+    const bool sleeping{SchedulerWaiterTestAccess::WaitForSleeper(scheduler)};
+    scheduler.scheduleFromNow([&] { immediate_finished.set_value(); }, 0ms);
+    const auto status{finished.wait_for(5s)};
+    scheduler.stop();
+    worker.join();
+    BOOST_CHECK(status == std::future_status::ready);
+    BOOST_CHECK(sleeping);
+    BOOST_CHECK(!future_ran);
+    BOOST_CHECK_EQUAL(SchedulerWaiterTestAccess::WaitingThreads(scheduler), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(scheduler_due_tasks_keep_order_and_future_deadlines)
+{
+    CScheduler scheduler;
+    std::vector<int> order;
+    const auto past{std::chrono::steady_clock::now() - 1s};
+    const auto future{std::chrono::steady_clock::now() + 20ms};
+    std::chrono::steady_clock::time_point executed_at;
+    scheduler.schedule([&] { order.push_back(3); }, past + 2ms);
+    scheduler.schedule([&] { order.push_back(4); }, past + 2ms);
+    scheduler.schedule([&] {
+        order.push_back(1);
+        // A newly queued due task must use deadline order, including while
+        // already draining, without changing FIFO order for equal deadlines.
+        scheduler.schedule([&] { order.push_back(2); }, past + 1ms);
+    }, past);
+    scheduler.schedule([&] {
+        executed_at = std::chrono::steady_clock::now();
+        order.push_back(5);
+    }, future);
+    scheduler.StopWhenDrained();
+    scheduler.serviceQueue();
+
+    const std::vector<int> expected{1, 2, 3, 4, 5};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+    BOOST_CHECK(executed_at >= future);
+    std::chrono::steady_clock::time_point first, last;
+    BOOST_CHECK_EQUAL(scheduler.getQueueInfo(first, last), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(scheduler_due_tasks_respect_immediate_shutdown)
+{
+    CScheduler scheduler;
+    std::vector<int> order;
+    const auto past{std::chrono::steady_clock::now() - 1s};
+    scheduler.schedule([&] { order.push_back(1); }, past);
+    scheduler.schedule([&] {
+        order.push_back(2);
+        scheduler.stop();
+    }, past + 1ms);
+    scheduler.schedule([&] { order.push_back(3); }, past + 2ms);
+    scheduler.serviceQueue();
+
+    const std::vector<int> expected{1, 2};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+    std::chrono::steady_clock::time_point first, last;
+    BOOST_CHECK_EQUAL(scheduler.getQueueInfo(first, last), 1U);
+}
+#endif
+
 #if defined(__APPLE__) && defined(__aarch64__)
 BOOST_AUTO_TEST_CASE(validation_worker_capacity_and_shutdown)
 {
@@ -250,6 +366,70 @@ BOOST_AUTO_TEST_CASE(serial_callbacks_resume_after_exception_and_stop)
     const std::vector<int> expected{1, 2, 3, 4};
     BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
 }
+
+#if defined(__APPLE__) && defined(__x86_64__)
+BOOST_AUTO_TEST_CASE(serial_callbacks_wake_append_and_drain)
+{
+    CScheduler scheduler;
+    SerialTaskRunner runner{scheduler};
+    std::vector<int> order;
+    std::promise<void> scheduler_started, first_started, release_first, drained;
+    auto first_ready{first_started.get_future()};
+    auto gate{release_first.get_future()};
+    auto finished{drained.get_future()};
+
+    // Start servicing before the first callback is inserted, so insertion must
+    // wake an idle scheduler rather than rely on an already reserved turn.
+    scheduler.scheduleFromNow([&] { scheduler_started.set_value(); }, 0ms);
+    std::thread worker{[&] { scheduler.serviceQueue(); }};
+    scheduler_started.get_future().wait();
+    runner.insert([&] {
+        order.push_back(1);
+        first_started.set_value();
+        gate.wait();
+        // A callback can append more work without deadlocking or overtaking
+        // callbacks inserted while it was running.
+        runner.insert([&] {
+            order.push_back(19);
+            drained.set_value();
+        });
+    });
+    const auto wake_status{first_ready.wait_for(5s)};
+    for (int i{2}; i <= 18; ++i) {
+        runner.insert([&, i] { order.push_back(i); });
+    }
+    const size_t held_pending{runner.size()};
+    release_first.set_value();
+    const auto drain_status{finished.wait_for(5s)};
+    scheduler.stop();
+    worker.join();
+    // Drain on failure too, so no callback outlives the test's captured state.
+    runner.flush();
+
+    BOOST_CHECK(wake_status == std::future_status::ready);
+    BOOST_CHECK(drain_status == std::future_status::ready);
+    BOOST_CHECK_EQUAL(held_pending, 17U);
+    BOOST_REQUIRE_EQUAL(order.size(), 19U);
+    for (size_t i{0}; i < order.size(); ++i) BOOST_CHECK_EQUAL(order[i], i + 1);
+
+    // Final notifications may arrive after scheduler shutdown. They must stay
+    // queued and be drained in FIFO order, including reentrant insertion.
+    const auto caller{std::this_thread::get_id()};
+    std::thread::id draining_thread;
+    runner.insert([&] {
+        draining_thread = std::this_thread::get_id();
+        order.push_back(20);
+        runner.insert([&] { order.push_back(22); });
+    });
+    runner.insert([&] { order.push_back(21); });
+    BOOST_CHECK_EQUAL(runner.size(), 2U);
+    runner.flush();
+    BOOST_CHECK(draining_thread == caller);
+    BOOST_CHECK_EQUAL(runner.size(), 0U);
+    const std::vector<int> expected{20, 21, 22};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.end() - 3, order.end(), expected.begin(), expected.end());
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(mockforward)
 {

@@ -2,6 +2,7 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <coins.h>
 #include <common/system.h>
 #include <policy/policy.h>
 #include <test/util/txmempool.h>
@@ -22,6 +23,45 @@ class MemPoolTest final : public CTxMemPool
 public:
     using CTxMemPool::GetMinFee;
 };
+
+BOOST_AUTO_TEST_CASE(MempoolCheckEmptyAndDependentTransactions)
+{
+    bilingual_str error;
+    CTxMemPool pool{{.check_ratio = 1}, error};
+    BOOST_REQUIRE(error.empty());
+    CCoinsView base;
+    CCoinsViewCache coins{&base};
+    LOCK2(::cs_main, pool.cs);
+    pool.check(coins, 2);
+
+    CMutableTransaction funding;
+    funding.vout.emplace_back(10000, CScript() << OP_TRUE);
+    const COutPoint prevout{funding.GetHash(), 0};
+    coins.AddCoin(prevout, Coin{funding.vout[0], 1, false}, false);
+
+    CMutableTransaction parent;
+    parent.vin.emplace_back(prevout);
+    parent.vout.emplace_back(9000, CScript() << OP_TRUE);
+    CMutableTransaction child;
+    child.vin.emplace_back(COutPoint{parent.GetHash(), 0});
+    child.vout.emplace_back(8000, CScript() << OP_TRUE);
+
+    TestMemPoolEntryHelper entry;
+    entry.Fee(1000);
+    for (unsigned cycle = 0; cycle < 3; ++cycle) {
+        TryAddToMempool(pool, entry.FromTx(parent));
+        pool.check(coins, 2);
+        TryAddToMempool(pool, entry.FromTx(child));
+        BOOST_CHECK_EQUAL(pool.size(), 2U);
+        pool.check(coins, 2);
+        pool.removeRecursive(CTransaction(parent), REMOVAL_REASON_DUMMY);
+        BOOST_CHECK_EQUAL(pool.size(), 0U);
+        pool.check(coins, 2);
+        BOOST_CHECK(coins.HaveCoin(prevout));
+        BOOST_CHECK(!coins.HaveCoin(COutPoint{parent.GetHash(), 0}));
+        BOOST_CHECK(!coins.HaveCoin(COutPoint{child.GetHash(), 0}));
+    }
+}
 
 BOOST_AUTO_TEST_CASE(MempoolRemoveTest)
 {

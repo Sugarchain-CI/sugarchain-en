@@ -5,7 +5,9 @@
 #include <policy/fees/block_policy_estimator.h>
 #include <policy/fees/block_policy_estimator_args.h>
 #include <policy/policy.h>
+#include <scheduler.h>
 #include <test/util/txmempool.h>
+#include <streams.h>
 #include <txmempool.h>
 #include <uint256.h>
 #include <util/time.h>
@@ -14,6 +16,8 @@
 #include <test/util/setup_common.h>
 
 #include <boost/test/unit_test.hpp>
+
+#include <cstdio>
 
 BOOST_FIXTURE_TEST_SUITE(policyestimator_tests, ChainTestingSetup)
 
@@ -260,6 +264,85 @@ BOOST_AUTO_TEST_CASE(BlockPolicyEstimates)
     for (int i = 2; i < 9; i++) { // At 9, the original estimate was already at the bottom (b/c scale = 2)
         BOOST_CHECK(feeEst.estimateFee(i).GetFeePerK() < origFeeEst[i-1] - deltaFee);
     }
+}
+
+BOOST_AUTO_TEST_CASE(pristine_and_loaded_fee_statistics)
+{
+    struct Estimator : CBlockPolicyEstimator {
+        using CBlockPolicyEstimator::CBlockPolicyEstimator;
+        using CBlockPolicyEstimator::MempoolTransactionsRemovedForBlock;
+        using CBlockPolicyEstimator::TransactionAddedToMempool;
+    };
+    const auto path{FeeestPath(*m_node.args).parent_path() / "pristine-fee-estimates.dat"};
+    Estimator fresh{path, true};
+    Estimator loaded{path, true};
+    CScheduler scheduler;
+    ValidationSignals signals{std::make_unique<SerialTaskRunner>(scheduler)};
+    signals.RegisterValidationInterface(&fresh);
+    signals.RegisterValidationInterface(&loaded);
+    const auto snapshot = [](const CBlockPolicyEstimator& estimator) {
+        AutoFile file{std::tmpfile()};
+        BOOST_REQUIRE(!file.IsNull());
+        BOOST_REQUIRE(estimator.Write(file));
+        const auto length{file.size()};
+        file.seek(0, SEEK_SET);
+        std::vector<char> bytes(length);
+        file.read(std::as_writable_bytes(std::span{bytes}));
+        return bytes;
+    };
+    const auto restore = [&](Estimator& target, const CBlockPolicyEstimator& source) {
+        AutoFile file{std::tmpfile()};
+        BOOST_REQUIRE(!file.IsNull());
+        BOOST_REQUIRE(source.Write(file));
+        file.seek(0, SEEK_SET);
+        BOOST_REQUIRE(target.Read(file));
+    };
+    const auto equal = [&](bool include_height) {
+        auto a{snapshot(fresh)};
+        auto b{snapshot(loaded)};
+        // Reloading stores the recorded range as historical. The first four
+        // uint32 fields describe that range; the encoded counters follow it.
+        const size_t offset{include_height ? 0U : 16U};
+        BOOST_REQUIRE(a.size() >= offset && b.size() >= offset);
+        BOOST_CHECK_EQUAL_COLLECTIONS(a.begin() + offset, a.end(), b.begin() + offset, b.end());
+    };
+    // The deserialized estimator takes the normal update path even when zero.
+    restore(loaded, fresh);
+    for (unsigned height{1}; height <= 256; ++height) {
+        signals.MempoolTransactionsRemovedForBlock({}, height);
+    }
+    signals.FlushBackgroundCallbacks();
+    equal(true);
+
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vout.resize(1);
+    TestMemPoolEntryHelper entry;
+    for (unsigned height{256}; height < 336; ++height) {
+        std::vector<RemovedMempoolTransactionInfo> confirmed;
+        for (unsigned n{0}; n < 20; ++n) {
+            tx.vin[0].prevout.n = height * 20 + n;
+            const auto ref{MakeTransactionRef(tx)};
+            NewMempoolTransactionInfo added{ref, 2000, GetVirtualTransactionSize(*ref), height,
+                                           false, false, true, true};
+            fresh.TransactionAddedToMempool(added, 0);
+            loaded.TransactionAddedToMempool(added, 0);
+            confirmed.emplace_back(entry.Fee(2000).Height(height).FromTx(ref));
+        }
+        fresh.MempoolTransactionsRemovedForBlock(confirmed, height + 1);
+        loaded.MempoolTransactionsRemovedForBlock(confirmed, height + 1);
+    }
+    equal(true);
+    BOOST_CHECK(fresh.estimateFee(2).GetFeePerK() > 0);
+
+    restore(loaded, fresh);
+    for (unsigned height{337}; height <= 400; ++height) {
+        signals.MempoolTransactionsRemovedForBlock({}, height);
+    }
+    signals.FlushBackgroundCallbacks();
+    equal(false);
+    BOOST_CHECK_EQUAL(fresh.estimateFee(2).GetFeePerK(), loaded.estimateFee(2).GetFeePerK());
+    signals.UnregisterAllValidationInterfaces();
 }
 
 BOOST_AUTO_TEST_SUITE_END()

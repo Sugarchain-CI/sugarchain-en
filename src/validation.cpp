@@ -2807,10 +2807,14 @@ bool Chainstate::FlushStateToDisk(
                 LOG_TIME_MILLIS_WITH_CATEGORY("write block and undo data to disk", BCLog::BENCH);
 
                 // First make sure all block and undo data is flushed to disk.
-                // TODO: Handle return error, or add detailed comment why it is
-                // safe to not return an error upon failure.
+                // Intel buffers records between writes, so a failed flush must
+                // stop before persisting indexes or coins that refer to them.
                 if (!m_blockman.FlushChainstateBlockFile(m_chain.Height())) {
+#if defined(__APPLE__) && defined(__x86_64__)
+                    return FatalError(m_chainman.GetNotifications(), state, _("Failed to flush block data before writing chainstate."));
+#else
                     LogWarning("%s: Failed to flush block file.\n", __func__);
+#endif
                 }
             }
 
@@ -3439,7 +3443,10 @@ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCL
     AssertLockNotHeld(cs_main);
 
     if (signals.CallbacksPending() > 10) {
-#ifdef __APPLE__
+#if defined(__APPLE__) && defined(__x86_64__)
+        // Drain the pending burst before the producer resumes filling the bounded queue.
+        signals.WaitForPendingCallbacks(0);
+#elif defined(__APPLE__)
         // Leave room for another block's notifications before applying backpressure again.
         signals.WaitForPendingCallbacks(8);
 #else
@@ -4542,7 +4549,11 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
     // the block files may be pruned, so we can just call this on one
     // chainstate (particularly if we haven't implemented pruning with
     // background validation yet).
+#if defined(__APPLE__) && defined(__x86_64__)
+    if (!ActiveChainstate().FlushStateToDisk(state, FlushStateMode::NONE)) return false;
+#else
     ActiveChainstate().FlushStateToDisk(state, FlushStateMode::NONE);
+#endif
 
     CheckBlockIndex();
 

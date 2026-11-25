@@ -245,6 +245,20 @@ void ValidationSignals::BlockConnected(const ChainstateRole& role, const std::sh
 
 void ValidationSignals::MempoolTransactionsRemovedForBlock(const std::vector<RemovedMempoolTransactionInfo>& txs_removed_for_block, unsigned int nBlockHeight)
 {
+#if defined(__APPLE__) && defined(__x86_64__)
+    if (txs_removed_for_block.empty()) {
+        // Historical blocks still advance fee-estimator heights. Keep every
+        // queued notification, without storing two copies of an empty vector.
+        static constexpr const char* name{__func__};
+        LOG_EVENT("Enqueuing %s: block height=%s txs removed=%s", name, nBlockHeight, 0);
+        m_internals->m_task_runner->insert([this, nBlockHeight] {
+            LOG_EVENT("%s: block height=%s txs removed=%s", name, nBlockHeight, 0);
+            const std::vector<RemovedMempoolTransactionInfo> empty;
+            m_internals->Iterate([&](CValidationInterface& callbacks) { callbacks.MempoolTransactionsRemovedForBlock(empty, nBlockHeight); });
+        });
+        return;
+    }
+#endif
     auto event = [txs_removed_for_block, nBlockHeight, this] {
         m_internals->Iterate([&](CValidationInterface& callbacks) { callbacks.MempoolTransactionsRemovedForBlock(txs_removed_for_block, nBlockHeight); });
     };

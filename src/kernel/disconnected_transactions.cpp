@@ -24,13 +24,25 @@
 DisconnectedBlockTransactions::~DisconnectedBlockTransactions()
 {
     assert(queuedTx.empty());
+#if defined(__APPLE__) && defined(__x86_64__)
+    assert(!m_iters_by_txid || m_iters_by_txid->empty());
+#else
     assert(iters_by_txid.empty());
+#endif
     assert(cachedInnerUsage == 0);
 }
 
 std::vector<CTransactionRef> DisconnectedBlockTransactions::LimitMemoryUsage()
 {
     std::vector<CTransactionRef> evicted;
+#if defined(__APPLE__) && defined(__x86_64__)
+    if (!m_iters_by_txid) {
+        assert(queuedTx.empty());
+        assert(cachedInnerUsage == 0);
+        return evicted;
+    }
+    auto& iters_by_txid{*m_iters_by_txid};
+#endif
 
     while (!queuedTx.empty() && DynamicMemoryUsage() > m_max_mem_usage) {
         evicted.emplace_back(queuedTx.front());
@@ -43,11 +55,23 @@ std::vector<CTransactionRef> DisconnectedBlockTransactions::LimitMemoryUsage()
 
 size_t DisconnectedBlockTransactions::DynamicMemoryUsage() const
 {
+#if defined(__APPLE__) && defined(__x86_64__)
+    const size_t index_usage{m_iters_by_txid ? memusage::DynamicUsage(*m_iters_by_txid) : 0};
+    return cachedInnerUsage + index_usage + memusage::DynamicUsage(queuedTx);
+#else
     return cachedInnerUsage + memusage::DynamicUsage(iters_by_txid) + memusage::DynamicUsage(queuedTx);
+#endif
 }
 
 [[nodiscard]] std::vector<CTransactionRef> DisconnectedBlockTransactions::AddTransactionsFromBlock(const std::vector<CTransactionRef>& vtx)
 {
+#if defined(__APPLE__) && defined(__x86_64__)
+    if (!m_iters_by_txid) {
+        if (vtx.empty()) return LimitMemoryUsage();
+        m_iters_by_txid.emplace();
+    }
+    auto& iters_by_txid{*m_iters_by_txid};
+#endif
     iters_by_txid.reserve(iters_by_txid.size() + vtx.size());
     for (auto block_it = vtx.rbegin(); block_it != vtx.rend(); ++block_it) {
         auto it = queuedTx.insert(queuedTx.end(), *block_it);
@@ -64,6 +88,10 @@ void DisconnectedBlockTransactions::removeForBlock(const std::vector<CTransactio
     if (queuedTx.empty()) {
         return;
     }
+#if defined(__APPLE__) && defined(__x86_64__)
+    assert(m_iters_by_txid.has_value());
+    auto& iters_by_txid{*m_iters_by_txid};
+#endif
     for (const auto& tx : vtx) {
         auto iter = iters_by_txid.find(tx->GetHash());
         if (iter != iters_by_txid.end()) {
@@ -78,7 +106,11 @@ void DisconnectedBlockTransactions::removeForBlock(const std::vector<CTransactio
 void DisconnectedBlockTransactions::clear()
 {
     cachedInnerUsage = 0;
+#if defined(__APPLE__) && defined(__x86_64__)
+    if (m_iters_by_txid) m_iters_by_txid->clear();
+#else
     iters_by_txid.clear();
+#endif
     queuedTx.clear();
 }
 

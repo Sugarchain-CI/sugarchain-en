@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <list>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -43,7 +44,14 @@ private:
     const size_t m_max_mem_usage;
     std::list<CTransactionRef> queuedTx;
     using TxList = decltype(queuedTx);
-    std::unordered_map<Txid, TxList::iterator, SaltedTxidHasher> iters_by_txid;
+    using TxidIndex = std::unordered_map<Txid, TxList::iterator, SaltedTxidHasher>;
+#if defined(__APPLE__) && defined(__x86_64__)
+    // Straight-chain extension never inserts a disconnected transaction. Defer
+    // constructing the salted index until it actually has entries to track.
+    std::optional<TxidIndex> m_iters_by_txid;
+#else
+    TxidIndex iters_by_txid;
+#endif
 
     /** Trim the earliest-added entries until we are within memory bounds. */
     std::vector<CTransactionRef> LimitMemoryUsage();

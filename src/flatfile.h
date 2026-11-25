@@ -6,6 +6,7 @@
 #ifndef BITCOIN_FLATFILE_H
 #define BITCOIN_FLATFILE_H
 
+#include <span>
 #include <string>
 
 #include <serialize.h>
@@ -60,6 +61,10 @@ public:
 
     /** Open a handle to the file at the given position. */
     FILE* Open(const FlatFilePos& pos, bool read_only = false) const;
+#if defined(__APPLE__) && defined(__x86_64__)
+    /** Configure a caller-owned buffer before any stream I/O or seeking. */
+    FILE* Open(const FlatFilePos& pos, bool read_only, std::span<char> buffer) const;
+#endif
 
     /**
      * Allocate additional space in a file after the given starting position. The amount allocated

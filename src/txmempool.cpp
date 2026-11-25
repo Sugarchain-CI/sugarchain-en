@@ -449,9 +449,18 @@ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendhei
     assert(!m_txgraph->IsOversized(TxGraph::Level::MAIN));
     m_txgraph->SanityCheck();
 
+#if defined(__APPLE__) && defined(__x86_64__)
+    // The temporary coins cache is only used while checking transactions. Keep
+    // all consistency checks below, but defer its allocation for an empty pool.
+    std::optional<CCoinsViewCache> mempool_duplicate;
+#else
     CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(&active_coins_tip));
+#endif
 
     const auto score_with_topo{GetSortedScoreWithTopology()};
+#if defined(__APPLE__) && defined(__x86_64__)
+    if (!score_with_topo.empty()) mempool_duplicate.emplace(const_cast<CCoinsViewCache*>(&active_coins_tip));
+#endif
 
     // Number of chunks is bounded by number of transactions.
     const auto diagram{GetFeerateDiagram()};
@@ -462,6 +471,9 @@ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendhei
     auto diagram_iter = diagram.cbegin();
 
     for (const auto& it : score_with_topo) {
+#if defined(__APPLE__) && defined(__x86_64__)
+        auto& mempoolDuplicate{*mempool_duplicate};
+#endif
         // GetSortedScoreWithTopology() contains the same chunks as the feerate
         // diagram. We do not know where the chunk boundaries are, but we can
         // check that there are points at which they match the cumulative fee

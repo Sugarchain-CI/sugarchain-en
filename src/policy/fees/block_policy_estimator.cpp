@@ -102,6 +102,12 @@ private:
     // Combine the conf counts with tx counts to calculate the confirmation % for each Y,X
     // Combine the total value with the tx counts to calculate the avg feerate per bucket
 
+#if defined(__APPLE__) && defined(__x86_64__)
+    // A freshly created estimator has only zero counters. Loading estimates or
+    // recording a transaction permanently enables the normal update path.
+    bool m_pristine{true};
+#endif
+
     double decay;
 
     // Resolution (# of blocks) with which confirmations are tracked
@@ -207,6 +213,9 @@ void TxConfirmStats::resizeInMemoryCounters(size_t newbuckets) {
 // Roll the unconfirmed txs circular buffer
 void TxConfirmStats::ClearCurrent(unsigned int nBlockHeight)
 {
+#if defined(__APPLE__) && defined(__x86_64__)
+    if (m_pristine) return;
+#endif
     for (unsigned int j = 0; j < buckets.size(); j++) {
         oldUnconfTxs[j] += unconfTxs[nBlockHeight % unconfTxs.size()][j];
         unconfTxs[nBlockHeight%unconfTxs.size()][j] = 0;
@@ -216,6 +225,9 @@ void TxConfirmStats::ClearCurrent(unsigned int nBlockHeight)
 
 void TxConfirmStats::Record(int blocksToConfirm, double feerate)
 {
+#if defined(__APPLE__) && defined(__x86_64__)
+    m_pristine = false;
+#endif
     // blocksToConfirm is 1-based
     if (blocksToConfirm < 1)
         return;
@@ -230,6 +242,9 @@ void TxConfirmStats::Record(int blocksToConfirm, double feerate)
 
 void TxConfirmStats::UpdateMovingAverages()
 {
+#if defined(__APPLE__) && defined(__x86_64__)
+    if (m_pristine) return;
+#endif
     assert(confAvg.size() == failAvg.size());
     for (unsigned int j = 0; j < buckets.size(); j++) {
         for (unsigned int i = 0; i < confAvg.size(); i++) {
@@ -420,6 +435,9 @@ void TxConfirmStats::Write(AutoFile& fileout) const
 
 void TxConfirmStats::Read(AutoFile& filein, size_t numBuckets)
 {
+#if defined(__APPLE__) && defined(__x86_64__)
+    m_pristine = false;
+#endif
     // Read data file and do some very basic sanity checking
     // buckets and bucketMap are not updated yet, so don't access them
     // If there is a read failure, we'll just discard this entire object anyway
@@ -476,6 +494,9 @@ void TxConfirmStats::Read(AutoFile& filein, size_t numBuckets)
 
 unsigned int TxConfirmStats::NewTx(unsigned int nBlockHeight, double val)
 {
+#if defined(__APPLE__) && defined(__x86_64__)
+    m_pristine = false;
+#endif
     unsigned int bucketindex = bucketMap.lower_bound(val)->second;
     unsigned int blockIndex = nBlockHeight % unconfTxs.size();
     unconfTxs[blockIndex][bucketindex]++;
@@ -484,6 +505,9 @@ unsigned int TxConfirmStats::NewTx(unsigned int nBlockHeight, double val)
 
 void TxConfirmStats::removeTx(unsigned int entryHeight, unsigned int nBestSeenHeight, unsigned int bucketindex, bool inBlock)
 {
+#if defined(__APPLE__) && defined(__x86_64__)
+    m_pristine = false;
+#endif
     //nBestSeenHeight is not updated yet for the new block
     int blocksAgo = nBestSeenHeight - entryHeight;
     if (nBestSeenHeight == 0)  // the BlockPolicyEstimator hasn't seen any blocks yet

@@ -92,4 +92,46 @@ BOOST_AUTO_TEST_CASE(disconnectpool_memory_limits)
     }
 }
 
+BOOST_AUTO_TEST_CASE(disconnectpool_empty_population_and_reuse)
+{
+    DisconnectedBlockTransactions pool{MAX_DISCONNECTED_TX_POOL_BYTES};
+#if defined(__APPLE__) && defined(__x86_64__)
+    const auto empty_usage{pool.DynamicMemoryUsage()};
+#endif
+    const std::vector<CTransactionRef> empty;
+    for (unsigned i = 0; i < 3; ++i) {
+        BOOST_CHECK(pool.AddTransactionsFromBlock(empty).empty());
+        pool.removeForBlock(empty);
+        pool.clear();
+        BOOST_CHECK(pool.take().empty());
+#if defined(__APPLE__) && defined(__x86_64__)
+        BOOST_CHECK_EQUAL(pool.DynamicMemoryUsage(), empty_usage);
+#endif
+    }
+
+    for (unsigned cycle = 0; cycle < 3; ++cycle) {
+        const std::vector<CTransactionRef> disconnected{
+            m_coinbase_txns.at(0), m_coinbase_txns.at(1), m_coinbase_txns.at(2), m_coinbase_txns.at(3)};
+        BOOST_CHECK(pool.AddTransactionsFromBlock(disconnected).empty());
+        BOOST_CHECK_EQUAL(pool.size(), 4U);
+        BOOST_CHECK(pool.AddTransactionsFromBlock(empty).empty());
+        pool.removeForBlock({m_coinbase_txns.at(0), m_coinbase_txns.at(2)});
+        BOOST_CHECK_EQUAL(pool.size(), 2U);
+        const auto remaining{pool.take()};
+        const std::vector<CTransactionRef> expected{m_coinbase_txns.at(3), m_coinbase_txns.at(1)};
+        BOOST_CHECK_EQUAL_COLLECTIONS(remaining.begin(), remaining.end(), expected.begin(), expected.end());
+        BOOST_CHECK_EQUAL(pool.size(), 0U);
+        BOOST_CHECK(pool.AddTransactionsFromBlock({m_coinbase_txns.at(4), m_coinbase_txns.at(5)}).empty());
+        pool.clear();
+        BOOST_CHECK(pool.take().empty());
+        BOOST_CHECK(pool.DynamicMemoryUsage() <= MAX_DISCONNECTED_TX_POOL_BYTES);
+    }
+
+    DisconnectedBlockTransactions zero_limit{0};
+    const auto evicted{zero_limit.AddTransactionsFromBlock({m_coinbase_txns.at(6)})};
+    BOOST_REQUIRE_EQUAL(evicted.size(), 1U);
+    BOOST_CHECK(evicted.front() == m_coinbase_txns.at(6));
+    BOOST_CHECK(zero_limit.take().empty());
+}
+
 BOOST_AUTO_TEST_SUITE_END()

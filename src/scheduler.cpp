@@ -25,6 +25,9 @@ void CScheduler::serviceQueue()
 {
     WAIT_LOCK(newTaskMutex, lock);
     ++nThreadsServicingQueue;
+#if defined(__APPLE__) && defined(__x86_64__)
+    bool waiting{false};
+#endif
 
     // newTaskMutex is locked throughout this loop EXCEPT
     // when the thread is waiting or when the user's function
@@ -33,7 +36,15 @@ void CScheduler::serviceQueue()
         try {
             while (!shouldStop() && taskQueue.empty()) {
                 // Wait until there is something to do.
+#if defined(__APPLE__) && defined(__x86_64__)
+                ++m_waiting_threads;
+                waiting = true;
+#endif
                 newTaskScheduled.wait(lock);
+#if defined(__APPLE__) && defined(__x86_64__)
+                --m_waiting_threads;
+                waiting = false;
+#endif
             }
 
             // Wait until either there is a new task, or until
@@ -41,12 +52,21 @@ void CScheduler::serviceQueue()
 
             while (!shouldStop() && !taskQueue.empty()) {
                 std::chrono::steady_clock::time_point timeToWaitFor = taskQueue.begin()->first;
-#ifdef WIN32
-                // MinGW can wait a Windows timer tick even for an expired deadline.
-                // Run tasks that are already due without entering a timed wait.
+#if defined(WIN32) || (defined(__APPLE__) && defined(__x86_64__))
+                // Avoid timed-wait overhead for tasks whose deadline has passed.
+                // MinGW can also wait an entire Windows timer tick in this case.
                 if (timeToWaitFor <= std::chrono::steady_clock::now()) break;
 #endif
-                if (newTaskScheduled.wait_until(lock, timeToWaitFor) == std::cv_status::timeout) {
+#if defined(__APPLE__) && defined(__x86_64__)
+                ++m_waiting_threads;
+                waiting = true;
+#endif
+                const auto status{newTaskScheduled.wait_until(lock, timeToWaitFor)};
+#if defined(__APPLE__) && defined(__x86_64__)
+                --m_waiting_threads;
+                waiting = false;
+#endif
+                if (status == std::cv_status::timeout) {
                     break; // Exit loop after timeout, it means we reached the time of the event
                 }
             }
@@ -66,6 +86,9 @@ void CScheduler::serviceQueue()
                 f();
             }
         } catch (...) {
+#if defined(__APPLE__) && defined(__x86_64__)
+            if (waiting) --m_waiting_threads;
+#endif
             --nThreadsServicingQueue;
             throw;
         }
@@ -76,11 +99,23 @@ void CScheduler::serviceQueue()
 
 void CScheduler::schedule(CScheduler::Function f, std::chrono::steady_clock::time_point t)
 {
+#if defined(__APPLE__) && defined(__x86_64__)
+    bool wake;
+#endif
     {
         LOCK(newTaskMutex);
         taskQueue.insert(std::make_pair(t, f));
+#if defined(__APPLE__) && defined(__x86_64__)
+        // A running worker will inspect this queue before waiting. Notify only
+        // workers that are already waiting, using the same lock as the queue.
+        wake = m_waiting_threads != 0;
+#endif
     }
+#if defined(__APPLE__) && defined(__x86_64__)
+    if (wake) newTaskScheduled.notify_one();
+#else
     newTaskScheduled.notify_one();
+#endif
 }
 
 void CScheduler::MockForward(std::chrono::seconds delta_seconds)
@@ -146,6 +181,9 @@ void SerialTaskRunner::MaybeScheduleProcessQueue()
         m_process_queue_scheduled = true;
 #endif
     }
+#if defined(__APPLE__) && defined(__x86_64__)
+    ScheduleProcessQueue();
+#else
 #ifdef __APPLE__
     try {
 #endif
@@ -157,7 +195,21 @@ void SerialTaskRunner::MaybeScheduleProcessQueue()
         throw;
     }
 #endif
+#endif
 }
+
+#if defined(__APPLE__) && defined(__x86_64__)
+void SerialTaskRunner::ScheduleProcessQueue()
+{
+    try {
+        m_scheduler.schedule([this] { this->ProcessQueue(); }, std::chrono::steady_clock::now());
+    } catch (...) {
+        LOCK(m_callbacks_mutex);
+        m_process_queue_scheduled = false;
+        throw;
+    }
+}
+#endif
 
 #ifdef __APPLE__
 std::function<void()> SerialTaskRunner::PopCallback()
@@ -232,8 +284,18 @@ void SerialTaskRunner::insert(std::function<void()> func)
     {
         LOCK(m_callbacks_mutex);
         m_callbacks_pending.emplace_back(std::move(func));
+#if defined(__APPLE__) && defined(__x86_64__)
+        // Enqueue and reserve the scheduler turn in one critical section.
+        // The running consumer or the reserved turn will observe this callback.
+        if (m_are_callbacks_running || m_process_queue_scheduled) return;
+        m_process_queue_scheduled = true;
+#endif
     }
+#if defined(__APPLE__) && defined(__x86_64__)
+    ScheduleProcessQueue();
+#else
     MaybeScheduleProcessQueue();
+#endif
 }
 
 void SerialTaskRunner::flush()

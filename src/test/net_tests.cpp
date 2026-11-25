@@ -23,6 +23,7 @@
 #include <test/util/validation.h>
 #include <util/strencodings.h>
 #include <util/string.h>
+#include <util/threadinterrupt.h>
 #include <validation.h>
 
 #include <boost/test/unit_test.hpp>
@@ -31,6 +32,7 @@
 #include <chrono>
 #include <cstdint>
 #include <ios>
+#include <future>
 #include <memory>
 #include <map>
 #include <optional>
@@ -101,6 +103,88 @@ BOOST_AUTO_TEST_CASE(message_batches_bound_work_and_respect_termination)
         }
     }
 }
+
+
+#if defined(__APPLE__) && defined(__x86_64__)
+BOOST_AUTO_TEST_CASE(accepted_peer_wakes_message_handler)
+{
+    struct Events : NetEventsInterface {
+        unsigned initialized{0};
+        void InitializeNode(const CNode&, ServiceFlags) override { ++initialized; }
+        void FinalizeNode(const CNode&) override {}
+        bool HasAllDesirableServiceFlags(ServiceFlags) const override { return true; }
+        bool ProcessMessages(CNode&, std::atomic<bool>&) override { return false; }
+        bool SendMessages(CNode&) override { return true; }
+    } events;
+    ConnmanTestMsg connman{0, 0, *m_node.addrman, *m_node.netgroupman, Params()};
+    CConnman::Options options;
+    options.m_max_automatic_connections = 32;
+    options.m_msgproc = &events;
+    connman.Init(options);
+    connman.ResetMessageHandlerWake();
+
+    const CAddress addr{LookupNumeric("127.0.0.1:12345"), NODE_NONE};
+    // A selectable mock exercises accepted-node initialization without host networking.
+    connman.SetNetworkActive(false);
+    connman.CreateNodeFromAcceptedSocketPublic(std::make_unique<ZeroSock>(),
+                                               NetPermissionFlags::None, addr, addr);
+    BOOST_CHECK_EQUAL(events.initialized, 0U);
+    BOOST_CHECK(!connman.MessageHandlerWakePending());
+    BOOST_CHECK(!connman.SocketHandlerWakePending());
+    connman.SetNetworkActive(true);
+    connman.CreateNodeFromAcceptedSocketPublic(std::make_unique<ZeroSock>(),
+                                               NetPermissionFlags::None, addr, addr);
+    BOOST_CHECK_EQUAL(events.initialized, 1U);
+    BOOST_CHECK_EQUAL(connman.GetNodeCount(ConnectionDirection::In), 1U);
+    BOOST_CHECK(connman.MessageHandlerWakePending());
+    BOOST_CHECK(connman.SocketHandlerWakePending());
+    // A publication before the wait must remain latched even with no timeout.
+    BOOST_CHECK(connman.WaitForSocketHandlerPublic(0ms));
+    BOOST_CHECK(!connman.SocketHandlerWakePending());
+    BOOST_CHECK(!connman.WaitForSocketHandlerPublic(0ms));
+}
+
+BOOST_AUTO_TEST_CASE(socket_handler_idle_wait_wakes_and_interrupts)
+{
+    struct ObservedInterrupt : CThreadInterrupt {
+        mutable std::promise<void> predicate_checked;
+        mutable std::atomic<bool> observe{false};
+        bool interrupted() const override
+        {
+            // Called while the idle-wait mutex is held: publication must then
+            // either satisfy the predicate or notify after wait releases it.
+            if (observe.exchange(false)) predicate_checked.set_value();
+            return CThreadInterrupt::interrupted();
+        }
+    };
+    for (bool shutdown : {false, true}) {
+        auto interrupt{std::make_shared<ObservedInterrupt>()};
+        ConnmanTestMsg connman{0, 0, *m_node.addrman, *m_node.netgroupman, Params(), /*network_active=*/true, interrupt};
+        auto checked{interrupt->predicate_checked.get_future()};
+        interrupt->observe = true;
+        std::promise<bool> finished;
+        auto result{finished.get_future()};
+        std::thread waiter{[&] { finished.set_value(connman.WaitForSocketHandlerPublic(5s)); }};
+        const bool entered{checked.wait_for(2s) == std::future_status::ready};
+        if (shutdown) connman.Interrupt();
+        else connman.WakeSocketHandlerPublic();
+        const bool completed{result.wait_for(2s) == std::future_status::ready};
+        // Ensure a failed assertion cannot leave a joinable thread behind.
+        if (!completed) connman.Interrupt();
+        waiter.join();
+        BOOST_CHECK(entered);
+        BOOST_CHECK(completed);
+        BOOST_CHECK(result.get());
+        if (shutdown) {
+            BOOST_CHECK(interrupt->interrupted());
+            BOOST_CHECK(connman.WaitForSocketHandlerPublic(0ms));
+        } else {
+            BOOST_CHECK(!connman.WaitForSocketHandlerPublic(0ms));
+        }
+        BOOST_CHECK(!connman.SocketHandlerWakePending());
+    }
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(cnode_listen_port)
 {
