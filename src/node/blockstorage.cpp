@@ -1486,11 +1486,13 @@ bool BlockManager::FindUndoPos(BlockValidationState& state, int nFile, FlatFileP
 bool BlockManager::WriteBlockUndo(const CBlockUndo& blockundo, BlockValidationState& state, CBlockIndex& block)
 {
     AssertLockHeld(::cs_main);
+    const BlockfileType type = BlockfileTypeForHeight(block.nHeight);
 #if defined(WIN32) || defined(__APPLE__)
     LOCK(cs_LastBlockFile);
-#endif
-    const BlockfileType type = BlockfileTypeForHeight(block.nHeight);
+    auto& cursor = *Assert(m_blockfile_cursors[type]);
+#else
     auto& cursor = *Assert(WITH_LOCK(cs_LastBlockFile, return m_blockfile_cursors[type]));
+#endif
 
     // Write undo information to disk
     if (block.GetUndoPos().IsNull()) {
