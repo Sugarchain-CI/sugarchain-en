@@ -1,0 +1,49 @@
+name: Apple Silicon proof equivalence checks
+'on':
+  push:
+    branches:
+    - automation/en7-arm-proof-checks
+permissions:
+  contents: read
+jobs:
+  proofs:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - uses: actions/checkout@v6
+      with:
+        repository: decryp2kanon/sugarchain-en
+        ref: 37370faaeff1e79898b266848cc76d3e4b1e22ce
+        path: source
+        sparse-checkout: src/crypto/yespower-1.0.1
+        persist-credentials: false
+    - name: Compare native proof implementations
+      shell: bash
+      run: 'set -euo pipefail
+
+        test "$(uname -m)" = arm64
+
+        test "$(sysctl -n sysctl.proc_translated 2>/dev/null || printf 0)" = 0
+
+        mkdir -p "$RUNNER_TEMP/proof-checks/evidence"
+
+        python3 diagnostics/prepare-differential.py diagnostics/testnet7-fixture.json
+        diagnostics/headers.txt
+
+        bash diagnostics/run-differential.sh "$GITHUB_WORKSPACE/source" "$RUNNER_TEMP/proof-checks/build"
+        2>&1 | tee "$RUNNER_TEMP/proof-checks/evidence/differential.log"
+
+        shasum -a 256 source/src/crypto/yespower-1.0.1/yespower-opt.c diagnostics/reference-yespower-opt.c
+        > "$RUNNER_TEMP/proof-checks/evidence/implementation.sha256"
+
+        '
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: arm-proof-checks
+        path: ${{ runner.temp }}/proof-checks/evidence
+        if-no-files-found: error
+        retention-days: 14
