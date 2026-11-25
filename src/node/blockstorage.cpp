@@ -1427,8 +1427,13 @@ AutoFile BlockManager::WriteFileCache::Open(const FlatFileSeq& sequence, const F
     if (!Close()) return AutoFile{nullptr};
 #if defined(__APPLE__) && defined(__x86_64__)
     m_file_pos = pos.nPos;
-#endif
+    if (!m_stdio_buffer) m_stdio_buffer = std::make_unique_for_overwrite<char[]>(MAX_PENDING_BYTES);
+    auto* opened{sequence.Open(pos, /*read_only=*/false, {m_stdio_buffer.get(), MAX_PENDING_BYTES})};
+    if (!opened) RecordError();
+    return AutoFile{opened, obfuscation};
+#else
     return AutoFile{sequence.Open(pos), obfuscation};
+#endif
 }
 
 bool BlockManager::WriteFileCache::Keep(AutoFile& file, int file_num)

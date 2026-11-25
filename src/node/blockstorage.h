@@ -255,6 +255,8 @@ private:
 #if defined(__APPLE__) && defined(__x86_64__)
         friend struct BlockManagerTestAccess;
         static constexpr size_t MAX_PENDING_BYTES{64 * 1024};
+        // Outlives the FILE stream, which Close() releases before destruction.
+        std::unique_ptr<char[]> m_stdio_buffer;
         size_t m_pending_bytes{0};
         bool m_needs_commit{false};
         int m_write_error{0};

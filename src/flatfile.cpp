@@ -31,7 +31,16 @@ fs::path FlatFileSeq::FileName(const FlatFilePos& pos) const
     return m_dir / fs::u8path(strprintf("%s%05u.dat", m_prefix, pos.nFile));
 }
 
+#if defined(__APPLE__) && defined(__x86_64__)
 FILE* FlatFileSeq::Open(const FlatFilePos& pos, bool read_only) const
+{
+    return Open(pos, read_only, {});
+}
+
+FILE* FlatFileSeq::Open(const FlatFilePos& pos, bool read_only, std::span<char> buffer) const
+#else
+FILE* FlatFileSeq::Open(const FlatFilePos& pos, bool read_only) const
+#endif
 {
     if (pos.IsNull()) {
         return nullptr;
@@ -48,6 +57,13 @@ FILE* FlatFileSeq::Open(const FlatFilePos& pos, bool read_only) const
         LogError("Unable to open file %s", fs::PathToString(path));
         return nullptr;
     }
+#if defined(__APPLE__) && defined(__x86_64__)
+    if (!buffer.empty() && std::setvbuf(file, buffer.data(), _IOFBF, buffer.size()) != 0) {
+        LogError("Unable to configure buffered file %s", fs::PathToString(path));
+        if (std::fclose(file) != 0) LogError("Unable to close file %s", fs::PathToString(path));
+        return nullptr;
+    }
+#endif
     if (pos.nPos && fseek(file, pos.nPos, SEEK_SET)) {
         LogError("Unable to seek to position %u of %s", pos.nPos, fs::PathToString(path));
         if (fclose(file) != 0) {

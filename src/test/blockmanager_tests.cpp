@@ -72,13 +72,18 @@ struct BlockManagerTestAccess {
 
 struct BufferedBlockStorageSetup : BasicTestingSetup {
     KernelNotifications notifications{Assert(m_node.shutdown_request), m_node.exit_status, *Assert(m_node.warnings)};
-    BlockManager blockman{*Assert(m_node.shutdown_signal), {
-        .chainparams = Params(),
-        .fast_prune = true,
-        .blocks_dir = m_args.GetBlocksDirPath(),
-        .notifications = notifications,
-        .block_tree_db_params = {.path = m_args.GetDataDirNet() / "buffered-index", .cache_bytes = 0},
-    }};
+    BlockManager blockman;
+    explicit BufferedBlockStorageSetup(bool fast_prune = true)
+        : blockman{*Assert(m_node.shutdown_signal), {
+              .chainparams = Params(),
+              .fast_prune = fast_prune,
+              .blocks_dir = m_args.GetBlocksDirPath(),
+              .notifications = notifications,
+              .block_tree_db_params = {.path = m_args.GetDataDirNet() / "buffered-index", .cache_bytes = 0},
+          }} {}
+};
+struct LargeFileBufferedBlockStorageSetup : BufferedBlockStorageSetup {
+    LargeFileBufferedBlockStorageSetup() : BufferedBlockStorageSetup(false) {}
 };
 #endif
 
@@ -759,7 +764,7 @@ BOOST_FIXTURE_TEST_CASE(buffered_index_failure_retains_dirty_state, BufferedBloc
     BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
 }
 
-BOOST_FIXTURE_TEST_CASE(buffered_write_exception_is_sticky, BufferedBlockStorageSetup)
+BOOST_FIXTURE_TEST_CASE(buffered_write_exception_is_sticky, LargeFileBufferedBlockStorageSetup)
 {
     CBlock block;
     const auto first{blockman.WriteBlock(block, 1)};
@@ -767,13 +772,31 @@ BOOST_FIXTURE_TEST_CASE(buffered_write_exception_is_sticky, BufferedBlockStorage
     node::BlockManagerTestAccess::MakeReadOnly(blockman, blockman.GetBlockPosFilename(first));
     CMutableTransaction tx;
     tx.vin.resize(1);
-    tx.vin[0].scriptSig.resize(16 * 1024);
+    tx.vin[0].scriptSig.resize(128 * 1024);
     block.vtx.push_back(MakeTransactionRef(tx));
     // A large explicit serialization flush fails before Keep(), without rotating.
     BOOST_CHECK_THROW(blockman.WriteBlock(block, 2), std::ios_base::failure);
     LOCK(cs_main);
     BOOST_CHECK_THROW(blockman.WriteBlockIndexDB(), std::runtime_error);
     BOOST_CHECK(!node::BlockManagerTestAccess::Close(blockman));
+}
+
+BOOST_FIXTURE_TEST_CASE(buffered_large_record_is_readable, LargeFileBufferedBlockStorageSetup)
+{
+    CBlock block;
+    CMutableTransaction tx;
+    tx.vin.resize(1);
+    tx.vin[0].scriptSig.resize(96 * 1024);
+    block.vtx.push_back(MakeTransactionRef(tx));
+    const auto pos{blockman.WriteBlock(block, 1)};
+    BOOST_REQUIRE(!pos.IsNull());
+    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::Pending(blockman), 0U);
+    const auto raw{blockman.ReadRawBlock(pos)};
+    BOOST_REQUIRE(raw);
+    CBlock read;
+    SpanReader{*raw} >> TX_WITH_WITNESS(read);
+    BOOST_REQUIRE_EQUAL(read.vtx.size(), 1U);
+    BOOST_CHECK(read.vtx[0]->GetHash() == block.vtx[0]->GetHash());
 }
 
 BOOST_FIXTURE_TEST_CASE(buffered_rotation_and_pruning, BufferedBlockStorageSetup)
