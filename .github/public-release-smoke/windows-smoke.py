@@ -286,8 +286,9 @@ def capture_node_window(desktop, process, name, evidence):
     try:
         window = desktop.find(process)
         desktop.user32.ShowWindowAsync(window, 9)
-        desktop.message(window, 0)
+        time.sleep(0.4)
         capture_screenshot(desktop, window, name, evidence)
+        desktop.message(window, 0)
         return "passed"
     except RuntimeError as error:
         evidence[name] = {"status": "inconclusive", "reason": str(error)}
