@@ -82,6 +82,111 @@ index 489288037f..6815285b72 100644
      auto& validation_signals = *node.validation_signals;
  
      // Create KernelNotifications object. Important to do this early before
+diff --git a/src/kernel/disconnected_transactions.cpp b/src/kernel/disconnected_transactions.cpp
+index 9667642a03..60d35c745f 100644
+--- a/src/kernel/disconnected_transactions.cpp
++++ b/src/kernel/disconnected_transactions.cpp
+@@ -24,13 +24,25 @@
+ DisconnectedBlockTransactions::~DisconnectedBlockTransactions()
+ {
+     assert(queuedTx.empty());
++#if defined(__APPLE__) && defined(__x86_64__)
++    assert(!m_iters_by_txid || m_iters_by_txid->empty());
++#else
+     assert(iters_by_txid.empty());
++#endif
+     assert(cachedInnerUsage == 0);
+ }
+ 
+ std::vector<CTransactionRef> DisconnectedBlockTransactions::LimitMemoryUsage()
+ {
+     std::vector<CTransactionRef> evicted;
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (!m_iters_by_txid) {
++        assert(queuedTx.empty());
++        assert(cachedInnerUsage == 0);
++        return evicted;
++    }
++    auto& iters_by_txid{*m_iters_by_txid};
++#endif
+ 
+     while (!queuedTx.empty() && DynamicMemoryUsage() > m_max_mem_usage) {
+         evicted.emplace_back(queuedTx.front());
+@@ -43,11 +55,23 @@ std::vector<CTransactionRef> DisconnectedBlockTransactions::LimitMemoryUsage()
+ 
+ size_t DisconnectedBlockTransactions::DynamicMemoryUsage() const
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    const size_t index_usage{m_iters_by_txid ? memusage::DynamicUsage(*m_iters_by_txid) : 0};
++    return cachedInnerUsage + index_usage + memusage::DynamicUsage(queuedTx);
++#else
+     return cachedInnerUsage + memusage::DynamicUsage(iters_by_txid) + memusage::DynamicUsage(queuedTx);
++#endif
+ }
+ 
+ [[nodiscard]] std::vector<CTransactionRef> DisconnectedBlockTransactions::AddTransactionsFromBlock(const std::vector<CTransactionRef>& vtx)
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (!m_iters_by_txid) {
++        if (vtx.empty()) return LimitMemoryUsage();
++        m_iters_by_txid.emplace();
++    }
++    auto& iters_by_txid{*m_iters_by_txid};
++#endif
+     iters_by_txid.reserve(iters_by_txid.size() + vtx.size());
+     for (auto block_it = vtx.rbegin(); block_it != vtx.rend(); ++block_it) {
+         auto it = queuedTx.insert(queuedTx.end(), *block_it);
+@@ -64,6 +88,10 @@ void DisconnectedBlockTransactions::removeForBlock(const std::vector<CTransactio
+     if (queuedTx.empty()) {
+         return;
+     }
++#if defined(__APPLE__) && defined(__x86_64__)
++    assert(m_iters_by_txid.has_value());
++    auto& iters_by_txid{*m_iters_by_txid};
++#endif
+     for (const auto& tx : vtx) {
+         auto iter = iters_by_txid.find(tx->GetHash());
+         if (iter != iters_by_txid.end()) {
+@@ -78,7 +106,11 @@ void DisconnectedBlockTransactions::removeForBlock(const std::vector<CTransactio
+ void DisconnectedBlockTransactions::clear()
+ {
+     cachedInnerUsage = 0;
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (m_iters_by_txid) m_iters_by_txid->clear();
++#else
+     iters_by_txid.clear();
++#endif
+     queuedTx.clear();
+ }
+ 
+diff --git a/src/kernel/disconnected_transactions.h b/src/kernel/disconnected_transactions.h
+index 50eac51933..d888bb6447 100644
+--- a/src/kernel/disconnected_transactions.h
++++ b/src/kernel/disconnected_transactions.h
+@@ -11,6 +11,7 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <list>
++#include <optional>
+ #include <unordered_map>
+ #include <vector>
+ 
+@@ -43,7 +44,14 @@ private:
+     const size_t m_max_mem_usage;
+     std::list<CTransactionRef> queuedTx;
+     using TxList = decltype(queuedTx);
+-    std::unordered_map<Txid, TxList::iterator, SaltedTxidHasher> iters_by_txid;
++    using TxidIndex = std::unordered_map<Txid, TxList::iterator, SaltedTxidHasher>;
++#if defined(__APPLE__) && defined(__x86_64__)
++    // Straight-chain extension never inserts a disconnected transaction. Defer
++    // constructing the salted index until it actually has entries to track.
++    std::optional<TxidIndex> m_iters_by_txid;
++#else
++    TxidIndex iters_by_txid;
++#endif
+ 
+     /** Trim the earliest-added entries until we are within memory bounds. */
+     std::vector<CTransactionRef> LimitMemoryUsage();
 diff --git a/src/net.cpp b/src/net.cpp
 index 1c0977c828..8af4842de6 100644
 --- a/src/net.cpp
@@ -1381,6 +1486,57 @@ index dfaf9ac880..64a00d4580 100644
 +    BOOST_CHECK_EQUAL(writer.attempts, 1U);
 +}
 +#endif
++
+ BOOST_AUTO_TEST_SUITE_END()
+diff --git a/src/test/disconnected_transactions.cpp b/src/test/disconnected_transactions.cpp
+index a363fe8197..7463ebee9d 100644
+--- a/src/test/disconnected_transactions.cpp
++++ b/src/test/disconnected_transactions.cpp
+@@ -92,4 +92,46 @@ BOOST_AUTO_TEST_CASE(disconnectpool_memory_limits)
+     }
+ }
+ 
++BOOST_AUTO_TEST_CASE(disconnectpool_empty_population_and_reuse)
++{
++    DisconnectedBlockTransactions pool{MAX_DISCONNECTED_TX_POOL_BYTES};
++#if defined(__APPLE__) && defined(__x86_64__)
++    const auto empty_usage{pool.DynamicMemoryUsage()};
++#endif
++    const std::vector<CTransactionRef> empty;
++    for (unsigned i = 0; i < 3; ++i) {
++        BOOST_CHECK(pool.AddTransactionsFromBlock(empty).empty());
++        pool.removeForBlock(empty);
++        pool.clear();
++        BOOST_CHECK(pool.take().empty());
++#if defined(__APPLE__) && defined(__x86_64__)
++        BOOST_CHECK_EQUAL(pool.DynamicMemoryUsage(), empty_usage);
++#endif
++    }
++
++    for (unsigned cycle = 0; cycle < 3; ++cycle) {
++        const std::vector<CTransactionRef> disconnected{
++            m_coinbase_txns.at(0), m_coinbase_txns.at(1), m_coinbase_txns.at(2), m_coinbase_txns.at(3)};
++        BOOST_CHECK(pool.AddTransactionsFromBlock(disconnected).empty());
++        BOOST_CHECK_EQUAL(pool.size(), 4U);
++        BOOST_CHECK(pool.AddTransactionsFromBlock(empty).empty());
++        pool.removeForBlock({m_coinbase_txns.at(0), m_coinbase_txns.at(2)});
++        BOOST_CHECK_EQUAL(pool.size(), 2U);
++        const auto remaining{pool.take()};
++        const std::vector<CTransactionRef> expected{m_coinbase_txns.at(3), m_coinbase_txns.at(1)};
++        BOOST_CHECK_EQUAL_COLLECTIONS(remaining.begin(), remaining.end(), expected.begin(), expected.end());
++        BOOST_CHECK_EQUAL(pool.size(), 0U);
++        BOOST_CHECK(pool.AddTransactionsFromBlock({m_coinbase_txns.at(4), m_coinbase_txns.at(5)}).empty());
++        pool.clear();
++        BOOST_CHECK(pool.take().empty());
++        BOOST_CHECK(pool.DynamicMemoryUsage() <= MAX_DISCONNECTED_TX_POOL_BYTES);
++    }
++
++    DisconnectedBlockTransactions zero_limit{0};
++    const auto evicted{zero_limit.AddTransactionsFromBlock({m_coinbase_txns.at(6)})};
++    BOOST_REQUIRE_EQUAL(evicted.size(), 1U);
++    BOOST_CHECK(evicted.front() == m_coinbase_txns.at(6));
++    BOOST_CHECK(zero_limit.take().empty());
++}
 +
  BOOST_AUTO_TEST_SUITE_END()
 diff --git a/src/test/net_tests.cpp b/src/test/net_tests.cpp

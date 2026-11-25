@@ -52,11 +52,7 @@ jobs:
         \ --parallel \"$jobs\"\n  cp \"$build/bin/sugarchaind\" \"$workspace/$variant/sugarchaind\"\
         \n  git -C source apply --reverse \"$GITHUB_WORKSPACE/$variant.patch\"\n \
         \ git -C source diff --exit-code\ndone\ngit -C source apply \"$GITHUB_WORKSPACE/candidate.patch\"\
-        \nshasum -a 256 \"$workspace/\"{release,candidate}/sugarchaind\n\nmkdir \"\
-        $workspace/profile\"\ngit -C source apply \"$GITHUB_WORKSPACE/timing.patch\"\
-        \ncmake --build \"$build\" --target bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\"\
-        \ \"$workspace/profile/sugarchaind\"\ngit -C source apply --reverse \"$GITHUB_WORKSPACE/timing.patch\"\
-        \n"
+        \nshasum -a 256 \"$workspace/\"{release,candidate}/sugarchaind\n"
     - name: Measure fresh receivers with the same 10,000 blocks
       shell: bash
       run: "set -euo pipefail\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\nfor control\
@@ -66,20 +62,13 @@ jobs:
         \ 10000 --repeats 3\n    jq -e '.fixture_sha256 == \"e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9\"\
         \n      and .fixture_utxo_sha256 == \"63208d710cf03c30de2660b77a5434181b20fd1c5e70460b256ea4f4e798cb84\"\
         \n      and all(.variants[].samples[]; .reload_verified)' \"$workspace/$control-$sender/result.json\"\
-        \n  done\ndone\n\npython3 regtest-sync.py --baseline-bin-dir \"$workspace/candidate\"\
-        \ --candidate-bin-dir \"$workspace/profile\" --sender candidate --work-dir\
-        \ \"$workspace/profiled\" --blocks 10000 --repeats 1\nfor logfile in \"$workspace/profiled\"\
-        /{sender,candidate-1}/regtest/debug.log; do\n  name=$(basename \"$(dirname\
-        \ \"$(dirname \"$logfile\")\")\")\n  awk '/STAGEPROFILE|NATIVEFILE|NETPROFILE/{print}'\
-        \ \"$logfile\" > \"$workspace/profiled/$name-profile.txt\"\ndone\n"
+        \n  done\ndone\n"
     - name: Retain comparison evidence
       if: always()
       uses: actions/upload-artifact@v7
       with:
         name: intel-sync-comparison
-        path: '${{ runner.temp }}/macos-subsecond/*/result.json
-
-          ${{ runner.temp }}/macos-subsecond/profiled/*-profile.txt'
+        path: ${{ runner.temp }}/macos-subsecond/*/result.json
         if-no-files-found: warn
         retention-days: 7
     - name: Check fee estimation, scheduler and chain storage
@@ -91,7 +80,7 @@ jobs:
 
         cmake --build "$build" --target test_bitcoin --parallel "$(sysctl -n hw.logicalcpu)"
 
-        ctest --test-dir "$build" --no-tests=error --output-on-failure -R ''^(policyestimator_tests|scheduler_tests|validationinterface_tests|blockmanager_tests|streams_tests|net_tests|disconnected_transactions)$''
+        ctest --test-dir "$build" --no-tests=error --output-on-failure -R ''^(policyestimator_tests|scheduler_tests|validationinterface_tests|blockmanager_tests|streams_tests|net_tests|disconnected_transactions|mempool_tests)$''
 
         '
     - name: Preserve native regression results

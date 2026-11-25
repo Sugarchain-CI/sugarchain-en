@@ -188,10 +188,10 @@ index 50eac51933..d888bb6447 100644
      /** Trim the earliest-added entries until we are within memory bounds. */
      std::vector<CTransactionRef> LimitMemoryUsage();
 diff --git a/src/net.cpp b/src/net.cpp
-index 1c0977c828..8af4842de6 100644
+index 1c0977c828..9f38680cc1 100644
 --- a/src/net.cpp
 +++ b/src/net.cpp
-@@ -1860,6 +1860,12 @@ void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock>&& sock,
+@@ -1860,6 +1860,13 @@ void CConnman::CreateNodeFromAcceptedSocket(std::unique_ptr<Sock>&& sock,
          LOCK(m_nodes_mutex);
          m_nodes.push_back(pnode);
      }
@@ -199,12 +199,53 @@ index 1c0977c828..8af4842de6 100644
 +    // A new peer can have outbound handshake work before its first received
 +    // message. Process it promptly when the node joins the socket set.
 +    WakeMessageHandler();
++    WakeSocketHandler();
 +#endif
 +
      LogDebug(BCLog::NET, "connection from %s accepted\n", addr.ToStringAddrPort());
      TRACEPOINT(net, inbound_connection,
          pnode->GetId(),
-@@ -3074,6 +3080,12 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect,
+@@ -2116,6 +2123,11 @@ void CConnman::SocketHandler()
+         // select(2)). If none are ready, wait for a short while and return
+         // empty sets.
+         events_per_sock = GenerateWaitSockets(snap.Nodes());
++#if defined(__APPLE__) && defined(__x86_64__)
++        if (events_per_sock.empty()) {
++            WaitForSocketHandler(timeout);
++        } else
++#endif
+         if (events_per_sock.empty() || !events_per_sock.begin()->first->WaitMany(timeout, events_per_sock)) {
+             m_interrupt_net->sleep_for(timeout);
+         }
+@@ -2254,6 +2266,27 @@ void CConnman::ThreadSocketHandler()
+     }
+ }
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++void CConnman::WakeSocketHandler()
++{
++    {
++        LOCK(mutexMsgProc);
++        m_socket_handler_wake = true;
++    }
++    m_socket_handler_cv.notify_one();
++}
++
++bool CConnman::WaitForSocketHandler(std::chrono::milliseconds timeout)
++{
++    WAIT_LOCK(mutexMsgProc, lock);
++    const bool woke{m_socket_handler_cv.wait_for(lock, timeout, [this]() EXCLUSIVE_LOCKS_REQUIRED(mutexMsgProc) {
++        return m_socket_handler_wake || m_interrupt_net->interrupted();
++    })};
++    m_socket_handler_wake = false;
++    return woke;
++}
++#endif
++
+ void CConnman::WakeMessageHandler()
+ {
+     {
+@@ -3074,6 +3107,13 @@ bool CConnman::OpenNetworkConnection(const CAddress& addrConnect,
          if (pnode->IsManualOrFullOutboundConn()) ++m_network_conn_counts[pnode->addr.GetNetwork()];
      }
  
@@ -212,13 +253,24 @@ index 1c0977c828..8af4842de6 100644
 +    // A new peer can have outbound handshake work before its first received
 +    // message. Process it promptly when the node joins the socket set.
 +    WakeMessageHandler();
++    WakeSocketHandler();
 +#endif
 +
      TRACEPOINT(net, outbound_connection,
          pnode->GetId(),
          pnode->m_addr_name.c_str(),
+@@ -3635,6 +3675,9 @@ void CConnman::Interrupt()
+     condMsgProc.notify_all();
+ 
+     (*m_interrupt_net)();
++#if defined(__APPLE__) && defined(__x86_64__)
++    WakeSocketHandler();
++#endif
+     g_socks5_interrupt();
+ 
+     if (semOutbound) {
 diff --git a/src/net.h b/src/net.h
-index 96a171736e..041f63d6e5 100644
+index 96a171736e..e2634e281e 100644
 --- a/src/net.h
 +++ b/src/net.h
 @@ -1192,7 +1192,7 @@ public:
@@ -278,7 +330,34 @@ index 96a171736e..041f63d6e5 100644
  
      void ThreadSocketHandler() EXCLUSIVE_LOCKS_REQUIRED(!m_total_bytes_sent_mutex, !mutexMsgProc, !m_nodes_mutex, !m_reconnections_mutex);
      void ThreadDNSAddressSeed() EXCLUSIVE_LOCKS_REQUIRED(!m_addr_fetches_mutex, !m_nodes_mutex);
-@@ -1797,7 +1797,7 @@ private:
+@@ -1536,6 +1536,13 @@ private:
+ 
+     NodeId GetNewNodeId();
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++    /** Wake the socket handler if it is waiting without any sockets to poll. */
++    void WakeSocketHandler() EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
++    /** Return false only when the idle wait times out. */
++    bool WaitForSocketHandler(std::chrono::milliseconds timeout) EXCLUSIVE_LOCKS_REQUIRED(!mutexMsgProc);
++#endif
++
+     /** (Try to) send data from node's vSendMsg. Returns (bytes_sent, data_left). */
+     std::pair<size_t, bool> SocketSendData(CNode& node) const EXCLUSIVE_LOCKS_REQUIRED(node.cs_vSend);
+ 
+@@ -1706,6 +1713,12 @@ private:
+     Mutex mutexMsgProc;
+     std::atomic<bool> flagInterruptMsgProc{false};
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++    std::condition_variable m_socket_handler_cv;
++    // Latched until consumed, including publication between snapshot and wait.
++    bool m_socket_handler_wake GUARDED_BY(mutexMsgProc){false};
++#endif
++
+     /**
+      * This is signaled when network activity should cease.
+      * A copy of this is saved in `m_i2p_sam_session`.
+@@ -1797,7 +1810,7 @@ private:
      std::list<ReconnectionInfo> m_reconnections GUARDED_BY(m_reconnections_mutex);
  
      /** Attempt reconnections, if m_reconnections non-empty. */
@@ -874,7 +953,7 @@ index c364ae6bbd..da7b4a89db 100644
      int blocksAgo = nBestSeenHeight - entryHeight;
      if (nBestSeenHeight == 0)  // the BlockPolicyEstimator hasn't seen any blocks yet
 diff --git a/src/scheduler.cpp b/src/scheduler.cpp
-index 5a3b7218ca..15ed728c0e 100644
+index 5a3b7218ca..c3545ea06a 100644
 --- a/src/scheduler.cpp
 +++ b/src/scheduler.cpp
 @@ -7,6 +7,7 @@
@@ -885,7 +964,33 @@ index 5a3b7218ca..15ed728c0e 100644
  #include <cassert>
  #include <functional>
  #include <utility>
-@@ -40,9 +41,9 @@ void CScheduler::serviceQueue()
+@@ -24,6 +25,9 @@ void CScheduler::serviceQueue()
+ {
+     WAIT_LOCK(newTaskMutex, lock);
+     ++nThreadsServicingQueue;
++#if defined(__APPLE__) && defined(__x86_64__)
++    bool waiting{false};
++#endif
+ 
+     // newTaskMutex is locked throughout this loop EXCEPT
+     // when the thread is waiting or when the user's function
+@@ -32,7 +36,15 @@ void CScheduler::serviceQueue()
+         try {
+             while (!shouldStop() && taskQueue.empty()) {
+                 // Wait until there is something to do.
++#if defined(__APPLE__) && defined(__x86_64__)
++                ++m_waiting_threads;
++                waiting = true;
++#endif
+                 newTaskScheduled.wait(lock);
++#if defined(__APPLE__) && defined(__x86_64__)
++                --m_waiting_threads;
++                waiting = false;
++#endif
+             }
+ 
+             // Wait until either there is a new task, or until
+@@ -40,12 +52,21 @@ void CScheduler::serviceQueue()
  
              while (!shouldStop() && !taskQueue.empty()) {
                  std::chrono::steady_clock::time_point timeToWaitFor = taskQueue.begin()->first;
@@ -897,8 +1002,55 @@ index 5a3b7218ca..15ed728c0e 100644
 +                // MinGW can also wait an entire Windows timer tick in this case.
                  if (timeToWaitFor <= std::chrono::steady_clock::now()) break;
  #endif
-                 if (newTaskScheduled.wait_until(lock, timeToWaitFor) == std::cv_status::timeout) {
-@@ -138,26 +139,74 @@ void SerialTaskRunner::MaybeScheduleProcessQueue()
+-                if (newTaskScheduled.wait_until(lock, timeToWaitFor) == std::cv_status::timeout) {
++#if defined(__APPLE__) && defined(__x86_64__)
++                ++m_waiting_threads;
++                waiting = true;
++#endif
++                const auto status{newTaskScheduled.wait_until(lock, timeToWaitFor)};
++#if defined(__APPLE__) && defined(__x86_64__)
++                --m_waiting_threads;
++                waiting = false;
++#endif
++                if (status == std::cv_status::timeout) {
+                     break; // Exit loop after timeout, it means we reached the time of the event
+                 }
+             }
+@@ -65,6 +86,9 @@ void CScheduler::serviceQueue()
+                 f();
+             }
+         } catch (...) {
++#if defined(__APPLE__) && defined(__x86_64__)
++            if (waiting) --m_waiting_threads;
++#endif
+             --nThreadsServicingQueue;
+             throw;
+         }
+@@ -75,11 +99,23 @@ void CScheduler::serviceQueue()
+ 
+ void CScheduler::schedule(CScheduler::Function f, std::chrono::steady_clock::time_point t)
+ {
++#if defined(__APPLE__) && defined(__x86_64__)
++    bool wake;
++#endif
+     {
+         LOCK(newTaskMutex);
+         taskQueue.insert(std::make_pair(t, f));
++#if defined(__APPLE__) && defined(__x86_64__)
++        // A running worker will inspect this queue before waiting. Notify only
++        // workers that are already waiting, using the same lock as the queue.
++        wake = m_waiting_threads != 0;
++#endif
+     }
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (wake) newTaskScheduled.notify_one();
++#else
+     newTaskScheduled.notify_one();
++#endif
+ }
+ 
+ void CScheduler::MockForward(std::chrono::seconds delta_seconds)
+@@ -138,26 +174,74 @@ void SerialTaskRunner::MaybeScheduleProcessQueue()
  {
      {
          LOCK(m_callbacks_mutex);
@@ -938,8 +1090,9 @@ index 5a3b7218ca..15ed728c0e 100644
 +        LOCK(m_callbacks_mutex);
 +        m_process_queue_scheduled = false;
 +        throw;
-+    }
-+}
+     }
+-    m_scheduler.schedule([this] { this->ProcessQueue(); }, std::chrono::steady_clock::now());
+ }
 +#endif
 +
 +#ifdef __APPLE__
@@ -950,10 +1103,9 @@ index 5a3b7218ca..15ed728c0e 100644
 +    m_callbacks_pending.pop_front();
 +    if (m_capacity_waiters && m_callbacks_pending.size() <= m_capacity_wait_limit) {
 +        m_capacity.notify_all();
-     }
--    m_scheduler.schedule([this] { this->ProcessQueue(); }, std::chrono::steady_clock::now());
++    }
 +    return callback;
- }
++}
 +#endif
  
  void SerialTaskRunner::ProcessQueue()
@@ -977,7 +1129,7 @@ index 5a3b7218ca..15ed728c0e 100644
      }
  
      // RAII the setting of fCallbacksRunning and calling MaybeScheduleProcessQueue
-@@ -175,7 +224,24 @@ void SerialTaskRunner::ProcessQueue()
+@@ -175,7 +259,24 @@ void SerialTaskRunner::ProcessQueue()
          }
      } raiicallbacksrunning(this);
  
@@ -1002,7 +1154,7 @@ index 5a3b7218ca..15ed728c0e 100644
  }
  
  void SerialTaskRunner::insert(std::function<void()> func)
-@@ -183,8 +249,18 @@ void SerialTaskRunner::insert(std::function<void()> func)
+@@ -183,8 +284,18 @@ void SerialTaskRunner::insert(std::function<void()> func)
      {
          LOCK(m_callbacks_mutex);
          m_callbacks_pending.emplace_back(std::move(func));
@@ -1021,7 +1173,7 @@ index 5a3b7218ca..15ed728c0e 100644
  }
  
  void SerialTaskRunner::flush()
-@@ -203,3 +279,99 @@ size_t SerialTaskRunner::size()
+@@ -203,3 +314,99 @@ size_t SerialTaskRunner::size()
      LOCK(m_callbacks_mutex);
      return m_callbacks_pending.size();
  }
@@ -1122,15 +1274,16 @@ index 5a3b7218ca..15ed728c0e 100644
 +}
 +#endif
 diff --git a/src/scheduler.h b/src/scheduler.h
-index 79b8afd2ad..6bf19b950d 100644
+index 79b8afd2ad..af3975f8a7 100644
 --- a/src/scheduler.h
 +++ b/src/scheduler.h
-@@ -102,6 +102,14 @@ public:
+@@ -102,10 +102,23 @@ public:
      bool AreThreadsServicingQueue() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex);
  
  private:
 +#if defined(__APPLE__) && defined(__x86_64__)
 +    friend class SerialTaskRunner;
++    friend struct SchedulerWaiterTestAccess;
 +
 +    bool StopRequested() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex)
 +    {
@@ -1140,7 +1293,15 @@ index 79b8afd2ad..6bf19b950d 100644
      mutable Mutex newTaskMutex;
      std::condition_variable newTaskScheduled;
      std::multimap<std::chrono::steady_clock::time_point, Function> taskQueue GUARDED_BY(newTaskMutex);
-@@ -133,8 +141,20 @@ private:
+     int nThreadsServicingQueue GUARDED_BY(newTaskMutex){0};
++#if defined(__APPLE__) && defined(__x86_64__)
++    //! Count waits until their lock is reacquired, including exceptional exits.
++    size_t m_waiting_threads GUARDED_BY(newTaskMutex){0};
++#endif
+     bool stopRequested GUARDED_BY(newTaskMutex){false};
+     bool stopWhenEmpty GUARDED_BY(newTaskMutex){false};
+     bool shouldStop() const EXCLUSIVE_LOCKS_REQUIRED(newTaskMutex) { return stopRequested || (stopWhenEmpty && taskQueue.empty()); }
+@@ -133,8 +146,20 @@ private:
      // our own queue here :(
      std::list<std::function<void()>> m_callbacks_pending GUARDED_BY(m_callbacks_mutex);
      bool m_are_callbacks_running GUARDED_BY(m_callbacks_mutex) = false;
@@ -1161,7 +1322,7 @@ index 79b8afd2ad..6bf19b950d 100644
      void ProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
  
  public:
-@@ -155,6 +175,36 @@ public:
+@@ -155,6 +180,36 @@ public:
      void flush() override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
  
      size_t size() override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
@@ -1539,11 +1700,85 @@ index a363fe8197..7463ebee9d 100644
 +}
 +
  BOOST_AUTO_TEST_SUITE_END()
+diff --git a/src/test/mempool_tests.cpp b/src/test/mempool_tests.cpp
+index 67e2643837..a40d74f5cf 100644
+--- a/src/test/mempool_tests.cpp
++++ b/src/test/mempool_tests.cpp
+@@ -2,6 +2,7 @@
+ // Distributed under the MIT software license, see the accompanying
+ // file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ 
++#include <coins.h>
+ #include <common/system.h>
+ #include <policy/policy.h>
+ #include <test/util/txmempool.h>
+@@ -23,6 +24,45 @@ public:
+     using CTxMemPool::GetMinFee;
+ };
+ 
++BOOST_AUTO_TEST_CASE(MempoolCheckEmptyAndDependentTransactions)
++{
++    bilingual_str error;
++    CTxMemPool pool{{.check_ratio = 1}, error};
++    BOOST_REQUIRE(error.empty());
++    CCoinsView base;
++    CCoinsViewCache coins{&base};
++    LOCK2(::cs_main, pool.cs);
++    pool.check(coins, 2);
++
++    CMutableTransaction funding;
++    funding.vout.emplace_back(10000, CScript() << OP_TRUE);
++    const COutPoint prevout{funding.GetHash(), 0};
++    coins.AddCoin(prevout, Coin{funding.vout[0], 1, false}, false);
++
++    CMutableTransaction parent;
++    parent.vin.emplace_back(prevout);
++    parent.vout.emplace_back(9000, CScript() << OP_TRUE);
++    CMutableTransaction child;
++    child.vin.emplace_back(COutPoint{parent.GetHash(), 0});
++    child.vout.emplace_back(8000, CScript() << OP_TRUE);
++
++    TestMemPoolEntryHelper entry;
++    entry.Fee(1000);
++    for (unsigned cycle = 0; cycle < 3; ++cycle) {
++        TryAddToMempool(pool, entry.FromTx(parent));
++        pool.check(coins, 2);
++        TryAddToMempool(pool, entry.FromTx(child));
++        BOOST_CHECK_EQUAL(pool.size(), 2U);
++        pool.check(coins, 2);
++        pool.removeRecursive(CTransaction(parent), REMOVAL_REASON_DUMMY);
++        BOOST_CHECK_EQUAL(pool.size(), 0U);
++        pool.check(coins, 2);
++        BOOST_CHECK(coins.HaveCoin(prevout));
++        BOOST_CHECK(!coins.HaveCoin(COutPoint{parent.GetHash(), 0}));
++        BOOST_CHECK(!coins.HaveCoin(COutPoint{child.GetHash(), 0}));
++    }
++}
++
+ BOOST_AUTO_TEST_CASE(MempoolRemoveTest)
+ {
+     // Test CTxMemPool::remove functionality
 diff --git a/src/test/net_tests.cpp b/src/test/net_tests.cpp
-index 188c975d9c..df9702acea 100644
+index 188c975d9c..2d2463805c 100644
 --- a/src/test/net_tests.cpp
 +++ b/src/test/net_tests.cpp
-@@ -102,6 +102,41 @@ BOOST_AUTO_TEST_CASE(message_batches_bound_work_and_respect_termination)
+@@ -23,6 +23,7 @@
+ #include <test/util/validation.h>
+ #include <util/strencodings.h>
+ #include <util/string.h>
++#include <util/threadinterrupt.h>
+ #include <validation.h>
+ 
+ #include <boost/test/unit_test.hpp>
+@@ -31,6 +32,7 @@
+ #include <chrono>
+ #include <cstdint>
+ #include <ios>
++#include <future>
+ #include <memory>
+ #include <map>
+ #include <optional>
+@@ -102,6 +104,88 @@ BOOST_AUTO_TEST_CASE(message_batches_bound_work_and_respect_termination)
      }
  }
  
@@ -1573,12 +1808,59 @@ index 188c975d9c..df9702acea 100644
 +                                               NetPermissionFlags::None, addr, addr);
 +    BOOST_CHECK_EQUAL(events.initialized, 0U);
 +    BOOST_CHECK(!connman.MessageHandlerWakePending());
++    BOOST_CHECK(!connman.SocketHandlerWakePending());
 +    connman.SetNetworkActive(true);
 +    connman.CreateNodeFromAcceptedSocketPublic(std::make_unique<ZeroSock>(),
 +                                               NetPermissionFlags::None, addr, addr);
 +    BOOST_CHECK_EQUAL(events.initialized, 1U);
 +    BOOST_CHECK_EQUAL(connman.GetNodeCount(ConnectionDirection::In), 1U);
 +    BOOST_CHECK(connman.MessageHandlerWakePending());
++    BOOST_CHECK(connman.SocketHandlerWakePending());
++    // A publication before the wait must remain latched even with no timeout.
++    BOOST_CHECK(connman.WaitForSocketHandlerPublic(0ms));
++    BOOST_CHECK(!connman.SocketHandlerWakePending());
++    BOOST_CHECK(!connman.WaitForSocketHandlerPublic(0ms));
++}
++
++BOOST_AUTO_TEST_CASE(socket_handler_idle_wait_wakes_and_interrupts)
++{
++    struct ObservedInterrupt : CThreadInterrupt {
++        mutable std::promise<void> predicate_checked;
++        mutable std::atomic<bool> observe{false};
++        bool interrupted() const override
++        {
++            // Called while the idle-wait mutex is held: publication must then
++            // either satisfy the predicate or notify after wait releases it.
++            if (observe.exchange(false)) predicate_checked.set_value();
++            return CThreadInterrupt::interrupted();
++        }
++    };
++    for (bool shutdown : {false, true}) {
++        auto interrupt{std::make_shared<ObservedInterrupt>()};
++        ConnmanTestMsg connman{0, 0, *m_node.addrman, *m_node.netgroupman, Params(), /*network_active=*/true, interrupt};
++        auto checked{interrupt->predicate_checked.get_future()};
++        interrupt->observe = true;
++        std::promise<bool> finished;
++        auto result{finished.get_future()};
++        std::thread waiter{[&] { finished.set_value(connman.WaitForSocketHandlerPublic(5s)); }};
++        const bool entered{checked.wait_for(2s) == std::future_status::ready};
++        if (shutdown) connman.Interrupt();
++        else connman.WakeSocketHandlerPublic();
++        const bool completed{result.wait_for(2s) == std::future_status::ready};
++        // Ensure a failed assertion cannot leave a joinable thread behind.
++        if (!completed) connman.Interrupt();
++        waiter.join();
++        BOOST_CHECK(entered);
++        BOOST_CHECK(completed);
++        BOOST_CHECK(result.get());
++        BOOST_CHECK(!connman.SocketHandlerWakePending());
++        if (shutdown) {
++            BOOST_CHECK(interrupt->interrupted());
++            BOOST_CHECK(connman.WaitForSocketHandlerPublic(0ms));
++        } else {
++            BOOST_CHECK(!connman.WaitForSocketHandlerPublic(0ms));
++        }
++    }
 +}
 +#endif
 +
@@ -1693,10 +1975,10 @@ index d13a0d1ebf..f3c7db9361 100644
 +
  BOOST_AUTO_TEST_SUITE_END()
 diff --git a/src/test/scheduler_tests.cpp b/src/test/scheduler_tests.cpp
-index c106eca69c..0b5997ae81 100644
+index c106eca69c..4d9922dc5e 100644
 --- a/src/test/scheduler_tests.cpp
 +++ b/src/test/scheduler_tests.cpp
-@@ -9,7 +9,11 @@
+@@ -9,10 +9,32 @@
  #include <boost/test/unit_test.hpp>
  
  #include <functional>
@@ -1708,11 +1990,80 @@ index c106eca69c..0b5997ae81 100644
  #include <thread>
  #include <vector>
  
-@@ -171,6 +175,196 @@ BOOST_AUTO_TEST_CASE(singlethreadedscheduler_ordered)
++#if defined(__APPLE__) && defined(__x86_64__)
++struct SchedulerWaiterTestAccess {
++    static bool WaitForSleeper(CScheduler& scheduler)
++    {
++        const auto deadline{std::chrono::steady_clock::now() + 5s};
++        do {
++            if (WITH_LOCK(scheduler.newTaskMutex, return scheduler.m_waiting_threads != 0)) return true;
++            std::this_thread::yield();
++        } while (std::chrono::steady_clock::now() < deadline);
++        return false;
++    }
++    static size_t WaitingThreads(CScheduler& scheduler)
++    {
++        return WITH_LOCK(scheduler.newTaskMutex, return scheduler.m_waiting_threads);
++    }
++};
++#endif
++
+ BOOST_AUTO_TEST_SUITE(scheduler_tests)
+ 
+ static void microTask(CScheduler& s, std::mutex& mutex, int& counter, int delta, std::chrono::steady_clock::time_point rescheduleTime)
+@@ -171,6 +193,244 @@ BOOST_AUTO_TEST_CASE(singlethreadedscheduler_ordered)
      BOOST_CHECK_EQUAL(counter2, 100);
  }
  
 +#if defined(__APPLE__) && defined(__x86_64__)
++BOOST_AUTO_TEST_CASE(scheduler_wakes_other_worker_while_callback_blocked)
++{
++    CScheduler scheduler;
++    std::promise<void> first_started, release_first, second_finished;
++    auto first_ready{first_started.get_future()};
++    auto release{release_first.get_future()};
++    auto second_ready{second_finished.get_future()};
++    scheduler.scheduleFromNow([&] {
++        first_started.set_value();
++        release.wait();
++    }, 0ms);
++    std::thread first_worker{[&] { scheduler.serviceQueue(); }};
++    std::thread second_worker{[&] { scheduler.serviceQueue(); }};
++    const auto started{first_ready.wait_for(5s)};
++    const bool sleeping{SchedulerWaiterTestAccess::WaitForSleeper(scheduler)};
++    // The blocked callback cannot service this task. A different worker must
++    // wake even though another task is currently executing.
++    scheduler.scheduleFromNow([&] { second_finished.set_value(); }, 0ms);
++    const auto finished{second_ready.wait_for(5s)};
++    release_first.set_value();
++    scheduler.StopWhenDrained();
++    first_worker.join();
++    second_worker.join();
++    BOOST_CHECK(started == std::future_status::ready);
++    BOOST_CHECK(sleeping);
++    BOOST_CHECK(finished == std::future_status::ready);
++    BOOST_CHECK_EQUAL(SchedulerWaiterTestAccess::WaitingThreads(scheduler), 0U);
++}
++
++BOOST_AUTO_TEST_CASE(scheduler_new_earliest_deadline_wakes_worker)
++{
++    CScheduler scheduler;
++    std::promise<void> immediate_finished;
++    auto finished{immediate_finished.get_future()};
++    bool future_ran{false};
++    scheduler.scheduleFromNow([&] { future_ran = true; }, 1h);
++    std::thread worker{[&] { scheduler.serviceQueue(); }};
++    const bool sleeping{SchedulerWaiterTestAccess::WaitForSleeper(scheduler)};
++    scheduler.scheduleFromNow([&] { immediate_finished.set_value(); }, 0ms);
++    const auto status{finished.wait_for(5s)};
++    scheduler.stop();
++    worker.join();
++    BOOST_CHECK(status == std::future_status::ready);
++    BOOST_CHECK(sleeping);
++    BOOST_CHECK(!future_ran);
++    BOOST_CHECK_EQUAL(SchedulerWaiterTestAccess::WaitingThreads(scheduler), 0U);
++}
++
 +BOOST_AUTO_TEST_CASE(scheduler_due_tasks_keep_order_and_future_deadlines)
 +{
 +    CScheduler scheduler;
@@ -1906,16 +2257,19 @@ index c106eca69c..0b5997ae81 100644
  {
      CScheduler scheduler;
 diff --git a/src/test/util/net.h b/src/test/util/net.h
-index fd29792193..0dfd1f7d90 100644
+index fd29792193..c9460fa96a 100644
 --- a/src/test/util/net.h
 +++ b/src/test/util/net.h
-@@ -35,6 +35,11 @@ class FastRandomContext;
+@@ -35,6 +35,14 @@ class FastRandomContext;
  struct ConnmanTestMsg : public CConnman {
      using CConnman::CConnman;
  
 +#if defined(__APPLE__) && defined(__x86_64__)
 +    void ResetMessageHandlerWake() { WITH_LOCK(mutexMsgProc, fMsgProcWake = false); }
 +    bool MessageHandlerWakePending() { return WITH_LOCK(mutexMsgProc, return fMsgProcWake); }
++    bool SocketHandlerWakePending() { return WITH_LOCK(mutexMsgProc, return m_socket_handler_wake); }
++    void WakeSocketHandlerPublic() { WakeSocketHandler(); }
++    bool WaitForSocketHandlerPublic(std::chrono::milliseconds timeout) { return WaitForSocketHandler(timeout); }
 +#endif
 +
      void SetMsgProc(NetEventsInterface* msgproc)
@@ -1995,6 +2349,39 @@ index 08b6d94eaa..3a30d7ff2b 100644
 +}
 +
  BOOST_AUTO_TEST_SUITE_END()
+diff --git a/src/txmempool.cpp b/src/txmempool.cpp
+index bfff181683..c9d4ed3d2b 100644
+--- a/src/txmempool.cpp
++++ b/src/txmempool.cpp
+@@ -449,9 +449,18 @@ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendhei
+     assert(!m_txgraph->IsOversized(TxGraph::Level::MAIN));
+     m_txgraph->SanityCheck();
+ 
++#if defined(__APPLE__) && defined(__x86_64__)
++    // The temporary coins cache is only used while checking transactions. Keep
++    // all consistency checks below, but defer its allocation for an empty pool.
++    std::optional<CCoinsViewCache> mempool_duplicate;
++#else
+     CCoinsViewCache mempoolDuplicate(const_cast<CCoinsViewCache*>(&active_coins_tip));
++#endif
+ 
+     const auto score_with_topo{GetSortedScoreWithTopology()};
++#if defined(__APPLE__) && defined(__x86_64__)
++    if (!score_with_topo.empty()) mempool_duplicate.emplace(const_cast<CCoinsViewCache*>(&active_coins_tip));
++#endif
+ 
+     // Number of chunks is bounded by number of transactions.
+     const auto diagram{GetFeerateDiagram()};
+@@ -462,6 +471,9 @@ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendhei
+     auto diagram_iter = diagram.cbegin();
+ 
+     for (const auto& it : score_with_topo) {
++#if defined(__APPLE__) && defined(__x86_64__)
++        auto& mempoolDuplicate{*mempool_duplicate};
++#endif
+         // GetSortedScoreWithTopology() contains the same chunks as the feerate
+         // diagram. We do not know where the chunk boundaries are, but we can
+         // check that there are points at which they match the cumulative fee
 diff --git a/src/util/task_runner.h b/src/util/task_runner.h
 index 951381823b..448119aa06 100644
 --- a/src/util/task_runner.h
