@@ -155,10 +155,7 @@ def sync(receiver, sender, blocks, expected_tip):
             peers = receiver.rpc("getpeerinfo")
             if len(peers) != 1 or not peers[0]["addr"].startswith("127.0.0.1:"):
                 raise RuntimeError("Expected only the isolated loopback peer")
-            receiver.rpc("syncwithvalidationinterfacequeue")
-            completed = time.perf_counter()
             return {"headers_seconds": headers_ready, "sync_seconds": now - start,
-                    "sync_and_callbacks_seconds": completed - start,
                     "blocks_per_second": blocks / (now - start)}
         time.sleep(0.025)
     raise TimeoutError(f"Sync stopped before reaching height {blocks}: {info['blocks']}")

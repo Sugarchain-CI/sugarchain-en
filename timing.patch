@@ -1,0 +1,87 @@
+--- a/src/validation.cpp
++++ b/src/validation.cpp
+@@ -3158,6 +3158,11 @@
+     const auto time_6{SteadyClock::now()};
+     m_chainman.time_post_connect += time_6 - time_5;
+     m_chainman.time_total += time_6 - time_1;
++    if (pindexNew->nHeight % 5000 == 0) {
++        LogInfo("Sync profile tip height=%d connect_ms=%.2f cache_ms=%.2f disk_check_ms=%.2f post_ms=%.2f total_ms=%.2f", pindexNew->nHeight,
++                Ticks<MillisecondsDouble>(m_chainman.time_connect_total), Ticks<MillisecondsDouble>(m_chainman.time_flush),
++                Ticks<MillisecondsDouble>(m_chainman.time_chainstate), Ticks<MillisecondsDouble>(m_chainman.time_post_connect), Ticks<MillisecondsDouble>(m_chainman.time_total));
++    }
+     LogDebug(BCLog::BENCH, "  - Connect postprocess: %.2fms [%.2fs (%.2fms/blk)]\n",
+              Ticks<MillisecondsDouble>(time_6 - time_5),
+              Ticks<SecondsDouble>(m_chainman.time_post_connect),
+@@ -3438,14 +3443,20 @@
+ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCLUDED(cs_main) {
+     AssertLockNotHeld(cs_main);
+ 
++    static thread_local size_t count{0}, paused{0};
++    static thread_local SteadyClock::duration waits{};
+     if (signals.CallbacksPending() > 10) {
++        ++paused;
++        const auto started{SteadyClock::now()};
+ #ifdef __APPLE__
+         // Leave room for another block's notifications before applying backpressure again.
+         signals.WaitForPendingCallbacks(8);
+ #else
+         signals.SyncWithValidationInterfaceQueue();
+ #endif
+-    }
++        waits += SteadyClock::now() - started;
++    }
++    if (++count % 5000 == 0) LogInfo("Sync profile queue calls=%u waited=%u ms=%.2f", count, paused, Ticks<MillisecondsDouble>(waits));
+ }
+ 
+ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<const CBlock> pblock)
+@@ -4552,6 +4563,9 @@
+ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& block, bool force_processing, bool min_pow_checked, bool* new_block)
+ {
+     AssertLockNotHeld(cs_main);
++    const auto started{SteadyClock::now()};
++    static thread_local size_t n{0};
++    static thread_local SteadyClock::duration accept{}, activate{};
+ 
+     {
+         CBlockIndex *pindex = nullptr;
+@@ -4586,6 +4600,7 @@
+         }
+     }
+ 
++    const auto accepted{SteadyClock::now()};
+     NotifyHeaderTip();
+ 
+     BlockValidationState state; // Only used to report errors, not invalidity - ignore it
+@@ -4601,6 +4616,11 @@
+         return false;
+      }
+ 
++    if (new_block && *new_block) {
++        accept += accepted - started;
++        activate += SteadyClock::now() - accepted;
++        if (++n % 5000 == 0) LogInfo("Sync profile process count=%u accept_ms=%.2f activate_ms=%.2f", n, Ticks<MillisecondsDouble>(accept), Ticks<MillisecondsDouble>(activate));
++    }
+     return true;
+ }
+ 
+--- a/src/node/blockstorage.cpp
++++ b/src/node/blockstorage.cpp
+@@ -1645,6 +1645,9 @@
+ 
+ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& pos, std::optional<std::pair<size_t, size_t>> block_part) const
+ {
++    static thread_local size_t n{0};
++    static thread_local std::chrono::steady_clock::duration spent{};
++    const auto start{std::chrono::steady_clock::now()};
+     if (pos.nPos < STORAGE_HEADER_BYTES) {
+         // If nPos is less than STORAGE_HEADER_BYTES, we can't read the header that precedes the block data
+         // This would cause an unsigned integer underflow when trying to position the file cursor
+@@ -1742,6 +1745,8 @@
+ #else
+         filein.read(data);
+ #endif
++        spent += std::chrono::steady_clock::now() - start;
++        if (++n % 5000 == 0) LogInfo("Sync profile reader count=%u ms=%.2f", n, std::chrono::duration<double, std::milli>{spent}.count());
+         return data;
+     } catch (const std::exception& e) {
+         LogError("Read from block file failed: %s for %s while reading raw block", e.what(), pos.ToString());

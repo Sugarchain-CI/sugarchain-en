@@ -1,8 +1,8 @@
-name: Intel macOS bounded callback queue benchmark
+name: macOS optimized Intel sync profile
 'on':
   push:
     branches:
-    - automation/regtest-en4-macos-subsecond-20261125
+    - automation/en5-macos-profile-intel
 permissions:
   contents: read
 jobs:
@@ -21,7 +21,7 @@ jobs:
       uses: actions/checkout@v6
       with:
         persist-credentials: false
-    - name: Check out unchanged En.3 source
+    - name: Check out pinned En.4 source
       uses: actions/checkout@v6
       with:
         path: source
@@ -48,40 +48,46 @@ jobs:
         \ \\\n  \"-DCMAKE_PREFIX_PATH=$(brew --prefix boost);$(brew --prefix libevent)\"\
         \ \\\n  -DBUILD_GUI=OFF -DBUILD_TESTS=OFF -DBUILD_CLI=OFF -DENABLE_WALLET=OFF\
         \ -DENABLE_IPC=OFF -DWITH_USDT=OFF\njobs=\"$(sysctl -n hw.logicalcpu)\"\n\
-        cmake --build \"$build\" --target bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\"\
-        \ \"$workspace/baseline/sugarchaind\"\ngit -C source apply \"$GITHUB_WORKSPACE/optimization.patch\"\
-        \ngit -C source diff --check\nexpected=$(git apply --numstat \"$GITHUB_WORKSPACE/optimization.patch\"\
+        git -C source apply \"$GITHUB_WORKSPACE/optimization.patch\"\ngit -C source\
+        \ diff --check\nexpected=$(git apply --numstat \"$GITHUB_WORKSPACE/optimization.patch\"\
         \ | cut -f3 | LC_ALL=C sort)\nactual=$(git -C source diff --name-only | LC_ALL=C\
         \ sort)\ntest \"$actual\" = \"$expected\"\ncmake -B \"$build\" -S source -DCMAKE_CXX_FLAGS_RELEASE=-O3\
         \ -DCMAKE_C_FLAGS_RELEASE=-O3   -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\n\
         cmake --build \"$build\" --target bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\"\
+        \ \"$workspace/baseline/sugarchaind\"\ngit -C source apply \"$GITHUB_WORKSPACE/timing.patch\"\
+        \ncmake --build \"$build\" --target bitcoind --parallel \"$jobs\"\ncp \"$build/bin/sugarchaind\"\
         \ \"$workspace/candidate/sugarchaind\"\nshasum -a 256 \"$workspace/\"{baseline,candidate}/sugarchaind\n"
     - name: Measure fresh receivers with the same 10,000 blocks
       shell: bash
       run: "set -euo pipefail\nworkspace=\"$RUNNER_TEMP/macos-subsecond\"\npython3\
         \ regtest-sync.py --baseline-bin-dir \"$workspace/baseline\" --candidate-bin-dir\
         \ \"$workspace/candidate\" \\\n  --work-dir \"$workspace/results\" --blocks\
-        \ 10000 --repeats 3\njq -e '.fixture_sha256 == \"e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9\"\
+        \ 10000 --repeats 2\njq -e '.fixture_sha256 == \"e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9\"\
         \n  and .fixture_utxo_sha256 == \"63208d710cf03c30de2660b77a5434181b20fd1c5e70460b256ea4f4e798cb84\"\
         \n  and all(.variants[].samples[]; .reload_verified)' \"$workspace/results/result.json\"\
         \n\npython3 regtest-sync.py --baseline-bin-dir \"$workspace/baseline\" --candidate-bin-dir\
         \ \"$workspace/candidate\"   --sender candidate --work-dir \"$workspace/new-sender\"\
-        \ --blocks 10000 --repeats 3\njq -e '.fixture_sha256 == \"e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9\"\
+        \ --blocks 10000 --repeats 2\njq -e '.fixture_sha256 == \"e9a32c1f46099faa4a901e1479aef2aab0bc13f1143d048d3d661564fc0ad2d9\"\
         \n  and .fixture_utxo_sha256 == \"63208d710cf03c30de2660b77a5434181b20fd1c5e70460b256ea4f4e798cb84\"\
         \n  and all(.variants[].samples[]; .reload_verified)' \"$workspace/new-sender/result.json\"\
+        \n\nfor kind in results new-sender; do\n  for logfile in \"$workspace/$kind\"\
+        /{sender,candidate-1,candidate-2}/regtest/debug.log; do\n    name=$(basename\
+        \ \"$(dirname \"$(dirname \"$logfile\")\")\")\n    awk '/Sync profile/{print}'\
+        \ \"$logfile\" > \"$workspace/$kind/$name-profile.txt\"\n  done\ndone\ntest\
+        \ -s \"$workspace/new-sender/candidate-1-profile.txt\"\ntest -s \"$workspace/new-sender/sender-profile.txt\"\
         \n"
     - name: Retain comparison evidence
       if: always()
       uses: actions/upload-artifact@v7
       with:
-        name: macos-subsecond-intel-queue
+        name: macos-subsecond-optimized-${{ matrix.arch }}
         path: '${{ runner.temp }}/macos-subsecond/results/result.json
 
-          ${{ runner.temp }}/macos-subsecond/results/*/console.log
+          ${{ runner.temp }}/macos-subsecond/results/*-profile.txt
 
           ${{ runner.temp }}/macos-subsecond/new-sender/result.json
 
-          '
+          ${{ runner.temp }}/macos-subsecond/new-sender/*-profile.txt'
         if-no-files-found: warn
         retention-days: 7
     - name: Keep compiler cache for follow-up measurements
