@@ -1,0 +1,106 @@
+name: Published macOS Regtest I/O diagnostics
+'on':
+  push:
+    branches:
+      - automation/regtest-en3-macos-io-20261125
+
+permissions:
+  contents: read
+
+jobs:
+  regtest:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    defaults:
+      run:
+        shell: bash
+    env:
+      BENCH_ARCH: ${{ matrix.arch }}
+      BENCH_RUNNER: ${{ matrix.runner }}
+      RELEASE: v31.1.2-en.3
+    steps:
+      - name: Check out benchmark
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Download and verify public macOS archives
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$BENCH_ARCH"
+          mkdir "$RUNNER_TEMP/regtest-evidence" "$RUNNER_TEMP/published"
+          cd "$RUNNER_TEMP/published"
+          name="sugarchain-en-31.1.2-macos-$BENCH_ARCH"
+          for asset in "$name-cli.tar.gz"; do
+            curl --retry 4 --retry-all-errors --connect-timeout 20 -fsSL \
+              "https://github.com/decryp2kanon/sugarchain-en/releases/download/$RELEASE/$asset" \
+              -o "$asset"
+            hash=$(awk -v asset="$asset" '$2 == asset {print $1}' "$GITHUB_WORKSPACE/benchmark-SHA256SUMS")
+            printf '%s  %s\n' "$hash" "$asset" | shasum -a 256 -c -
+          done
+          tar -xzf "$name-cli.tar.gz"
+          {
+            printf 'CLI=%s\n' "$RUNNER_TEMP/published/$name-cli/bin/sugarchaind"
+            printf 'CLI_ARCHIVE=%s\n' "$name-cli.tar.gz"
+          } >> "$GITHUB_ENV"
+
+      - name: Measure storage handle overhead
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/regtest-evidence"
+          sw_vers > "$result/macos.txt"
+          sysctl machdep.cpu.brand_string hw.logicalcpu hw.memsize >> "$result/macos.txt" || true
+          clang -std=c11 -O2 -Wall -Wextra -Werror macos-file-probe.c -o "$RUNNER_TEMP/file-probe"
+          "$RUNNER_TEMP/file-probe" "$RUNNER_TEMP/file-probe.dat" > "$result/io.csv"
+          python3 - "$result" <<'PY'
+          from pathlib import Path
+          from statistics import median
+          import csv
+          import json
+          import sys
+
+          directory = Path(sys.argv[1])
+          timings = {}
+          with (directory / "io.csv").open() as stream:
+              for row in csv.DictReader(stream):
+                  timings.setdefault(row["mode"], []).append(float(row["us_per_record"]))
+          summary = {mode: median(samples) for mode, samples in timings.items()}
+          output = json.dumps(summary, indent=2) + "\n"
+          (directory / "io-summary.json").write_text(output)
+          print(output)
+          PY
+
+      - name: Compare daemon control and instrumented sync
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/regtest-evidence"
+          hash=$(awk -v asset="$CLI_ARCHIVE" '$2 == asset {print $1}' benchmark-SHA256SUMS)
+          for mode in control instrumented; do
+            set --
+            if [[ "$mode" == instrumented ]]; then
+              set -- --bench
+            fi
+            python3 regtest-sync-macos.py --cli "$CLI" "$@" --runner "$BENCH_RUNNER" \
+              --asset-sha256 "$hash" --work-dir "$RUNNER_TEMP/regtest-$mode" \
+              --blocks 10000 --repeats 2
+            cp "$RUNNER_TEMP/regtest-$mode/result.json" "$result/$mode.json"
+          done
+
+      - name: Retain results and startup logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: regtest-en3-macos-io-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/regtest-evidence/
+          if-no-files-found: warn
+          retention-days: 7
