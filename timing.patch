@@ -1,3 +1,135 @@
+diff --git a/src/net.cpp b/src/net.cpp
+index 8af4842de6..1f527a9fd8 100644
+--- a/src/net.cpp
++++ b/src/net.cpp
+@@ -6,6 +6,7 @@
+ #include <bitcoin-build-config.h> // IWYU pragma: keep
+ 
+ #include <net.h>
++#include <util/netprofile.h>
+ 
+ #include <addrdb.h>
+ #include <addrman.h>
+@@ -3178,7 +3179,9 @@ void CConnman::ThreadMessageHandler()
+             // Randomize the order in which we process messages from/to our peers.
+             // This prevents attacks in which an attacker exploits having multiple
+             // consecutive connections in the m_nodes list.
++            netprofile::Scope profile_snapshot{netprofile::SNAPSHOT};
+             const NodesSnapshot snap{*this, /*shuffle=*/true};
++            profile_snapshot.Stop();
+ 
+             for (CNode* pnode : snap.Nodes()) {
+                 if (pnode->fDisconnect)
+@@ -3209,6 +3212,7 @@ void CConnman::ThreadMessageHandler()
+ 
+         WAIT_LOCK(mutexMsgProc, lock);
+         if (!fMoreWork) {
++            netprofile::Scope profile_wait{netprofile::MSG_WAIT};
+             condMsgProc.wait_until(lock, std::chrono::steady_clock::now() + std::chrono::milliseconds(100), [this]() EXCLUSIVE_LOCKS_REQUIRED(mutexMsgProc) { return fMsgProcWake; });
+         }
+         fMsgProcWake = false;
+diff --git a/src/net_processing.cpp b/src/net_processing.cpp
+index b7ed3b2e84..86b3d7fb85 100644
+--- a/src/net_processing.cpp
++++ b/src/net_processing.cpp
+@@ -4,6 +4,7 @@
+ // file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ 
+ #include <net_processing.h>
++#include <util/netprofile.h>
+ 
+ #include <addrman.h>
+ #include <arith_uint256.h>
+@@ -2629,6 +2630,7 @@ void PeerManagerImpl::SendBlockTransactions(CNode& pfrom, Peer& peer, const CBlo
+ 
+ bool PeerManagerImpl::CheckHeadersPoW(const std::vector<CBlockHeader>& headers, Peer& peer)
+ {
++    netprofile::Scope profile{netprofile::HEADER_POW};
+     if (m_chainparams.GetConsensus().fYespowerSugar) {
+         LOCK(cs_main);
+         for (const auto& header : headers) {
+@@ -2982,6 +2984,8 @@ void PeerManagerImpl::ProcessHeadersMessage(CNode& pfrom, Peer& peer,
+                                             std::vector<CBlockHeader>&& headers,
+                                             bool via_compact_block)
+ {
++    netprofile::Scope profile{netprofile::HEADERS};
++    netprofile::Event("headers_begin", headers.size());
+     size_t nCount = headers.size();
+ 
+     if (nCount == 0) {
+@@ -3101,9 +3105,12 @@ void PeerManagerImpl::ProcessHeadersMessage(CNode& pfrom, Peer& peer,
+ 
+     // Now process all the headers.
+     BlockValidationState state;
++    netprofile::Scope profile_index{netprofile::HEADER_INDEX};
+     const bool processed{m_chainman.ProcessNewBlockHeaders(headers,
+                                                            /*min_pow_checked=*/true,
+                                                            state, &pindexLast)};
++    profile_index.Stop();
++    netprofile::Event("headers_indexed", headers.size());
+     if (!processed) {
+         if (state.IsInvalid()) {
+             if (!pfrom.IsInboundConn() && state.GetResult() == BlockValidationResult::BLOCK_CACHED_INVALID) {
+@@ -4883,8 +4890,12 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
+             return;
+         }
+ 
++        netprofile::Scope profile_block{netprofile::MESSAGE_BLOCK};
++        netprofile::Scope profile_deserialize{netprofile::DESERIALIZE};
+         std::shared_ptr<CBlock> pblock = std::make_shared<CBlock>();
+         vRecv >> TX_WITH_WITNESS(*pblock);
++        profile_deserialize.Stop();
++        netprofile::Scope profile_mutation{netprofile::MUTATION};
+ 
+         LogDebug(BCLog::NET, "received block %s peer=%d\n", pblock->GetHash().ToString(), pfrom.GetId());
+ 
+@@ -4899,6 +4910,8 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
+             return;
+         }
+ 
++        profile_mutation.Stop();
++        netprofile::Scope profile_request{netprofile::REQUEST_BOOKKEEPING};
+         bool forceProcessing = false;
+         const uint256 hash(pblock->GetHash());
+         bool min_pow_checked = false;
+@@ -4926,7 +4939,12 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
+                 min_pow_checked = true;
+             }
+         }
++        profile_request.Stop();
++        netprofile::Scope profile_process{netprofile::PROCESS_BLOCK};
+         ProcessBlock(pfrom, pblock, forceProcessing, min_pow_checked);
++        profile_process.Stop();
++        profile_block.Stop();
++        netprofile::BlockDone();
+         return;
+     }
+ 
+@@ -5238,6 +5256,8 @@ bool PeerManagerImpl::MaybeDiscourageAndDisconnect(CNode& pnode, Peer& peer)
+ 
+ bool PeerManagerImpl::ProcessMessages(CNode& node, std::atomic<bool>& interruptMsgProc)
+ {
++    netprofile::Begin();
++    netprofile::Scope profile{netprofile::PROCESS_MESSAGES};
+     AssertLockNotHeld(m_tx_download_mutex);
+     AssertLockHeld(g_msgproc_mutex);
+ 
+@@ -5295,6 +5315,7 @@ bool PeerManagerImpl::ProcessMessages(CNode& node, std::atomic<bool>& interruptM
+         CaptureMessage(node.addr, msg.m_type, MakeUCharSpan(msg.m_recv), /*is_incoming=*/true);
+     }
+ 
++    if (msg.m_type == NetMsgType::VERSION || msg.m_type == NetMsgType::VERACK) netprofile::Event(msg.m_type.c_str());
+     try {
+         ProcessMessage(peer, node, msg.m_type, msg.m_recv, msg.m_time, interruptMsgProc);
+         if (interruptMsgProc) return false;
+@@ -5741,6 +5762,7 @@ bool PeerManagerImpl::SetupAddressRelay(const CNode& node, Peer& peer)
+ 
+ bool PeerManagerImpl::SendMessages(CNode& node)
+ {
++    netprofile::Scope profile{netprofile::SEND_MESSAGES};
+     AssertLockNotHeld(m_tx_download_mutex);
+     AssertLockHeld(g_msgproc_mutex);
+ 
 diff --git a/src/node/blockstorage.cpp b/src/node/blockstorage.cpp
 index 3f9c639560..f63cf51066 100644
 --- a/src/node/blockstorage.cpp
@@ -205,6 +337,79 @@ index 3f9c639560..f63cf51066 100644
      return pos;
  }
  
+diff --git a/src/scheduler.cpp b/src/scheduler.cpp
+index 15ed728c0e..4f25e39c70 100644
+--- a/src/scheduler.cpp
++++ b/src/scheduler.cpp
+@@ -3,6 +3,7 @@
+ // file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ 
+ #include <scheduler.h>
++#include <util/intel_stage_profile.h>
+ 
+ #include <sync.h>
+ #include <util/time.h>
+@@ -76,11 +77,16 @@ void CScheduler::serviceQueue()
+ 
+ void CScheduler::schedule(CScheduler::Function f, std::chrono::steady_clock::time_point t)
+ {
++    static thread_local IntelStageTotals<3> profile_totals{"schedschedule", {"lock", "emplace", "notify"}, 1000};
++    IntelStageScope profile{profile_totals};
+     {
+         LOCK(newTaskMutex);
++        profile.Mark(0);
+         taskQueue.insert(std::make_pair(t, f));
++        profile.Mark(1);
+     }
+     newTaskScheduled.notify_one();
++    profile.Mark(2);
+ }
+ 
+ void CScheduler::MockForward(std::chrono::seconds delta_seconds)
+@@ -179,12 +185,17 @@ void SerialTaskRunner::ScheduleProcessQueue()
+ #ifdef __APPLE__
+ std::function<void()> SerialTaskRunner::PopCallback()
+ {
++    static thread_local IntelStageTotals<3> profile_totals{"serialpop", {"move", "deallocate", "notify"}};
++    IntelStageScope profile{profile_totals};
+     AssertLockHeld(m_callbacks_mutex);
+     auto callback{std::move(m_callbacks_pending.front())};
++    profile.Mark(0);
+     m_callbacks_pending.pop_front();
++    profile.Mark(1);
+     if (m_capacity_waiters && m_callbacks_pending.size() <= m_capacity_wait_limit) {
+         m_capacity.notify_all();
+     }
++    profile.Mark(2);
+     return callback;
+ }
+ #endif
+@@ -246,12 +257,17 @@ void SerialTaskRunner::ProcessQueue()
+ 
+ void SerialTaskRunner::insert(std::function<void()> func)
+ {
++    static thread_local IntelStageTotals<4> profile_totals{"serialinsert", {"lock", "emplace", "decision", "schedule"}};
++    IntelStageScope profile{profile_totals};
+     {
+         LOCK(m_callbacks_mutex);
++        profile.Mark(0);
+         m_callbacks_pending.emplace_back(std::move(func));
++        profile.Mark(1);
+ #if defined(__APPLE__) && defined(__x86_64__)
+         // Enqueue and reserve the scheduler turn in one critical section.
+         // The running consumer or the reserved turn will observe this callback.
++        profile.Mark(2);
+         if (m_are_callbacks_running || m_process_queue_scheduled) return;
+         m_process_queue_scheduled = true;
+ #endif
+@@ -261,6 +277,7 @@ void SerialTaskRunner::insert(std::function<void()> func)
+ #else
+     MaybeScheduleProcessQueue();
+ #endif
++    profile.Mark(3);
+ }
+ 
+ void SerialTaskRunner::flush()
 diff --git a/src/streams.cpp b/src/streams.cpp
 index e38b959294..d72a6f53df 100644
 --- a/src/streams.cpp
@@ -239,6 +444,83 @@ index e38b959294..d72a6f53df 100644
  }
  
  bool AutoFile::Commit()
+diff --git a/src/txgraph.cpp b/src/txgraph.cpp
+index ca12bca6f4..c375e852ea 100644
+--- a/src/txgraph.cpp
++++ b/src/txgraph.cpp
+@@ -3,6 +3,7 @@
+ // file COPYING or http://www.opensource.org/licenses/mit-license.php.
+ 
+ #include <txgraph.h>
++#include <util/intel_stage_profile.h>
+ 
+ #include <cluster_linearize.h>
+ #include <random.h>
+@@ -3112,6 +3113,8 @@ void TxGraphImpl::SanityCheck() const
+ 
+ bool TxGraphImpl::DoWork(uint64_t max_cost) noexcept
+ {
++    static thread_local IntelStageTotals<2> profile_totals{"graphwork", {"dependencies", "linearize"}};
++    IntelStageScope profile{profile_totals};
+     uint64_t cost_done{0};
+     // First linearize everything in NEEDS_RELINEARIZE to an acceptable level. If more budget
+     // remains after that, try to make everything optimal.
+@@ -3121,6 +3124,7 @@ bool TxGraphImpl::DoWork(uint64_t max_cost) noexcept
+             // Do not modify main if it has any observers.
+             if (level == 0 && m_main_chunkindex_observers != 0) continue;
+             ApplyDependencies(level);
++            profile.Mark(0);
+             auto& clusterset = GetClusterSet(level);
+             // Do not modify oversized levels.
+             if (clusterset.m_oversized == true) continue;
+@@ -3148,6 +3152,7 @@ bool TxGraphImpl::DoWork(uint64_t max_cost) noexcept
+                 // stop here too.
+                 if (!improved) return false;
+             }
++            profile.Mark(1);
+         }
+     }
+     // All possible work has been performed, so we can return true. Note that this does *not* mean
+diff --git a/src/txmempool.cpp b/src/txmempool.cpp
+index bfff181683..45a836a8a1 100644
+--- a/src/txmempool.cpp
++++ b/src/txmempool.cpp
+@@ -16,6 +16,7 @@
+ #include <random.h>
+ #include <tinyformat.h>
+ #include <util/check.h>
++#include <util/intel_stage_profile.h>
+ #include <util/feefrac.h>
+ #include <util/log.h>
+ #include <util/moneystr.h>
+@@ -404,6 +405,8 @@ void CTxMemPool::removeConflicts(const CTransaction &tx)
+ 
+ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight)
+ {
++    static thread_local IntelStageTotals<4> profile_totals{"removeforblock", {"scan", "signal", "clock", "graph"}};
++    IntelStageScope profile{profile_totals};
+     // Remove confirmed txs and conflicts when a new block is connected, updating the fee logic
+     AssertLockHeld(cs);
+     Assume(!m_have_changeset);
+@@ -420,14 +423,18 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigne
+             ClearPrioritisation(tx->GetHash());
+         }
+     }
++    profile.Mark(0);
+     if (m_opts.signals) {
+         m_opts.signals->MempoolTransactionsRemovedForBlock(txs_removed_for_block, nBlockHeight);
+     }
++    profile.Mark(1);
+     lastRollingFeeUpdate = GetTime();
+     blockSinceLastRollingFeeBump = true;
++    profile.Mark(2);
+     if (!m_txgraph->DoWork(/*max_cost=*/POST_CHANGE_COST)) {
+         LogDebug(BCLog::MEMPOOL, "Mempool in non-optimal ordering after block.");
+     }
++    profile.Mark(3);
+ }
+ 
+ void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendheight) const
 diff --git a/src/util/intel_stage_profile.h b/src/util/intel_stage_profile.h
 new file mode 100644
 index 0000000000..0e8667b31a
@@ -288,8 +570,64 @@ index 0000000000..0e8667b31a
 +    }
 +};
 +#endif
+diff --git a/src/util/netprofile.h b/src/util/netprofile.h
+new file mode 100644
+index 0000000000..674e3516d8
+--- /dev/null
++++ b/src/util/netprofile.h
+@@ -0,0 +1,50 @@
++// Temporary native synchronization diagnostics; not for release.
++#ifndef BITCOIN_UTIL_NETPROFILE_H
++#define BITCOIN_UTIL_NETPROFILE_H
++#include <logging.h>
++#include <array>
++#include <chrono>
++#include <cstdint>
++namespace netprofile {
++using Clock = std::chrono::steady_clock;
++enum Stage { PROCESS_MESSAGES, SEND_MESSAGES, MESSAGE_BLOCK, DESERIALIZE, MUTATION, REQUEST_BOOKKEEPING, PROCESS_BLOCK, HEADERS, HEADER_POW, HEADER_INDEX, MSG_WAIT, SNAPSHOT, NUM_STAGES };
++inline constexpr std::array<const char*, NUM_STAGES> NAMES{"process_messages", "send_messages", "message_block", "deserialize", "mutation", "request_bookkeeping", "process_block", "headers", "header_pow", "header_index", "msg_wait", "snapshot"};
++struct Stats {
++    Clock::time_point start{};
++    std::array<std::chrono::nanoseconds, NUM_STAGES> time{};
++    std::array<uint64_t, NUM_STAGES> calls{};
++    uint64_t blocks{0};
++};
++inline thread_local Stats stats;
++inline void Begin() { if (stats.start == Clock::time_point{}) stats = Stats{Clock::now()}; }
++inline double Elapsed() { return std::chrono::duration<double, std::milli>(Clock::now() - stats.start).count(); }
++class Scope {
++    Stage stage;
++    Clock::time_point start{Clock::now()};
++    bool active{true};
++public:
++    explicit Scope(Stage value) : stage{value} {}
++    void Stop() {
++        if (!active) return;
++        if (stats.start != Clock::time_point{}) {
++            stats.time[stage] += Clock::now() - start;
++            ++stats.calls[stage];
++        }
++        active = false;
++    }
++    ~Scope() { Stop(); }
++};
++inline void Event(const char* name, int64_t detail = 0) {
++    LogInfo("NETPROFILE event=%s elapsed_ms=%.3f blocks=%u detail=%d", name, Elapsed(), stats.blocks, detail);
++}
++inline void BlockDone() {
++    ++stats.blocks;
++    if (stats.blocks == 1) Event("first_block");
++    if (stats.blocks % 5000 != 0) return;
++    Event("blocks");
++    for (size_t i = 0; i < NUM_STAGES; ++i) {
++        LogInfo("NETPROFILE stage=%s calls=%u total_ms=%.3f", NAMES[i], stats.calls[i], std::chrono::duration<double, std::milli>(stats.time[i]).count());
++    }
++}
++}
++#endif
 diff --git a/src/validation.cpp b/src/validation.cpp
-index 720ae2a375..f3231133ca 100644
+index 720ae2a375..3324a6d514 100644
 --- a/src/validation.cpp
 +++ b/src/validation.cpp
 @@ -6,6 +6,7 @@
@@ -460,7 +798,81 @@ index 720ae2a375..f3231133ca 100644
      return true;
  }
  
-@@ -3440,9 +3467,13 @@ bool ChainstateManager::NotifyHeaderTip()
+@@ -3270,15 +3297,23 @@ void Chainstate::PruneBlockIndexCandidates() {
+  */
+ bool Chainstate::ActivateBestChainStep(BlockValidationState& state, CBlockIndex* pindexMostWork, const std::shared_ptr<const CBlock>& pblock, bool& fInvalidFound, ConnectTrace& connectTrace)
+ {
++    static thread_local IntelStageTotals<11> step_totals{"activationstep", {"fork", "poolctor", "disconnect", "connectlist", "connecttip", "prune", "loopend", "reorg", "mempoolcheck", "forkwarning", "destructors"}};
++    IntelStageScope step_profile{step_totals};
++    struct TailMarker {
++        IntelStageScope<11>& profile;
++        ~TailMarker() { profile.Mark(10); }
++    } tail_marker{step_profile};
+     AssertLockHeld(cs_main);
+     if (m_mempool) AssertLockHeld(m_mempool->cs);
+ 
+     const CBlockIndex* pindexOldTip = m_chain.Tip();
+     const CBlockIndex* pindexFork = m_chain.FindFork(pindexMostWork);
++    step_profile.Mark(0);
+ 
+     // Disconnect active blocks which are no longer in the best chain.
+     bool fBlocksDisconnected = false;
+     DisconnectedBlockTransactions disconnectpool{MAX_DISCONNECTED_TX_POOL_BYTES};
++    step_profile.Mark(1);
+     while (m_chain.Tip() && m_chain.Tip() != pindexFork) {
+         if (!DisconnectTip(state, &disconnectpool)) {
+             // This is likely a fatal error, but keep the mempool consistent,
+@@ -3294,6 +3329,7 @@ bool Chainstate::ActivateBestChainStep(BlockValidationState& state, CBlockIndex*
+         fBlocksDisconnected = true;
+     }
+ 
++    step_profile.Mark(2);
+     // Build list of new blocks to connect (in descending height order).
+     std::vector<CBlockIndex*> vpindexToConnect;
+     bool fContinue = true;
+@@ -3310,10 +3346,13 @@ bool Chainstate::ActivateBestChainStep(BlockValidationState& state, CBlockIndex*
+             pindexIter = pindexIter->pprev;
+         }
+         nHeight = nTargetHeight;
++        step_profile.Mark(3);
+ 
+         // Connect new blocks.
+         for (CBlockIndex* pindexConnect : vpindexToConnect | std::views::reverse) {
+-            if (!ConnectTip(state, pindexConnect, pindexConnect == pindexMostWork ? pblock : std::shared_ptr<const CBlock>(), connectTrace, disconnectpool)) {
++            const bool connected{ConnectTip(state, pindexConnect, pindexConnect == pindexMostWork ? pblock : std::shared_ptr<const CBlock>(), connectTrace, disconnectpool)};
++            step_profile.Mark(4);
++            if (!connected) {
+                 if (state.IsInvalid()) {
+                     // The block violates a consensus rule.
+                     if (state.GetResult() != BlockValidationResult::BLOCK_MUTATED) {
+@@ -3332,6 +3371,7 @@ bool Chainstate::ActivateBestChainStep(BlockValidationState& state, CBlockIndex*
+                 }
+             } else {
+                 PruneBlockIndexCandidates();
++                step_profile.Mark(5);
+                 if (!pindexOldTip || m_chain.Tip()->nChainWork > pindexOldTip->nChainWork) {
+                     // We're in a better position than we were. Return temporarily to release the lock.
+                     fContinue = false;
+@@ -3341,14 +3381,18 @@ bool Chainstate::ActivateBestChainStep(BlockValidationState& state, CBlockIndex*
+         }
+     }
+ 
++    step_profile.Mark(6);
+     if (fBlocksDisconnected) {
+         // If any blocks were disconnected, disconnectpool may be non empty.  Add
+         // any disconnected transactions back to the mempool.
+         MaybeUpdateMempoolForReorg(disconnectpool, true);
+     }
++    step_profile.Mark(7);
+     if (m_mempool) m_mempool->check(this->CoinsTip(), this->m_chain.Height() + 1);
++    step_profile.Mark(8);
+ 
+     CheckForkWarningConditions();
++    step_profile.Mark(9);
+ 
+     return true;
+ }
+@@ -3440,9 +3484,13 @@ bool ChainstateManager::NotifyHeaderTip()
  }
  
  static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCLUDED(cs_main) {
@@ -475,7 +887,7 @@ index 720ae2a375..f3231133ca 100644
  #if defined(__APPLE__) && defined(__x86_64__)
          // Drain the pending burst before the producer resumes filling the bounded queue.
          signals.WaitForPendingCallbacks(0);
-@@ -3452,11 +3483,14 @@ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCL
+@@ -3452,11 +3500,14 @@ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCL
  #else
          signals.SyncWithValidationInterfaceQueue();
  #endif
@@ -490,7 +902,7 @@ index 720ae2a375..f3231133ca 100644
      AssertLockNotHeld(m_chainstate_mutex);
  
      // Note that while we're often called here from ProcessNewBlock, this is
-@@ -3481,6 +3515,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+@@ -3481,6 +3532,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
      CBlockIndex *pindexMostWork = nullptr;
      CBlockIndex *pindexNewTip = nullptr;
      bool exited_ibd{false};
@@ -498,7 +910,7 @@ index 720ae2a375..f3231133ca 100644
      do {
          // Wait for room in the validation queue. This should largely
          // never happen in normal operation, however may happen during
-@@ -3489,12 +3524,14 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+@@ -3489,12 +3541,14 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
          // ActivateBestChain this may lead to a deadlock! We should
          // probably have a DEBUG_LOCKORDER test for this in the future.
          if (m_chainman.m_options.signals) LimitValidationInterfaceQueue(*m_chainman.m_options.signals);
@@ -513,7 +925,7 @@ index 720ae2a375..f3231133ca 100644
              const bool was_in_ibd = m_chainman.IsInitialBlockDownload();
              CBlockIndex* starting_tip = m_chain.Tip();
              bool blocks_connected = false;
-@@ -3522,6 +3559,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+@@ -3522,6 +3576,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
                      // A system error occurred
                      return false;
                  }
@@ -521,7 +933,7 @@ index 720ae2a375..f3231133ca 100644
                  blocks_connected = true;
  
                  if (fInvalidFound) {
-@@ -3537,6 +3575,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+@@ -3537,6 +3592,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
                      }
                  }
  
@@ -529,7 +941,7 @@ index 720ae2a375..f3231133ca 100644
                  // Break this do-while to ensure we don't advance past the target block.
                  if (ReachedTarget()) {
                      break;
-@@ -3546,6 +3585,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+@@ -3546,6 +3602,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
  
              const CBlockIndex* pindexFork = m_chain.FindFork(starting_tip);
              bool still_in_ibd = m_chainman.IsInitialBlockDownload();
@@ -537,7 +949,7 @@ index 720ae2a375..f3231133ca 100644
  
              if (was_in_ibd && !still_in_ibd) {
                  // Active chainstate has exited IBD.
-@@ -3560,6 +3600,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+@@ -3560,6 +3617,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
                      m_chainman.m_options.signals->UpdatedBlockTip(pindexNewTip, pindexFork, still_in_ibd);
                  }
  
@@ -545,7 +957,7 @@ index 720ae2a375..f3231133ca 100644
                  if (kernel::IsInterrupted(m_chainman.GetNotifications().blockTip(
                          /*state=*/GetSynchronizationState(still_in_ibd, m_chainman.m_blockman.m_blockfiles_indexed),
                          /*index=*/*pindexNewTip,
-@@ -3572,17 +3613,20 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+@@ -3572,17 +3630,20 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
                      break;
                  }
              }
@@ -566,7 +978,7 @@ index 720ae2a375..f3231133ca 100644
              if (exited_ibd) {
                  // If a background chainstate is in use, we may need to rebalance our
                  // allocation of caches once a chainstate exits initial block download.
-@@ -3594,6 +3638,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+@@ -3594,6 +3655,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
                  return false;
              }
  
@@ -574,7 +986,7 @@ index 720ae2a375..f3231133ca 100644
              reached_target = ReachedTarget();
          }
  
-@@ -3620,6 +3665,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
+@@ -3620,6 +3682,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
  
      if (!m_chainman.MaybeReleaseIBDCaches(state)) return false;
      m_chainman.CheckBlockIndex();
@@ -582,7 +994,7 @@ index 720ae2a375..f3231133ca 100644
  
      return true;
  }
-@@ -4458,6 +4504,8 @@ void ChainstateManager::ReportHeadersPresync(int64_t height, int64_t timestamp)
+@@ -4458,6 +4521,8 @@ void ChainstateManager::ReportHeadersPresync(int64_t height, int64_t timestamp)
  /** Store block on disk. If dbp is non-nullptr, the file is known to already reside on disk */
  bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock, BlockValidationState& state, CBlockIndex** ppindex, bool fRequested, const FlatFilePos* dbp, bool* fNewBlock, bool min_pow_checked)
  {
@@ -591,7 +1003,7 @@ index 720ae2a375..f3231133ca 100644
      const CBlock& block = *pblock;
  
      if (fNewBlock) *fNewBlock = false;
-@@ -4468,6 +4516,7 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
+@@ -4468,6 +4533,7 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
  
      bool accepted_header{AcceptBlockHeader(block, state, &pindex, min_pow_checked)};
      CheckBlockIndex();
@@ -599,7 +1011,7 @@ index 720ae2a375..f3231133ca 100644
  
      if (!accepted_header)
          return false;
-@@ -4507,8 +4556,11 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
+@@ -4507,8 +4573,11 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
      }
  
      const CChainParams& params{GetParams()};
@@ -612,7 +1024,7 @@ index 720ae2a375..f3231133ca 100644
          !ContextualCheckBlock(block, state, *this, pindex->pprev)) {
          if (Assume(state.IsInvalid())) {
              ActiveChainstate().InvalidBlockFound(pindex, state);
-@@ -4517,12 +4569,16 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
+@@ -4517,12 +4586,16 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
          return false;
      }
  
@@ -629,7 +1041,7 @@ index 720ae2a375..f3231133ca 100644
      // Write block to history file
      if (fNewBlock) *fNewBlock = true;
      try {
-@@ -4537,7 +4593,9 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
+@@ -4537,7 +4610,9 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
                  return false;
              }
          }
@@ -639,7 +1051,7 @@ index 720ae2a375..f3231133ca 100644
      } catch (const std::runtime_error& e) {
          return FatalError(GetNotifications(), state, strprintf(_("System error while saving block to disk: %s"), e.what()));
      }
-@@ -4554,14 +4612,18 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
+@@ -4554,14 +4629,18 @@ bool ChainstateManager::AcceptBlock(const std::shared_ptr<const CBlock>& pblock,
  #else
      ActiveChainstate().FlushStateToDisk(state, FlushStateMode::NONE);
  #endif
@@ -658,7 +1070,7 @@ index 720ae2a375..f3231133ca 100644
      AssertLockNotHeld(cs_main);
  
      {
-@@ -4572,6 +4634,7 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
+@@ -4572,6 +4651,7 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
          // CheckBlock() does not support multi-threaded block validation because CBlock::fChecked can cause data race.
          // Therefore, the following critical section must include the CheckBlock() call as well.
          LOCK(cs_main);
@@ -666,7 +1078,7 @@ index 720ae2a375..f3231133ca 100644
  
          // Skipping AcceptBlock() for CheckBlock() failures means that we will never mark a block as invalid if
          // CheckBlock() fails.  This is protective against consensus failure if there are any unknown forms of block
-@@ -4583,11 +4646,14 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
+@@ -4583,11 +4663,14 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
                  CacheVerifiedBlockIndexProof(*known, GetConsensus());
              }
          }
@@ -681,7 +1093,7 @@ index 720ae2a375..f3231133ca 100644
          if (!ret) {
              if (m_options.signals) {
                  m_options.signals->BlockChecked(block, state);
-@@ -4598,6 +4664,7 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
+@@ -4598,6 +4681,7 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
      }
  
      NotifyHeaderTip();
@@ -689,7 +1101,7 @@ index 720ae2a375..f3231133ca 100644
  
      BlockValidationState state; // Only used to report errors, not invalidity - ignore it
      if (!ActiveChainstate().ActivateBestChain(state, block)) {
-@@ -4605,6 +4672,8 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
+@@ -4605,6 +4689,8 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
          return false;
      }
  
@@ -698,7 +1110,7 @@ index 720ae2a375..f3231133ca 100644
      Chainstate* bg_chain{WITH_LOCK(cs_main, return HistoricalChainstate())};
      BlockValidationState bg_state;
      if (bg_chain && !bg_chain->ActivateBestChain(bg_state, block)) {
-@@ -4612,6 +4681,7 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
+@@ -4612,6 +4698,7 @@ bool ChainstateManager::ProcessNewBlock(const std::shared_ptr<const CBlock>& blo
          return false;
       }
  
@@ -706,81 +1118,3 @@ index 720ae2a375..f3231133ca 100644
      return true;
  }
  
-
-diff --git a/src/txgraph.cpp b/src/txgraph.cpp
-index ca12bca6f4..c375e852ea 100644
---- a/src/txgraph.cpp
-+++ b/src/txgraph.cpp
-@@ -3,6 +3,7 @@
- // file COPYING or http://www.opensource.org/licenses/mit-license.php.
- 
- #include <txgraph.h>
-+#include <util/intel_stage_profile.h>
- 
- #include <cluster_linearize.h>
- #include <random.h>
-@@ -3112,6 +3113,8 @@ void TxGraphImpl::SanityCheck() const
- 
- bool TxGraphImpl::DoWork(uint64_t max_cost) noexcept
- {
-+    static thread_local IntelStageTotals<2> profile_totals{"graphwork", {"dependencies", "linearize"}};
-+    IntelStageScope profile{profile_totals};
-     uint64_t cost_done{0};
-     // First linearize everything in NEEDS_RELINEARIZE to an acceptable level. If more budget
-     // remains after that, try to make everything optimal.
-@@ -3121,6 +3124,7 @@ bool TxGraphImpl::DoWork(uint64_t max_cost) noexcept
-             // Do not modify main if it has any observers.
-             if (level == 0 && m_main_chunkindex_observers != 0) continue;
-             ApplyDependencies(level);
-+            profile.Mark(0);
-             auto& clusterset = GetClusterSet(level);
-             // Do not modify oversized levels.
-             if (clusterset.m_oversized == true) continue;
-@@ -3148,6 +3152,7 @@ bool TxGraphImpl::DoWork(uint64_t max_cost) noexcept
-                 // stop here too.
-                 if (!improved) return false;
-             }
-+            profile.Mark(1);
-         }
-     }
-     // All possible work has been performed, so we can return true. Note that this does *not* mean
-diff --git a/src/txmempool.cpp b/src/txmempool.cpp
-index bfff181683..45a836a8a1 100644
---- a/src/txmempool.cpp
-+++ b/src/txmempool.cpp
-@@ -16,6 +16,7 @@
- #include <random.h>
- #include <tinyformat.h>
- #include <util/check.h>
-+#include <util/intel_stage_profile.h>
- #include <util/feefrac.h>
- #include <util/log.h>
- #include <util/moneystr.h>
-@@ -404,6 +405,8 @@ void CTxMemPool::removeConflicts(const CTransaction &tx)
- 
- void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigned int nBlockHeight)
- {
-+    static thread_local IntelStageTotals<4> profile_totals{"removeforblock", {"scan", "signal", "clock", "graph"}};
-+    IntelStageScope profile{profile_totals};
-     // Remove confirmed txs and conflicts when a new block is connected, updating the fee logic
-     AssertLockHeld(cs);
-     Assume(!m_have_changeset);
-@@ -420,14 +423,18 @@ void CTxMemPool::removeForBlock(const std::vector<CTransactionRef>& vtx, unsigne
-             ClearPrioritisation(tx->GetHash());
-         }
-     }
-+    profile.Mark(0);
-     if (m_opts.signals) {
-         m_opts.signals->MempoolTransactionsRemovedForBlock(txs_removed_for_block, nBlockHeight);
-     }
-+    profile.Mark(1);
-     lastRollingFeeUpdate = GetTime();
-     blockSinceLastRollingFeeBump = true;
-+    profile.Mark(2);
-     if (!m_txgraph->DoWork(/*max_cost=*/POST_CHANGE_COST)) {
-         LogDebug(BCLog::MEMPOOL, "Mempool in non-optimal ordering after block.");
-     }
-+    profile.Mark(3);
- }
- 
- void CTxMemPool::check(const CCoinsViewCache& active_coins_tip, int64_t spendheight) const
