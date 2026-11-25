@@ -2,7 +2,7 @@ name: En release packages (macOS)
 'on':
   push:
     branches:
-    - release-packaging/31.1.2-en.4-macos
+    - release-packaging/31.1.2-en.5-macos
     paths:
     - .github/workflows/en-package-macos.yml
   workflow_dispatch: null
@@ -27,7 +27,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 13a5822c27a5097f72f97262413c243d7db57708
+        ref: 7ce2a5461cb64ad30e22131f014afb58574c9048
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -36,9 +36,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "13a5822c27a5097f72f97262413c243d7db57708"
+        test "$actual" = "7ce2a5461cb64ad30e22131f014afb58574c9048"
 
-        test "$(git rev-parse HEAD^{tree})" = "47cc721fc17d72059be9d9f532576a20fd8a1111"
+        test "$(git rev-parse HEAD^{tree})" = "3d5a37054be008dfdea08ba96fbb098c1ecbf93d"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - uses: ./.github/actions/configure-environment
@@ -51,15 +51,28 @@ jobs:
         provider: gha
     - name: Cross-build with the repository's Darwin depends toolchain
       shell: bash
-      run: "test \"$(git rev-parse HEAD)\" = 13a5822c27a5097f72f97262413c243d7db57708\n\
+      run: "test \"$(git rev-parse HEAD)\" = 7ce2a5461cb64ad30e22131f014afb58574c9048\n\
         source ./ci/test/00_setup_env.sh\nexport GOAL=\"install deploy\"\nexport BASE_OUTDIR=\"\
         $BASE_BUILD_DIR/installed\"\nexport BITCOIN_CONFIG=\"\n  -DCMAKE_BUILD_TYPE=Release\
-        \ -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON\n  -DBUILD_GUI=ON -DENABLE_WALLET=ON\
-        \ -DENABLE_IPC=OFF\n  -DBUILD_TESTS=OFF -DBUILD_GUI_TESTS=OFF -DBUILD_BENCH=OFF\
-        \ -DBUILD_FUZZ_BINARY=OFF\n  -DBUILD_TX=ON -DBUILD_UTIL=ON -DBUILD_WALLET_TOOL=ON\n\
-        \  -DINSTALL_MAN=ON -DWITH_USDT=OFF\"\n# The container receives its configuration\
-        \ in a line-oriented Docker env file.\nexport BITCOIN_CONFIG=\"$(echo \"$BITCOIN_CONFIG\"\
-        \ | xargs)\"\npython3 ./ci/test/02_run_container.py\n"
+        \ -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\
+        \ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON\n\
+        \  -DBUILD_GUI=ON -DENABLE_WALLET=ON -DENABLE_IPC=OFF\n  -DBUILD_TESTS=OFF\
+        \ -DBUILD_GUI_TESTS=OFF -DBUILD_BENCH=OFF -DBUILD_FUZZ_BINARY=OFF\n  -DBUILD_TX=ON\
+        \ -DBUILD_UTIL=ON -DBUILD_WALLET_TOOL=ON\n  -DINSTALL_MAN=ON -DWITH_USDT=OFF\"\
+        \n# The container receives its configuration in a line-oriented Docker env\
+        \ file.\nexport BITCOIN_CONFIG=\"$(echo \"$BITCOIN_CONFIG\" | xargs)\"\npython3\
+        \ ./ci/test/02_run_container.py\n\npython3 - \"$BASE_BUILD_DIR/compile_commands.json\"\
+        \ <<'PY'\nimport json\nfrom pathlib import Path\nimport re\nimport shlex\n\
+        import sys\n\ncommands = json.loads(Path(sys.argv[1]).read_text())\nfor name\
+        \ in (\"validation.cpp\", \"yespower-opt.c\"):\n    matching = [row for row\
+        \ in commands if Path(row[\"file\"]).name == name]\n    if not matching:\n\
+        \        sys.exit(f\"Missing release translation unit: {name}\")\n    for\
+        \ row in matching:\n        args = row.get(\"arguments\") or shlex.split(row[\"\
+        command\"])\n        levels = [arg for arg in args if re.fullmatch(r\"-O([0-9]|s|z|g|fast)?\"\
+        , arg)]\n        if not levels or levels[-1] != \"-O3\" or not any(arg in\
+        \ (\"-flto\", \"-flto=thin\", \"-flto=full\") for arg in args):\n        \
+        \    sys.exit(f\"Expected optimized IPO code generation for {name}: {levels}\"\
+        )\n    print(f\"Verified Release -O3 and IPO for {name}\")\nPY\n"
     - name: Collect the cross-built GUI and command-line programs
       shell: bash
       run: "mkdir -p transfer/cli/bin transfer/cli/share/man/man1\ncp \"$(cat \"$BASE_BUILD_DIR/macos-archive-path.txt\"\
@@ -98,7 +111,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 13a5822c27a5097f72f97262413c243d7db57708
+        ref: 7ce2a5461cb64ad30e22131f014afb58574c9048
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -107,9 +120,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "13a5822c27a5097f72f97262413c243d7db57708"
+        test "$actual" = "7ce2a5461cb64ad30e22131f014afb58574c9048"
 
-        test "$(git rev-parse HEAD^{tree})" = "47cc721fc17d72059be9d9f532576a20fd8a1111"
+        test "$(git rev-parse HEAD^{tree})" = "3d5a37054be008dfdea08ba96fbb098c1ecbf93d"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - uses: actions/download-artifact@v8
@@ -165,15 +178,15 @@ jobs:
         , 1, address)) == 1\nPY\n"
     - name: Compare signed Regtest synchronization on matching hardware
       shell: bash
-      run: "set -euo pipefail\ncase \"$ARCH\" in\n  arm64) baseline_sha=4f848bf7edc19cd15de9e5d8ff3d4c7882244a5ba58b14711f0957893e2102e5\
-        \ ;;\n  x86_64) baseline_sha=d694e7fa15c097e0ed3689a6629e38fe0fcc1e08fc56849115ee67209b0e4c03\
+      run: "set -euo pipefail\ncase \"$ARCH\" in\n  arm64) baseline_sha=865063e4dbde9ab798a7fe92008554aca6a87cd8b8f3b5e4090f94e19e4bdfb6\
+        \ ;;\n  x86_64) baseline_sha=32826e55048674a44c6625e6a806f9086189855790271bd25a5a355fa66bd0aa\
         \ ;;\n  *) exit 1 ;;\nesac\nprefix=\"sugarchain-en-31.1.2-macos-$ARCH\"\n\
-        baseline_archive=\"$RUNNER_TEMP/$prefix-cli.tar.gz\"\nbaseline_dir=\"$RUNNER_TEMP/en3-baseline\"\
+        baseline_archive=\"$RUNNER_TEMP/$prefix-cli.tar.gz\"\nbaseline_dir=\"$RUNNER_TEMP/en4-baseline\"\
         \nmkdir \"$baseline_dir\"\ncurl --retry 4 --retry-all-errors --connect-timeout\
-        \ 20 -fsSL \\\n  \"https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.3/$prefix-cli.tar.gz\"\
+        \ 20 -fsSL \\\n  \"https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.4/$prefix-cli.tar.gz\"\
         \ \\\n  -o \"$baseline_archive\"\nprintf '%s  %s\\n' \"$baseline_sha\" \"\
         $baseline_archive\" | shasum -a 256 -c -\ntar -xzf \"$baseline_archive\" -C\
-        \ \"$baseline_dir\"\ncat > \"$RUNNER_TEMP/regtest-en4-macos.py\" <<'PYHELPER'\n\
+        \ \"$baseline_dir\"\n\ncat > \"$RUNNER_TEMP/regtest-en5-macos.py\" <<'PYHELPER'\n\
         #!/usr/bin/env python3\n\"\"\"Compare previous and new release binaries on\
         \ a native macOS host.\"\"\"\n\nimport argparse\nimport base64\nimport hashlib\n\
         import http.client\nimport json\nimport os\nfrom pathlib import Path\nimport\
@@ -202,13 +215,12 @@ jobs:
         ,\n            f\"-mocktime={MOCKTIME if self.listening else RECEIVER_TIME}\"\
         ,\n            \"-printtoconsole=0\", \"-blocksxor=0\",\n            f\"-listen={int(self.listening)}\"\
         ,\n        ]\n        if self.listening:\n            command.append(f\"-bind=127.0.0.1:{self.p2p_port}\"\
-        )\n        if self.executable.name == \"Sugarchain-Qt\":\n            command.extend([\"\
-        -min\", \"-splash=0\"])\n        self.log = (self.data_dir / \"console.log\"\
-        ).open(\"ab\")\n        flags = subprocess.CREATE_NO_WINDOW if os.name ==\
-        \ \"nt\" else 0\n        start = time.perf_counter()\n        self.proc =\
-        \ subprocess.Popen(command, stdout=self.log, stderr=self.log, creationflags=flags)\n\
-        \        deadline = start + 60\n        while time.perf_counter() < deadline:\n\
-        \            if self.proc.poll() is not None:\n                raise RuntimeError(f\"\
+        )\n        self.log = (self.data_dir / \"console.log\").open(\"ab\")\n   \
+        \     flags = subprocess.CREATE_NO_WINDOW if os.name == \"nt\" else 0\n  \
+        \      start = time.perf_counter()\n        self.proc = subprocess.Popen(command,\
+        \ stdout=self.log, stderr=self.log, creationflags=flags)\n        deadline\
+        \ = start + 60\n        while time.perf_counter() < deadline:\n          \
+        \  if self.proc.poll() is not None:\n                raise RuntimeError(f\"\
         Node exited during startup. See {self.log.name}\")\n            try:\n   \
         \             if self.rpc(\"getblockhash\", 0) != GENESIS:\n             \
         \       raise RuntimeError(\"Unexpected Regtest genesis\")\n             \
@@ -277,27 +289,24 @@ jobs:
         \    parser.add_argument(\"--work-dir\", type=Path, required=True)\n    parser.add_argument(\"\
         --baseline-archive\", type=Path, required=True)\n    parser.add_argument(\"\
         --candidate-archive\", type=Path, required=True)\n    parser.add_argument(\"\
-        --gui\", type=Path)\n    parser.add_argument(\"--gui-archive\", type=Path)\n\
+        --sender\", choices=(\"baseline\", \"candidate\"), default=\"baseline\")\n\
         \    parser.add_argument(\"--blocks\", type=int, default=10_000)\n    parser.add_argument(\"\
         --repeats\", type=int, default=3)\n    args = parser.parse_args()\n    if\
         \ not 1 <= args.blocks <= 30_000 or not 1 <= args.repeats <= 5:\n        parser.error(\"\
-        Specify 1\u201330,000 blocks and 1\u20135 repetitions\")\n    if bool(args.gui)\
-        \ != bool(args.gui_archive):\n        parser.error(\"Specify both --gui and\
-        \ --gui-archive\")\n    exe_name = \"sugarchaind\"\n    executables = {\n\
-        \        \"baseline\": args.baseline_bin_dir.resolve() / exe_name,\n     \
-        \   \"candidate\": args.candidate_bin_dir.resolve() / exe_name,\n    }\n \
-        \   archives = {\"baseline\": args.baseline_archive, \"candidate\": args.candidate_archive}\n\
-        \    if args.gui:\n        executables[\"gui\"] = args.gui.resolve()\n   \
-        \     archives[\"gui\"] = args.gui_archive\n    variants = {}\n    for label,\
-        \ executable in executables.items():\n        if not executable.is_file():\n\
-        \            parser.error(f\"Missing {label} daemon: {executable}\")\n   \
-        \     with executable.open(\"rb\") as binary:\n            binary_digest =\
-        \ hashlib.file_digest(binary, \"sha256\").hexdigest()\n        with archives[label].open(\"\
-        rb\") as archive:\n            archive_digest = hashlib.file_digest(archive,\
-        \ \"sha256\").hexdigest()\n        variants[label] = {\n            \"archive_sha256\"\
-        : archive_digest, \"binary_sha256\": binary_digest, \"samples\": []\n    \
-        \    }\n    out = args.work_dir.resolve()\n    out.mkdir(exist_ok=False, parents=True)\n\
-        \    with Node(executables[\"baseline\"], out / \"sender\", listening=True)\
+        Specify 1\u201330,000 blocks and 1\u20135 repetitions\")\n    exe_name = \"\
+        sugarchaind\"\n    executables = {\n        \"baseline\": args.baseline_bin_dir.resolve()\
+        \ / exe_name,\n        \"candidate\": args.candidate_bin_dir.resolve() / exe_name,\n\
+        \    }\n    archives = {\"baseline\": args.baseline_archive, \"candidate\"\
+        : args.candidate_archive}\n    variants = {}\n    for label, executable in\
+        \ executables.items():\n        if not executable.is_file():\n           \
+        \ parser.error(f\"Missing {label} daemon: {executable}\")\n        with executable.open(\"\
+        rb\") as binary:\n            binary_digest = hashlib.file_digest(binary,\
+        \ \"sha256\").hexdigest()\n        with archives[label].open(\"rb\") as archive:\n\
+        \            archive_digest = hashlib.file_digest(archive, \"sha256\").hexdigest()\n\
+        \        variants[label] = {\n            \"archive_sha256\": archive_digest,\
+        \ \"binary_sha256\": binary_digest, \"samples\": []\n        }\n    out =\
+        \ args.work_dir.resolve()\n    out.mkdir(exist_ok=False, parents=True)\n \
+        \   with Node(executables[args.sender], out / \"sender\", listening=True)\
         \ as sender:\n        started = time.perf_counter()\n        hashes = sender.rpc(\"\
         generatetodescriptor\", args.blocks, DESCRIPTOR, 1_000_000, timeout=180)\n\
         \        fixture_seconds = time.perf_counter() - started\n        if len(hashes)\
@@ -334,8 +343,10 @@ jobs:
         ] = statistics.median(s[\"sync_seconds\"] for s in samples)\n        variant[\"\
         median_blocks_per_second\"] = statistics.median(s[\"blocks_per_second\"] for\
         \ s in samples)\n    result = {\n        \"platform\": platform.platform(),\
-        \ \"machine\": platform.machine(), \"logical_cpus\": os.cpu_count(),\n   \
-        \     \"genesis\": GENESIS, \"blocks\": args.blocks,\n        \"fixture_tip\"\
+        \ \"system\": platform.system(), \"machine\": platform.machine(),\n      \
+        \  \"logical_cpus\": os.cpu_count(), \"sender\": args.sender,\n        \"\
+        sender_binary_sha256\": variants[args.sender][\"binary_sha256\"],\n      \
+        \  \"genesis\": GENESIS, \"blocks\": args.blocks,\n        \"fixture_tip\"\
         : tip, \"fixture_sha256\": fixture_sha256, \"fixture_seconds\": fixture_seconds,\n\
         \        \"fixture_utxo_sha256\": expected_utxo, \"sender_time\": MOCKTIME,\n\
         \        \"receiver_time\": RECEIVER_TIME, \"max_tip_age\": MAX_TIP_AGE, \"\
@@ -348,13 +359,19 @@ jobs:
         \ \"\n              f\"{variant['median_blocks_per_second']:.1f} blocks/s\"\
         )\n    print(f\"Baseline/candidate time ratio: {result['baseline_over_candidate']:.3f}\"\
         )\n    print(f\"Full result: {out / 'result.json'}\")\n\n\nif __name__ ==\
-        \ \"__main__\":\n    main()\nPYHELPER\npython3 \"$RUNNER_TEMP/regtest-en4-macos.py\"\
-        \ \\\n  --baseline-bin-dir \"$baseline_dir/$prefix-cli/bin\" --baseline-archive\
-        \ \"$baseline_archive\" \\\n  --candidate-bin-dir \"checked/$prefix-cli/bin\"\
-        \ --candidate-archive \"release/$prefix-cli.tar.gz\" \\\n  --gui \"checked/Sugarchain-Qt.app/Contents/MacOS/Sugarchain-Qt\"\
-        \ --gui-archive \"release/$prefix.zip\" \\\n  --work-dir \"$RUNNER_TEMP/en4-regtest\"\
-        \ --blocks 10000 --repeats 3\ncp \"$RUNNER_TEMP/en4-regtest/result.json\"\
-        \ release/regtest-benchmark.json\n"
+        \ \"__main__\":\n    main()\nPYHELPER\n\nrun_benchmark() {\n  python3 \"$RUNNER_TEMP/regtest-en5-macos.py\"\
+        \ \\\n    --baseline-bin-dir \"$baseline_dir/$prefix-cli/bin\" --baseline-archive\
+        \ \"$baseline_archive\" \\\n    --candidate-bin-dir \"checked/$prefix-cli/bin\"\
+        \ --candidate-archive \"release/$prefix-cli.tar.gz\" \\\n    --work-dir \"\
+        $1\" --sender \"$2\" --blocks 10000 --repeats 3\n}\n\nprimary=\"$RUNNER_TEMP/en5-regtest\"\
+        \nsender=candidate\nrun_benchmark \"$primary\" \"$sender\"\nif [[ \"$sender\"\
+        \ == candidate ]]; then\n  diagnostic=\"$RUNNER_TEMP/en5-regtest-old-sender\"\
+        \n  run_benchmark \"$diagnostic\" baseline\n  python3 - \"$primary/result.json\"\
+        \ \"$diagnostic/result.json\" <<'PYRESULT'\nimport json\nfrom pathlib import\
+        \ Path\nimport sys\n\nprimary, diagnostic = map(Path, sys.argv[1:])\ndata\
+        \ = json.loads(primary.read_text())\ndata[\"old_sender_diagnostic\"] = json.loads(diagnostic.read_text())\n\
+        primary.write_text(json.dumps(data, indent=2) + \"\\n\")\nPYRESULT\nfi\ncp\
+        \ \"$primary/result.json\" release/regtest-benchmark.json\n"
     - name: Record package inputs
       shell: bash
       run: "set -euo pipefail\ngit rev-parse HEAD > release/release-source-sha.txt\n\
@@ -369,3 +386,21 @@ jobs:
         if-no-files-found: error
         compression-level: 0
         retention-days: 30
+    - name: Report the packaged CLI synchronization medians
+      shell: bash
+      run: "set -euo pipefail\npython3 - <<'PY'\nimport json\nimport math\nfrom pathlib\
+        \ import Path\nfrom statistics import median\nimport sys\n\nrecord = json.loads(Path(\"\
+        release/regtest-benchmark.json\").read_text())\ndef report(result):\n    for\
+        \ label in (\"baseline\", \"candidate\"):\n        variant = result[\"variants\"\
+        ][label]\n        samples = variant[\"samples\"]\n        times = [sample[\"\
+        sync_seconds\"] for sample in samples]\n        if len(times) != 3 or not\
+        \ all(type(t) in (int, float) and math.isfinite(t) and t > 0 for t in times):\n\
+        \            sys.exit(\"Expected three positive, finite packaged CLI timings\"\
+        )\n        if not all(sample[\"reload_verified\"] is True for sample in samples):\n\
+        \            sys.exit(\"Missing clean-restart verification\")\n        value\
+        \ = median(times)\n        if not math.isclose(value, variant[\"median_sync_seconds\"\
+        ], abs_tol=1e-9):\n            sys.exit(\"Reported median differs from samples\"\
+        )\n        target = \"met\" if value < 1.0 else \"missed\"\n        print(f\"\
+        Sender {result['sender']}, receiver {label}: median {value:.6f} s, target\
+        \ {target}\")\nreport(record)\nif record[\"sender\"] == \"candidate\":\n \
+        \   report(record[\"old_sender_diagnostic\"])\nPY\n"
