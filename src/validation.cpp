@@ -2718,6 +2718,13 @@ bool Chainstate::FlushStateToDisk(
 {
     LOCK(cs_main);
     assert(this->CanFlushToDisk());
+#ifdef __APPLE__
+    // NONE can only prune or initialize the periodic write deadline.
+    if (mode == FlushStateMode::NONE && !m_blockman.IsPruneMode() &&
+        m_next_write != NodeClock::time_point::max()) {
+        return true;
+    }
+#endif
     std::set<int> setFilesToPrune;
     bool full_flush_completed = false;
 
@@ -3432,7 +3439,12 @@ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCL
     AssertLockNotHeld(cs_main);
 
     if (signals.CallbacksPending() > 10) {
+#ifdef __APPLE__
+        // Leave room for another block's notifications before applying backpressure again.
+        signals.WaitForPendingCallbacks(8);
+#else
         signals.SyncWithValidationInterfaceQueue();
+#endif
     }
 }
 
@@ -3463,7 +3475,7 @@ bool Chainstate::ActivateBestChain(BlockValidationState& state, std::shared_ptr<
     CBlockIndex *pindexNewTip = nullptr;
     bool exited_ibd{false};
     do {
-        // Block until the validation queue drains. This should largely
+        // Wait for room in the validation queue. This should largely
         // never happen in normal operation, however may happen during
         // reindex, causing memory blowup if we run too far ahead.
         // Note that if a validationinterface callback ends up calling

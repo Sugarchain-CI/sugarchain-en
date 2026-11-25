@@ -329,6 +329,9 @@ void Shutdown(NodeContext& node)
     // the scheduler. After this point, SyncWithValidationInterfaceQueue() should not be called anymore
     // as this would prevent the shutdown from completing.
     if (node.scheduler) node.scheduler->stop();
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (node.validation_signals) node.validation_signals->StopBackgroundCallbacks();
+#endif
 
     // After the threads that potentially access these pointers have been stopped,
     // destruct and reset all to nullptr.
@@ -1503,7 +1506,11 @@ bool AppInitMain(NodeContext& node, interfaces::BlockAndHeaderTipInfo* tip_info)
     }
 
     assert(!node.validation_signals);
+#if defined(__APPLE__) && defined(__aarch64__)
+    node.validation_signals = std::make_unique<ValidationSignals>(std::make_unique<ValidationTaskRunner>());
+#else
     node.validation_signals = std::make_unique<ValidationSignals>(std::make_unique<SerialTaskRunner>(scheduler));
+#endif
     auto& validation_signals = *node.validation_signals;
 
     // Create KernelNotifications object. Important to do this early before

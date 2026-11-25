@@ -97,7 +97,19 @@ public:
 ValidationSignals::ValidationSignals(std::unique_ptr<util::TaskRunnerInterface> task_runner)
     : m_internals{std::make_unique<ValidationSignalsImpl>(std::move(task_runner))} {}
 
+#if defined(__APPLE__) && defined(__aarch64__)
+ValidationSignals::~ValidationSignals()
+{
+    StopBackgroundCallbacks();
+}
+
+void ValidationSignals::StopBackgroundCallbacks()
+{
+    m_internals->m_task_runner->stop();
+}
+#else
 ValidationSignals::~ValidationSignals() = default;
+#endif
 
 void ValidationSignals::FlushBackgroundCallbacks()
 {
@@ -153,6 +165,16 @@ void ValidationSignals::SyncWithValidationInterfaceQueue()
     });
     promise.get_future().wait();
 }
+
+#ifdef __APPLE__
+void ValidationSignals::WaitForPendingCallbacks(size_t limit)
+{
+    AssertLockNotHeld(cs_main);
+    if (!m_internals->m_task_runner->waitForPendingAtMost(limit)) {
+        SyncWithValidationInterfaceQueue();
+    }
+}
+#endif
 
 // Use a macro instead of a function for conditional logging to prevent
 // evaluating arguments when logging is not enabled.

@@ -178,6 +178,11 @@ public:
     /** Call any remaining callbacks on the calling thread */
     void FlushBackgroundCallbacks();
 
+#if defined(__APPLE__) && defined(__aarch64__)
+    /** Stop the background dispatcher before tearing down validation subscribers. */
+    void StopBackgroundCallbacks();
+#endif
+
     size_t CallbacksPending();
 
     /** Register subscriber */
@@ -217,6 +222,11 @@ public:
      *     promise.get_future().wait();
      */
     void SyncWithValidationInterfaceQueue() LOCKS_EXCLUDED(cs_main);
+
+#ifdef __APPLE__
+    /** Make room in the callback queue without waiting for all previously queued events. */
+    void WaitForPendingCallbacks(size_t limit) LOCKS_EXCLUDED(cs_main);
+#endif
 
     void UpdatedBlockTip(const CBlockIndex *, const CBlockIndex *, bool fInitialDownload);
     void ActiveTipChange(const CBlockIndex&, bool);

@@ -102,6 +102,14 @@ public:
     bool AreThreadsServicingQueue() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex);
 
 private:
+#if defined(__APPLE__) && defined(__x86_64__)
+    friend class SerialTaskRunner;
+
+    bool StopRequested() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex)
+    {
+        return WITH_LOCK(newTaskMutex, return stopRequested);
+    }
+#endif
     mutable Mutex newTaskMutex;
     std::condition_variable newTaskScheduled;
     std::multimap<std::chrono::steady_clock::time_point, Function> taskQueue GUARDED_BY(newTaskMutex);
@@ -133,8 +141,17 @@ private:
     // our own queue here :(
     std::list<std::function<void()>> m_callbacks_pending GUARDED_BY(m_callbacks_mutex);
     bool m_are_callbacks_running GUARDED_BY(m_callbacks_mutex) = false;
+#ifdef __APPLE__
+    bool m_process_queue_scheduled GUARDED_BY(m_callbacks_mutex){false};
+    std::condition_variable m_capacity;
+    size_t m_capacity_waiters GUARDED_BY(m_callbacks_mutex){0};
+    size_t m_capacity_wait_limit GUARDED_BY(m_callbacks_mutex){0};
+#endif
 
     void MaybeScheduleProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
+#ifdef __APPLE__
+    std::function<void()> PopCallback() EXCLUSIVE_LOCKS_REQUIRED(m_callbacks_mutex);
+#endif
     void ProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
 
 public:
@@ -155,6 +172,36 @@ public:
     void flush() override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
 
     size_t size() override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
+#ifdef __APPLE__
+    bool waitForPendingAtMost(size_t limit) override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
+#endif
 };
+
+#if defined(__APPLE__) && defined(__aarch64__)
+/** A single background worker for the ordered validation callback queue. */
+class ValidationTaskRunner final : public util::TaskRunnerInterface
+{
+    Mutex m_mutex;
+    std::condition_variable m_available;
+    std::condition_variable m_capacity;
+    size_t m_capacity_waiters GUARDED_BY(m_mutex){0};
+    size_t m_capacity_wait_limit GUARDED_BY(m_mutex){0};
+    std::list<std::function<void()>> m_pending GUARDED_BY(m_mutex);
+    bool m_stopped GUARDED_BY(m_mutex){false};
+    std::thread m_worker;
+
+    void Run(bool drain) EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+
+public:
+    ValidationTaskRunner();
+    ~ValidationTaskRunner() override;
+
+    void insert(std::function<void()> func) override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void stop() override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    void flush() override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    size_t size() override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+    bool waitForPendingAtMost(size_t limit) override EXCLUSIVE_LOCKS_REQUIRED(!m_mutex);
+};
+#endif
 
 #endif // BITCOIN_SCHEDULER_H

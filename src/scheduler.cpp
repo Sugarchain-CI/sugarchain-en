@@ -7,6 +7,7 @@
 #include <sync.h>
 #include <util/time.h>
 
+#include <algorithm>
 #include <cassert>
 #include <functional>
 #include <utility>
@@ -138,26 +139,57 @@ void SerialTaskRunner::MaybeScheduleProcessQueue()
 {
     {
         LOCK(m_callbacks_mutex);
-        // Try to avoid scheduling too many copies here, but if we
-        // accidentally have two ProcessQueue's scheduled at once its
-        // not a big deal.
         if (m_are_callbacks_running) return;
         if (m_callbacks_pending.empty()) return;
+#ifdef __APPLE__
+        if (m_process_queue_scheduled) return;
+        m_process_queue_scheduled = true;
+#endif
     }
-    m_scheduler.schedule([this] { this->ProcessQueue(); }, std::chrono::steady_clock::now());
+#ifdef __APPLE__
+    try {
+#endif
+        m_scheduler.schedule([this] { this->ProcessQueue(); }, std::chrono::steady_clock::now());
+#ifdef __APPLE__
+    } catch (...) {
+        LOCK(m_callbacks_mutex);
+        m_process_queue_scheduled = false;
+        throw;
+    }
+#endif
 }
+
+#ifdef __APPLE__
+std::function<void()> SerialTaskRunner::PopCallback()
+{
+    AssertLockHeld(m_callbacks_mutex);
+    auto callback{std::move(m_callbacks_pending.front())};
+    m_callbacks_pending.pop_front();
+    if (m_capacity_waiters && m_callbacks_pending.size() <= m_capacity_wait_limit) {
+        m_capacity.notify_all();
+    }
+    return callback;
+}
+#endif
 
 void SerialTaskRunner::ProcessQueue()
 {
     std::function<void()> callback;
     {
         LOCK(m_callbacks_mutex);
+#ifdef __APPLE__
+        m_process_queue_scheduled = false;
+#endif
         if (m_are_callbacks_running) return;
         if (m_callbacks_pending.empty()) return;
         m_are_callbacks_running = true;
 
+#ifdef __APPLE__
+        callback = PopCallback();
+#else
         callback = std::move(m_callbacks_pending.front());
         m_callbacks_pending.pop_front();
+#endif
     }
 
     // RAII the setting of fCallbacksRunning and calling MaybeScheduleProcessQueue
@@ -175,7 +207,24 @@ void SerialTaskRunner::ProcessQueue()
         }
     } raiicallbacksrunning(this);
 
+#if defined(__APPLE__) && defined(__x86_64__)
+    const auto deadline{std::chrono::steady_clock::now() + 1ms};
+#endif
     callback();
+#if defined(__APPLE__) && defined(__x86_64__)
+    callback = {};
+    // Share each scheduler turn among ready callbacks without starving other tasks.
+    for (size_t processed{1}; processed < 8; ++processed) {
+        if (std::chrono::steady_clock::now() >= deadline || m_scheduler.StopRequested()) break;
+        std::function<void()> next;
+        {
+            LOCK(m_callbacks_mutex);
+            if (m_callbacks_pending.empty()) break;
+            next = PopCallback();
+        }
+        next();
+    }
+#endif
 }
 
 void SerialTaskRunner::insert(std::function<void()> func)
@@ -203,3 +252,99 @@ size_t SerialTaskRunner::size()
     LOCK(m_callbacks_mutex);
     return m_callbacks_pending.size();
 }
+
+#ifdef __APPLE__
+bool SerialTaskRunner::waitForPendingAtMost(size_t limit)
+{
+    WAIT_LOCK(m_callbacks_mutex, lock);
+    if (m_callbacks_pending.size() <= limit) return true;
+
+    ++m_capacity_waiters;
+    m_capacity_wait_limit = std::max(m_capacity_wait_limit, limit);
+    m_capacity.wait(lock, [this, limit]() EXCLUSIVE_LOCKS_REQUIRED(m_callbacks_mutex) {
+        return m_callbacks_pending.size() <= limit;
+    });
+    if (--m_capacity_waiters == 0) m_capacity_wait_limit = 0;
+    return true;
+}
+#endif
+
+#if defined(__APPLE__) && defined(__aarch64__)
+ValidationTaskRunner::ValidationTaskRunner() : m_worker{[this] { Run(/*drain=*/false); }} {}
+
+ValidationTaskRunner::~ValidationTaskRunner()
+{
+    stop();
+}
+
+void ValidationTaskRunner::Run(bool drain)
+{
+    WAIT_LOCK(m_mutex, lock);
+    while (drain || !m_stopped) {
+        if (m_pending.empty()) {
+            if (drain) return;
+            m_available.wait(lock);
+            continue;
+        }
+
+        auto callback{std::move(m_pending.front())};
+        m_pending.pop_front();
+        if (m_capacity_waiters != 0 && m_pending.size() <= m_capacity_wait_limit) {
+            m_capacity.notify_all();
+        }
+        {
+            REVERSE_LOCK(lock, m_mutex);
+            auto task{std::move(callback)};
+            task();
+        }
+    }
+}
+
+void ValidationTaskRunner::insert(std::function<void()> func)
+{
+    bool wake;
+    {
+        LOCK(m_mutex);
+        wake = m_pending.empty() && !m_stopped;
+        m_pending.emplace_back(std::move(func));
+    }
+    if (wake) m_available.notify_one();
+}
+
+void ValidationTaskRunner::stop()
+{
+    {
+        LOCK(m_mutex);
+        m_stopped = true;
+    }
+    m_available.notify_one();
+    m_capacity.notify_all();
+    if (m_worker.joinable()) m_worker.join();
+}
+
+void ValidationTaskRunner::flush()
+{
+    assert(!m_worker.joinable());
+    Run(/*drain=*/true);
+}
+
+size_t ValidationTaskRunner::size()
+{
+    LOCK(m_mutex);
+    return m_pending.size();
+}
+
+bool ValidationTaskRunner::waitForPendingAtMost(size_t limit)
+{
+    WAIT_LOCK(m_mutex, lock);
+    if (m_stopped || m_pending.size() <= limit) return true;
+
+    ++m_capacity_waiters;
+    m_capacity_wait_limit = std::max(m_capacity_wait_limit, limit);
+    m_capacity.wait(lock, [this, limit]() EXCLUSIVE_LOCKS_REQUIRED(m_mutex) {
+        return m_stopped || m_pending.size() <= limit;
+    });
+    if (--m_capacity_waiters == 0) m_capacity_wait_limit = 0;
+    return true;
+}
+#endif

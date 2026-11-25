@@ -9,7 +9,11 @@
 #include <boost/test/unit_test.hpp>
 
 #include <functional>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <future>
+#endif
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -169,6 +173,82 @@ BOOST_AUTO_TEST_CASE(singlethreadedscheduler_ordered)
 
     BOOST_CHECK_EQUAL(counter1, 100);
     BOOST_CHECK_EQUAL(counter2, 100);
+}
+
+#if defined(__APPLE__) && defined(__aarch64__)
+BOOST_AUTO_TEST_CASE(validation_worker_capacity_and_shutdown)
+{
+    ValidationTaskRunner runner;
+    std::vector<int> order;
+    std::thread::id worker_id;
+    std::thread::id draining_id;
+    std::promise<void> first_started, release_first, release_last;
+    auto first_gate{release_first.get_future()};
+    auto last_gate{release_last.get_future()};
+
+    runner.insert([&] {
+        worker_id = std::this_thread::get_id();
+        order.push_back(1);
+        first_started.set_value();
+        first_gate.wait();
+    });
+    first_started.get_future().wait();
+    runner.insert([&] {
+        order.push_back(2);
+        // The last callback waits inside its body. Queue capacity is released
+        // on dequeue, so the producer can unblock it without draining the FIFO.
+        last_gate.wait();
+    });
+    const size_t held_pending{runner.size()};
+    release_first.set_value();
+    const bool capacity_released{runner.waitForPendingAtMost(0)};
+    release_last.set_value();
+    runner.stop();
+
+    // Shutdown can still enqueue final chainstate notifications. The caller
+    // drains them after the worker has stopped, including nested notifications.
+    runner.insert([&] {
+        draining_id = std::this_thread::get_id();
+        order.push_back(3);
+        runner.insert([&] { order.push_back(5); });
+    });
+    runner.insert([&] { order.push_back(4); });
+    BOOST_CHECK_EQUAL(runner.size(), 2U);
+    runner.flush();
+    const std::vector<int> expected{1, 2, 3, 4, 5};
+    BOOST_CHECK_EQUAL(held_pending, 1U);
+    BOOST_CHECK(capacity_released);
+    BOOST_CHECK(worker_id != std::this_thread::get_id());
+    BOOST_CHECK(draining_id == std::this_thread::get_id());
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+    BOOST_CHECK_EQUAL(runner.size(), 0U);
+}
+#endif
+
+BOOST_AUTO_TEST_CASE(serial_callbacks_resume_after_exception_and_stop)
+{
+    CScheduler scheduler;
+    SerialTaskRunner runner{scheduler};
+    std::vector<int> order;
+    runner.insert([&] { order.push_back(1); });
+    runner.insert([&] {
+        order.push_back(2);
+        throw std::runtime_error{"validation callback"};
+    });
+    runner.insert([&] {
+        order.push_back(3);
+        scheduler.stop();
+    });
+    runner.insert([&] { order.push_back(4); });
+
+    BOOST_CHECK_THROW(scheduler.serviceQueue(), std::runtime_error);
+    BOOST_CHECK_EQUAL(order.size(), 2U);
+    scheduler.serviceQueue();
+    BOOST_CHECK_EQUAL(runner.size(), 1U);
+    runner.flush();
+
+    const std::vector<int> expected{1, 2, 3, 4};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
 }
 
 BOOST_AUTO_TEST_CASE(mockforward)
