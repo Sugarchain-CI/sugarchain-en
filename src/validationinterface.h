@@ -218,6 +218,11 @@ public:
      */
     void SyncWithValidationInterfaceQueue() LOCKS_EXCLUDED(cs_main);
 
+#ifdef __APPLE__
+    /** Make room in the callback queue without waiting for all previously queued events. */
+    void WaitForPendingCallbacks(size_t limit) LOCKS_EXCLUDED(cs_main);
+#endif
+
     void UpdatedBlockTip(const CBlockIndex *, const CBlockIndex *, bool fInitialDownload);
     void ActiveTipChange(const CBlockIndex&, bool);
     void TransactionAddedToMempool(const NewMempoolTransactionInfo&, uint64_t mempool_sequence);

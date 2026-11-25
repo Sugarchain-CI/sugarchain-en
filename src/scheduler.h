@@ -133,6 +133,12 @@ private:
     // our own queue here :(
     std::list<std::function<void()>> m_callbacks_pending GUARDED_BY(m_callbacks_mutex);
     bool m_are_callbacks_running GUARDED_BY(m_callbacks_mutex) = false;
+#ifdef __APPLE__
+    bool m_process_queue_scheduled GUARDED_BY(m_callbacks_mutex){false};
+    std::condition_variable m_capacity;
+    size_t m_capacity_waiters GUARDED_BY(m_callbacks_mutex){0};
+    size_t m_capacity_wait_limit GUARDED_BY(m_callbacks_mutex){0};
+#endif
 
     void MaybeScheduleProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
     void ProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
@@ -155,6 +161,9 @@ public:
     void flush() override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
 
     size_t size() override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
+#ifdef __APPLE__
+    bool waitForPendingAtMost(size_t limit) override EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
+#endif
 };
 
 #endif // BITCOIN_SCHEDULER_H

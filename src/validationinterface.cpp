@@ -154,6 +154,16 @@ void ValidationSignals::SyncWithValidationInterfaceQueue()
     promise.get_future().wait();
 }
 
+#ifdef __APPLE__
+void ValidationSignals::WaitForPendingCallbacks(size_t limit)
+{
+    AssertLockNotHeld(cs_main);
+    if (!m_internals->m_task_runner->waitForPendingAtMost(limit)) {
+        SyncWithValidationInterfaceQueue();
+    }
+}
+#endif
+
 // Use a macro instead of a function for conditional logging to prevent
 // evaluating arguments when logging is not enabled.
 //

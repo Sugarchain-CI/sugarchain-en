@@ -21,6 +21,11 @@ class TaskRunnerInterface
 public:
     virtual ~TaskRunnerInterface() = default;
 
+#ifdef __APPLE__
+    /** Wait for the pending count to fall to the limit if supported by this live task runner. */
+    virtual bool waitForPendingAtMost(size_t) { return false; }
+#endif
+
     /**
      * The callback can either be queued for later/asynchronous/threaded
      * processing, or be executed immediately for synchronous processing.

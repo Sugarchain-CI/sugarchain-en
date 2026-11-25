@@ -7,6 +7,7 @@
 #include <sync.h>
 #include <util/time.h>
 
+#include <algorithm>
 #include <cassert>
 #include <functional>
 #include <utility>
@@ -138,13 +139,24 @@ void SerialTaskRunner::MaybeScheduleProcessQueue()
 {
     {
         LOCK(m_callbacks_mutex);
-        // Try to avoid scheduling too many copies here, but if we
-        // accidentally have two ProcessQueue's scheduled at once its
-        // not a big deal.
         if (m_are_callbacks_running) return;
         if (m_callbacks_pending.empty()) return;
+#ifdef __APPLE__
+        if (m_process_queue_scheduled) return;
+        m_process_queue_scheduled = true;
+#endif
     }
-    m_scheduler.schedule([this] { this->ProcessQueue(); }, std::chrono::steady_clock::now());
+#ifdef __APPLE__
+    try {
+#endif
+        m_scheduler.schedule([this] { this->ProcessQueue(); }, std::chrono::steady_clock::now());
+#ifdef __APPLE__
+    } catch (...) {
+        LOCK(m_callbacks_mutex);
+        m_process_queue_scheduled = false;
+        throw;
+    }
+#endif
 }
 
 void SerialTaskRunner::ProcessQueue()
@@ -152,12 +164,20 @@ void SerialTaskRunner::ProcessQueue()
     std::function<void()> callback;
     {
         LOCK(m_callbacks_mutex);
+#ifdef __APPLE__
+        m_process_queue_scheduled = false;
+#endif
         if (m_are_callbacks_running) return;
         if (m_callbacks_pending.empty()) return;
         m_are_callbacks_running = true;
 
         callback = std::move(m_callbacks_pending.front());
         m_callbacks_pending.pop_front();
+#ifdef __APPLE__
+        if (m_capacity_waiters != 0 && m_callbacks_pending.size() <= m_capacity_wait_limit) {
+            m_capacity.notify_all();
+        }
+#endif
     }
 
     // RAII the setting of fCallbacksRunning and calling MaybeScheduleProcessQueue
@@ -203,3 +223,19 @@ size_t SerialTaskRunner::size()
     LOCK(m_callbacks_mutex);
     return m_callbacks_pending.size();
 }
+
+#ifdef __APPLE__
+bool SerialTaskRunner::waitForPendingAtMost(size_t limit)
+{
+    WAIT_LOCK(m_callbacks_mutex, lock);
+    if (m_callbacks_pending.size() <= limit) return true;
+
+    ++m_capacity_waiters;
+    m_capacity_wait_limit = std::max(m_capacity_wait_limit, limit);
+    m_capacity.wait(lock, [this, limit]() EXCLUSIVE_LOCKS_REQUIRED(m_callbacks_mutex) {
+        return m_callbacks_pending.size() <= limit;
+    });
+    if (--m_capacity_waiters == 0) m_capacity_wait_limit = 0;
+    return true;
+}
+#endif
