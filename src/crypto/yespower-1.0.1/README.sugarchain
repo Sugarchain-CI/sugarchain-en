@@ -1,0 +1,14 @@
+Sugarchain platform integration
+==============================
+
+Apple Silicon uses Advanced SIMD (NEON) for the existing Salsa and PWX
+operations in yespower-opt.c. The implementation is selected only when both
+__APPLE__ and __aarch64__ are defined. Other targets retain their existing
+SSE2 or generic implementation.
+
+The unsigned arithmetic, lane layout, scratch-memory lookup offsets, algorithm
+parameters and output bytes are unchanged. The implementation does not cache
+or skip proof computations. crypto_tests/yespower_golden_vectors covers both
+Yespower versions, the official Sugar parameters, scratch-memory reuse and
+unaligned input against outputs verified with the original scalar and SSE2
+implementations. Header, target and chain validation remain unchanged.
