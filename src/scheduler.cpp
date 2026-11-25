@@ -146,6 +146,9 @@ void SerialTaskRunner::MaybeScheduleProcessQueue()
         m_process_queue_scheduled = true;
 #endif
     }
+#if defined(__APPLE__) && defined(__x86_64__)
+    ScheduleProcessQueue();
+#else
 #ifdef __APPLE__
     try {
 #endif
@@ -157,7 +160,21 @@ void SerialTaskRunner::MaybeScheduleProcessQueue()
         throw;
     }
 #endif
+#endif
 }
+
+#if defined(__APPLE__) && defined(__x86_64__)
+void SerialTaskRunner::ScheduleProcessQueue()
+{
+    try {
+        m_scheduler.schedule([this] { this->ProcessQueue(); }, std::chrono::steady_clock::now());
+    } catch (...) {
+        LOCK(m_callbacks_mutex);
+        m_process_queue_scheduled = false;
+        throw;
+    }
+}
+#endif
 
 #ifdef __APPLE__
 std::function<void()> SerialTaskRunner::PopCallback()
@@ -232,8 +249,18 @@ void SerialTaskRunner::insert(std::function<void()> func)
     {
         LOCK(m_callbacks_mutex);
         m_callbacks_pending.emplace_back(std::move(func));
+#if defined(__APPLE__) && defined(__x86_64__)
+        // Enqueue and reserve the scheduler turn in one critical section.
+        // The running consumer or the reserved turn will observe this callback.
+        if (m_are_callbacks_running || m_process_queue_scheduled) return;
+        m_process_queue_scheduled = true;
+#endif
     }
+#if defined(__APPLE__) && defined(__x86_64__)
+    ScheduleProcessQueue();
+#else
     MaybeScheduleProcessQueue();
+#endif
 }
 
 void SerialTaskRunner::flush()

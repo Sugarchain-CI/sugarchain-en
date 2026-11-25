@@ -149,6 +149,9 @@ private:
 #endif
 
     void MaybeScheduleProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
+#if defined(__APPLE__) && defined(__x86_64__)
+    void ScheduleProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
+#endif
 #ifdef __APPLE__
     std::function<void()> PopCallback() EXCLUSIVE_LOCKS_REQUIRED(m_callbacks_mutex);
 #endif

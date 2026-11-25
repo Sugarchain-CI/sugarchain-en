@@ -9,7 +9,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <functional>
-#if defined(__APPLE__) && defined(__aarch64__)
+#ifdef __APPLE__
 #include <future>
 #endif
 #include <mutex>
@@ -300,6 +300,70 @@ BOOST_AUTO_TEST_CASE(serial_callbacks_resume_after_exception_and_stop)
     const std::vector<int> expected{1, 2, 3, 4};
     BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
 }
+
+#if defined(__APPLE__) && defined(__x86_64__)
+BOOST_AUTO_TEST_CASE(serial_callbacks_wake_append_and_drain)
+{
+    CScheduler scheduler;
+    SerialTaskRunner runner{scheduler};
+    std::vector<int> order;
+    std::promise<void> scheduler_started, first_started, release_first, drained;
+    auto first_ready{first_started.get_future()};
+    auto gate{release_first.get_future()};
+    auto finished{drained.get_future()};
+
+    // Start servicing before the first callback is inserted, so insertion must
+    // wake an idle scheduler rather than rely on an already reserved turn.
+    scheduler.scheduleFromNow([&] { scheduler_started.set_value(); }, 0ms);
+    std::thread worker{[&] { scheduler.serviceQueue(); }};
+    scheduler_started.get_future().wait();
+    runner.insert([&] {
+        order.push_back(1);
+        first_started.set_value();
+        gate.wait();
+        // A callback can append more work without deadlocking or overtaking
+        // callbacks inserted while it was running.
+        runner.insert([&] {
+            order.push_back(19);
+            drained.set_value();
+        });
+    });
+    const auto wake_status{first_ready.wait_for(5s)};
+    for (int i{2}; i <= 18; ++i) {
+        runner.insert([&, i] { order.push_back(i); });
+    }
+    const size_t held_pending{runner.size()};
+    release_first.set_value();
+    const auto drain_status{finished.wait_for(5s)};
+    scheduler.stop();
+    worker.join();
+    // Drain on failure too, so no callback outlives the test's captured state.
+    runner.flush();
+
+    BOOST_CHECK(wake_status == std::future_status::ready);
+    BOOST_CHECK(drain_status == std::future_status::ready);
+    BOOST_CHECK_EQUAL(held_pending, 17U);
+    BOOST_REQUIRE_EQUAL(order.size(), 19U);
+    for (size_t i{0}; i < order.size(); ++i) BOOST_CHECK_EQUAL(order[i], i + 1);
+
+    // Final notifications may arrive after scheduler shutdown. They must stay
+    // queued and be drained in FIFO order, including reentrant insertion.
+    const auto caller{std::this_thread::get_id()};
+    std::thread::id draining_thread;
+    runner.insert([&] {
+        draining_thread = std::this_thread::get_id();
+        order.push_back(20);
+        runner.insert([&] { order.push_back(22); });
+    });
+    runner.insert([&] { order.push_back(21); });
+    BOOST_CHECK_EQUAL(runner.size(), 2U);
+    runner.flush();
+    BOOST_CHECK(draining_thread == caller);
+    BOOST_CHECK_EQUAL(runner.size(), 0U);
+    const std::vector<int> expected{20, 21, 22};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.end() - 3, order.end(), expected.begin(), expected.end());
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(mockforward)
 {
