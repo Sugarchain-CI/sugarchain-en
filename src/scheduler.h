@@ -104,6 +104,7 @@ public:
 private:
 #if defined(__APPLE__) && defined(__x86_64__)
     friend class SerialTaskRunner;
+    friend struct SchedulerWaiterTestAccess;
 
     bool StopRequested() const EXCLUSIVE_LOCKS_REQUIRED(!newTaskMutex)
     {
@@ -114,6 +115,10 @@ private:
     std::condition_variable newTaskScheduled;
     std::multimap<std::chrono::steady_clock::time_point, Function> taskQueue GUARDED_BY(newTaskMutex);
     int nThreadsServicingQueue GUARDED_BY(newTaskMutex){0};
+#if defined(__APPLE__) && defined(__x86_64__)
+    //! Count waits until their lock is reacquired, including exceptional exits.
+    size_t m_waiting_threads GUARDED_BY(newTaskMutex){0};
+#endif
     bool stopRequested GUARDED_BY(newTaskMutex){false};
     bool stopWhenEmpty GUARDED_BY(newTaskMutex){false};
     bool shouldStop() const EXCLUSIVE_LOCKS_REQUIRED(newTaskMutex) { return stopRequested || (stopWhenEmpty && taskQueue.empty()); }

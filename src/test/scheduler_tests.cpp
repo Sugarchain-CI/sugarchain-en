@@ -17,6 +17,24 @@
 #include <thread>
 #include <vector>
 
+#if defined(__APPLE__) && defined(__x86_64__)
+struct SchedulerWaiterTestAccess {
+    static bool WaitForSleeper(CScheduler& scheduler)
+    {
+        const auto deadline{std::chrono::steady_clock::now() + 5s};
+        do {
+            if (WITH_LOCK(scheduler.newTaskMutex, return scheduler.m_waiting_threads != 0)) return true;
+            std::this_thread::yield();
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+    static size_t WaitingThreads(CScheduler& scheduler)
+    {
+        return WITH_LOCK(scheduler.newTaskMutex, return scheduler.m_waiting_threads);
+    }
+};
+#endif
+
 BOOST_AUTO_TEST_SUITE(scheduler_tests)
 
 static void microTask(CScheduler& s, std::mutex& mutex, int& counter, int delta, std::chrono::steady_clock::time_point rescheduleTime)
@@ -176,6 +194,54 @@ BOOST_AUTO_TEST_CASE(singlethreadedscheduler_ordered)
 }
 
 #if defined(__APPLE__) && defined(__x86_64__)
+BOOST_AUTO_TEST_CASE(scheduler_wakes_other_worker_while_callback_blocked)
+{
+    CScheduler scheduler;
+    std::promise<void> first_started, release_first, second_finished;
+    auto first_ready{first_started.get_future()};
+    auto release{release_first.get_future()};
+    auto second_ready{second_finished.get_future()};
+    scheduler.scheduleFromNow([&] {
+        first_started.set_value();
+        release.wait();
+    }, 0ms);
+    std::thread first_worker{[&] { scheduler.serviceQueue(); }};
+    std::thread second_worker{[&] { scheduler.serviceQueue(); }};
+    const auto started{first_ready.wait_for(5s)};
+    const bool sleeping{SchedulerWaiterTestAccess::WaitForSleeper(scheduler)};
+    // The blocked callback cannot service this task. A different worker must
+    // wake even though another task is currently executing.
+    scheduler.scheduleFromNow([&] { second_finished.set_value(); }, 0ms);
+    const auto finished{second_ready.wait_for(5s)};
+    release_first.set_value();
+    scheduler.StopWhenDrained();
+    first_worker.join();
+    second_worker.join();
+    BOOST_CHECK(started == std::future_status::ready);
+    BOOST_CHECK(sleeping);
+    BOOST_CHECK(finished == std::future_status::ready);
+    BOOST_CHECK_EQUAL(SchedulerWaiterTestAccess::WaitingThreads(scheduler), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(scheduler_new_earliest_deadline_wakes_worker)
+{
+    CScheduler scheduler;
+    std::promise<void> immediate_finished;
+    auto finished{immediate_finished.get_future()};
+    bool future_ran{false};
+    scheduler.scheduleFromNow([&] { future_ran = true; }, 1h);
+    std::thread worker{[&] { scheduler.serviceQueue(); }};
+    const bool sleeping{SchedulerWaiterTestAccess::WaitForSleeper(scheduler)};
+    scheduler.scheduleFromNow([&] { immediate_finished.set_value(); }, 0ms);
+    const auto status{finished.wait_for(5s)};
+    scheduler.stop();
+    worker.join();
+    BOOST_CHECK(status == std::future_status::ready);
+    BOOST_CHECK(sleeping);
+    BOOST_CHECK(!future_ran);
+    BOOST_CHECK_EQUAL(SchedulerWaiterTestAccess::WaitingThreads(scheduler), 0U);
+}
+
 BOOST_AUTO_TEST_CASE(scheduler_due_tasks_keep_order_and_future_deadlines)
 {
     CScheduler scheduler;
