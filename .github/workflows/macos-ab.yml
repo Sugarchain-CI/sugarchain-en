@@ -1,4 +1,4 @@
-name: macOS background validation worker and storage comparison
+name: Intel macOS bounded callback queue benchmark
 'on':
   push:
     branches:
@@ -14,8 +14,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-        - arch: arm64
-          runner: macos-15
         - arch: x86_64
           runner: macos-15-intel
     steps:
@@ -76,7 +74,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v7
       with:
-        name: macos-subsecond-worker-${{ matrix.arch }}
+        name: macos-subsecond-intel-queue
         path: '${{ runner.temp }}/macos-subsecond/results/result.json
 
           ${{ runner.temp }}/macos-subsecond/results/*/console.log
