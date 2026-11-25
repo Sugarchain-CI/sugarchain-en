@@ -1,0 +1,81 @@
+name: En.4 macOS synchronization diagnostics
+'on':
+  push:
+    branches:
+    - automation/regtest-en4-macos-hotpath-20261125
+permissions:
+  contents: read
+jobs:
+  regtest:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: arm64
+          runner: macos-15
+        - arch: x86_64
+          runner: macos-15-intel
+    defaults:
+      run:
+        shell: bash
+    env:
+      BENCH_ARCH: ${{ matrix.arch }}
+      BENCH_RUNNER: ${{ matrix.runner }}
+      RELEASE: v31.1.2-en.4
+    steps:
+    - name: Check out benchmark
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Download and verify public macOS archives
+      run: "set -euo pipefail\ntest \"$(uname -m)\" = \"$BENCH_ARCH\"\nmkdir \"$RUNNER_TEMP/regtest-evidence\"\
+        \ \"$RUNNER_TEMP/published\"\ncd \"$RUNNER_TEMP/published\"\nname=\"sugarchain-en-31.1.2-macos-$BENCH_ARCH\"\
+        \nfor asset in \"$name-cli.tar.gz\"; do\n  curl --retry 4 --retry-all-errors\
+        \ --connect-timeout 20 -fsSL \\\n    \"https://github.com/decryp2kanon/sugarchain-en/releases/download/$RELEASE/$asset\"\
+        \ \\\n    -o \"$asset\"\n  hash=$(awk -v asset=\"$asset\" '$2 == asset {print\
+        \ $1}' \"$GITHUB_WORKSPACE/benchmark-SHA256SUMS\")\n  printf '%s  %s\\n' \"\
+        $hash\" \"$asset\" | shasum -a 256 -c -\ndone\ntar -xzf \"$name-cli.tar.gz\"\
+        \n{\n  printf 'CLI=%s\\n' \"$RUNNER_TEMP/published/$name-cli/bin/sugarchaind\"\
+        \n  printf 'CLI_ARCHIVE=%s\\n' \"$name-cli.tar.gz\"\n} >> \"$GITHUB_ENV\"\n"
+    - name: Measure ready scheduler waits
+      run: 'set -euo pipefail
+
+        result="$RUNNER_TEMP/regtest-evidence"
+
+        sw_vers > "$result/macos.txt"
+
+        sysctl machdep.cpu.brand_string hw.logicalcpu hw.memsize >> "$result/macos.txt"
+        || true
+
+        clang++ -std=c++20 -O2 ready-wait.cpp -o "$RUNNER_TEMP/ready-wait"
+
+        "$RUNNER_TEMP/ready-wait" > "$result/ready-wait.txt"
+
+        '
+    - name: Compare control, instrumentation, request depth, and offline replay
+      run: "set -euo pipefail\nresult=\"$RUNNER_TEMP/regtest-evidence\"\nhash=$(awk\
+        \ -v asset=\"$CLI_ARCHIVE\" '$2 == asset {print $1}' benchmark-SHA256SUMS)\n\
+        for mode in control instrumented wider-window plain-transport; do\n  set --\n\
+        \  export REGTEST_PROFILE_RECEIVER=\"\"\n  export REGTEST_PROFILE_SENDER=\"\
+        \"\n  case \"$mode\" in\n    instrumented) set -- --bench ;;\n    wider-window)\
+        \ export REGTEST_PROFILE_RECEIVER=\"-maxibdblocksinflight=96\" ;;\n    plain-transport)\n\
+        \      export REGTEST_PROFILE_RECEIVER=\"-v2transport=0\"\n      export REGTEST_PROFILE_SENDER=\"\
+        -v2transport=0\"\n      ;;\n  esac\n  python3 profile_helper.py --cli \"$CLI\"\
+        \ \"$@\" --runner \"$BENCH_RUNNER\"     --asset-sha256 \"$hash\" --work-dir\
+        \ \"$RUNNER_TEMP/regtest-$mode\" --blocks 10000 --repeats 2\n  cp \"$RUNNER_TEMP/regtest-$mode/result.json\"\
+        \ \"$result/$mode.json\"\ndone\nunset REGTEST_PROFILE_RECEIVER REGTEST_PROFILE_SENDER\n\
+        python3 replay-regtest.py \"$CLI\" \"$RUNNER_TEMP/regtest-control\" \"$RUNNER_TEMP/regtest-offline\"\
+        \ > \"$result/offline.json\"\n"
+    - name: Retain results and startup logs
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: regtest-en4-macos-diagnostics-${{ matrix.arch }}
+        path: '${{ runner.temp }}/regtest-evidence/
+
+          '
+        if-no-files-found: warn
+        retention-days: 7
