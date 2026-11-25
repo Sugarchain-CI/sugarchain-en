@@ -348,11 +348,13 @@ def interactive_install(installer_path, gui, desktop, evidence):
         started_installation = True
         deadline = time.monotonic() + 40
         progress_name = "installer-04-install-progress"
+        left_progress_page = False
         while process.poll() is None and time.monotonic() < deadline:
-            if progress_name not in evidence and any(
+            has_progress = any(
                 desktop.window_class(handle) == "msctls_progress32"
                 for handle in desktop.controls(dialog)
-            ):
+            )
+            if progress_name not in evidence and has_progress:
                 capture_screenshot(desktop, dialog, progress_name, evidence)
             if gui.is_file() and "installer-after-files" not in evidence:
                 capture_screenshot(desktop, dialog, "installer-after-files", evidence)
@@ -363,6 +365,15 @@ def interactive_install(installer_path, gui, desktop, evidence):
                     break
                 except RuntimeError:
                     pass
+            if has_progress and gui.is_file() and not left_progress_page:
+                try:
+                    next_button = desktop.forward_button(dialog)
+                except RuntimeError:
+                    next_button = None
+                if next_button:
+                    capture_screenshot(desktop, dialog, "installer-04b-install-complete", evidence)
+                    desktop.mouse_click(dialog, next_button)
+                    left_progress_page = True
             time.sleep(0.15)
         else:
             if process.poll() is None and gui.is_file():
