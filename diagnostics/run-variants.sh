@@ -30,7 +30,7 @@ PY
 } > "$work/evidence/host-target.txt" 2>&1
 for name in scalar neon cpu-m1 tune-m1 narrow prefetch narrow-prefetch scalar-pwx; do
   variant=$name
-  flags=()
+  flags=(-DNDEBUG)
   case "$name" in
     cpu-m1) variant=neon; flags+=(-mcpu=apple-m1) ;;
     tune-m1) variant=neon; flags+=(-mtune=apple-m1) ;;
