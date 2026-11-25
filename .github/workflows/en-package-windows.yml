@@ -2,7 +2,7 @@ name: En release packages (Windows)
 'on':
   push:
     branches:
-    - release-packaging/31.1.2-en.1-windows-review
+    - release-packaging/31.1.2-en.1-windows-final
     paths:
     - .github/workflows/en-package-windows.yml
 permissions:
@@ -70,7 +70,11 @@ jobs:
       with:
         ref: ${{ github.sha }}
         path: release-tools
-        sparse-checkout: .github/ci-windows-smoke.py
+        sparse-checkout: '.github/ci-windows-smoke.py
+
+          .github/ci-windows-installer.py
+
+          '
         sparse-checkout-cone-mode: false
         persist-credentials: false
     - name: Run native network, GUI and wallet smoke checks
@@ -78,4 +82,4 @@ jobs:
     - name: Reopen a saved wallet in the native GUI
       run: py -3 release-tools/.github/ci-windows-smoke.py --verify-wallet-restart --bindir bin --work-dir "${RUNNER_TEMP}/en-cross-wallet-restart-${{ matrix.crt }}"
     - name: Verify installed applications and installer lifecycle
-      run: "py -3 .github/ci-windows-installer.py --with-wallet-restart \\\n  --installer \"$(basename \"$(cat windows-installer-path.txt)\")\" \\\n  --work-dir \"${RUNNER_TEMP}/en-installer-${{ matrix.crt }}\"\n"
+      run: "py -3 release-tools/.github/ci-windows-installer.py --with-wallet-restart \\\n  --installer \"$(basename \"$(cat windows-installer-path.txt)\")\" \\\n  --work-dir \"${RUNNER_TEMP}/en-installer-${{ matrix.crt }}\"\n"
