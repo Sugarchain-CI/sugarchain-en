@@ -1,9 +1,4 @@
 name: Apple Silicon empty-estimator comparison
-true:
-  push:
-    branches:
-    - automation/en7-arm-native
-  workflow_dispatch: null
 permissions:
   contents: read
 jobs:
@@ -40,3 +35,8 @@ jobs:
       with:
         path: ${{ runner.temp }}/macos-subsecond-ccache
         key: macos-subsecond-arm64-${{ github.run_id }}
+'on':
+  push:
+    branches:
+    - automation/en7-arm-native
+  workflow_dispatch: null
