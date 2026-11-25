@@ -41,9 +41,9 @@ void CScheduler::serviceQueue()
 
             while (!shouldStop() && !taskQueue.empty()) {
                 std::chrono::steady_clock::time_point timeToWaitFor = taskQueue.begin()->first;
-#ifdef WIN32
-                // MinGW can wait a Windows timer tick even for an expired deadline.
-                // Run tasks that are already due without entering a timed wait.
+#if defined(WIN32) || (defined(__APPLE__) && defined(__x86_64__))
+                // Avoid timed-wait overhead for tasks whose deadline has passed.
+                // MinGW can also wait an entire Windows timer tick in this case.
                 if (timeToWaitFor <= std::chrono::steady_clock::now()) break;
 #endif
                 if (newTaskScheduled.wait_until(lock, timeToWaitFor) == std::cv_status::timeout) {

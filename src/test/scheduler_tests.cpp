@@ -175,6 +175,56 @@ BOOST_AUTO_TEST_CASE(singlethreadedscheduler_ordered)
     BOOST_CHECK_EQUAL(counter2, 100);
 }
 
+#if defined(__APPLE__) && defined(__x86_64__)
+BOOST_AUTO_TEST_CASE(scheduler_due_tasks_keep_order_and_future_deadlines)
+{
+    CScheduler scheduler;
+    std::vector<int> order;
+    const auto past{std::chrono::steady_clock::now() - 1s};
+    const auto future{std::chrono::steady_clock::now() + 20ms};
+    std::chrono::steady_clock::time_point executed_at;
+    scheduler.schedule([&] { order.push_back(3); }, past + 2ms);
+    scheduler.schedule([&] { order.push_back(4); }, past + 2ms);
+    scheduler.schedule([&] {
+        order.push_back(1);
+        // A newly queued due task must use deadline order, including while
+        // already draining, without changing FIFO order for equal deadlines.
+        scheduler.schedule([&] { order.push_back(2); }, past + 1ms);
+    }, past);
+    scheduler.schedule([&] {
+        executed_at = std::chrono::steady_clock::now();
+        order.push_back(5);
+    }, future);
+    scheduler.StopWhenDrained();
+    scheduler.serviceQueue();
+
+    const std::vector<int> expected{1, 2, 3, 4, 5};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+    BOOST_CHECK(executed_at >= future);
+    std::chrono::steady_clock::time_point first, last;
+    BOOST_CHECK_EQUAL(scheduler.getQueueInfo(first, last), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(scheduler_due_tasks_respect_immediate_shutdown)
+{
+    CScheduler scheduler;
+    std::vector<int> order;
+    const auto past{std::chrono::steady_clock::now() - 1s};
+    scheduler.schedule([&] { order.push_back(1); }, past);
+    scheduler.schedule([&] {
+        order.push_back(2);
+        scheduler.stop();
+    }, past + 1ms);
+    scheduler.schedule([&] { order.push_back(3); }, past + 2ms);
+    scheduler.serviceQueue();
+
+    const std::vector<int> expected{1, 2};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+    std::chrono::steady_clock::time_point first, last;
+    BOOST_CHECK_EQUAL(scheduler.getQueueInfo(first, last), 1U);
+}
+#endif
+
 #if defined(__APPLE__) && defined(__aarch64__)
 BOOST_AUTO_TEST_CASE(validation_worker_capacity_and_shutdown)
 {
