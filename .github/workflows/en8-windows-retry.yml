@@ -34,7 +34,7 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       shell: bash
-      run: "python - <<'PYWAIT'\nimport json, subprocess, time\nfor _ in range(120):\n    rows=json.loads(subprocess.check_output(['gh','run','view','45773435935','-R','Sugarchain-CI/sugarchain-en','--json','jobs'],text=True))['jobs']\n    jobs=[j for j in rows if j['name'].startswith('windows-cross')]\n    if len(jobs)==2 and all(j['status']=='completed' for j in jobs):\n        if not all(j['conclusion']=='success' for j in jobs):raise SystemExit('The pinned Windows build failed')\n        break\n    time.sleep(30)\nelse:raise SystemExit('Timed out waiting for pinned Windows builds')\nPYWAIT\n"
+      run: "python - <<'PYWAIT'\nimport json, subprocess, time\nfor _ in range(120):\n    rows=json.loads(subprocess.check_output(['gh','run','view','45773435935','-R','Sugarchain-CI/sugarchain-en','--json','jobs'],text=True))['jobs']\n    jobs=[j for j in rows if j['name'].lower().startswith('windows-cross')]\n    if len(jobs)==2 and all(j['status']=='completed' for j in jobs):\n        if not all(j['conclusion']=='success' for j in jobs):raise SystemExit('The pinned Windows build failed')\n        break\n    time.sleep(30)\nelse:raise SystemExit('Timed out waiting for pinned Windows builds')\nPYWAIT\n"
     - name: Checkout
       uses: actions/checkout@v6
       with:
