@@ -159,7 +159,7 @@ BOOST_AUTO_TEST_CASE(initial_headers_locator_aligns_only_low_work_mainnet)
     }
 
     struct Start { int best; int parent; int aligned; };
-    for (const auto [best, parent, aligned] : {Start{0, 0, 0}, Start{1, 0, 0}, Start{1999, 1998, 0},
+    for (const auto& [best, parent, aligned] : {Start{0, 0, 0}, Start{1, 0, 0}, Start{1999, 1998, 0},
             Start{2000, 1999, 0}, Start{2001, 2000, 2000}, Start{2782, 2781, 2000}}) {
         BOOST_TEST_CONTEXT("best header height=" << best) {
             const auto choose = [&](const CChainParams& network, uint32_t size, bool align) {
@@ -180,7 +180,7 @@ BOOST_AUTO_TEST_CASE(initial_headers_locator_aligns_only_low_work_mainnet)
 
     // Announcement and unconnecting-header requests ordinarily start at the
     // best header itself. Their alignment keeps an exact boundary in place.
-    for (const auto [best, aligned] : {std::pair{0, 0}, {782, 0}, {1999, 0}, {2000, 2000}, {2782, 2000}}) {
+    for (const auto& [best, aligned] : {std::pair{0, 0}, {782, 0}, {1999, 0}, {2000, 2000}, {2782, 2000}}) {
         const auto choose = [&](const CChainParams& network, bool can_align) {
             return &GetInitialHeadersSyncStart(index[best], index[best], network, minimum_work, MAX_HEADERS_RESULTS, can_align);
         };
