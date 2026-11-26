@@ -1,0 +1,79 @@
+name: En8 Apple native writer artifact comparison
+'on':
+  push:
+    branches:
+    - ci/en8-apple-writer-report
+    paths:
+    - .github/workflows/en8-apple-writer-report.yml
+    - .github/en8-mainnet/**
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  compare:
+    name: Apple Silicon ${{ matrix.interface }} writer comparison
+    runs-on: macos-15
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - interface: cli
+          extra: ''
+        - interface: gui
+          extra: --gui
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Record native memory and disk capacity
+      run: "python3 - <<'PYCODE'\nimport json, os, platform, shutil, subprocess\nfrom pathlib import Path\nfolder=Path(os.environ['RUNNER_TEMP'])\n\
+        record={'platform':platform.platform(),'machine':platform.machine(),'logical_cpus':os.cpu_count(),'runner_image':os.environ.get('ImageVersion'),'disk_bytes':dict(zip(('total','used','free'),shutil.disk_usage(folder)))}\n\
+        for key in ['hw.memsize','hw.ncpu','machdep.cpu.brand_string','vm.swapusage']:\n    result=subprocess.run(['sysctl','-n',key],text=True,capture_output=True)\n\
+        \    record[key]={'exit':result.returncode,'value':result.stdout.strip()}\nresult=subprocess.run(['vm_stat'],text=True,capture_output=True)\n\
+        record['vm_stat']=result.stdout\n(folder/'native-capacity.json').write_text(json.dumps(record,indent=2)+'\\\
+        n')\nprint('Native capacity metadata retained; no system setting changed.')\nPYCODE\n"
+    - name: Download exact signed baseline
+      uses: actions/download-artifact@v8
+      with:
+        name: release-mac-arm64
+        path: baseline
+        github-token: ${{ github.token }}
+        repository: Sugarchain-CI/sugarchain-en
+        run-id: '45872110419'
+    - name: Download exact signed candidate
+      uses: actions/download-artifact@v8
+      with:
+        name: release-mac-arm64
+        path: candidate
+        github-token: ${{ github.token }}
+        repository: Sugarchain-CI/sugarchain-en
+        run-id: '45875486813'
+    - name: Compare original signed packages with separate bounded phases
+      timeout-minutes: 10
+      run: 'python3 -B .github/en8-mainnet/body-reread/mainnet_apple_body_ab.py --baseline baseline --candidate
+        candidate --candidate-source 9104b9651effe3bbb088e687c586ddab176e29a4 --candidate-tree c9c8ee39a3367e58e8f894968105b74f2574f4c9
+        --fixture .github/en8-mainnet/mainnet-blocks.dat.gz --fixture-info .github/en8-mainnet/fixture.json --output
+        "$RUNNER_TEMP/bench-apple-body-${{ matrix.interface }}" ${{ matrix.extra }}
+
+        '
+    - name: Retain all comparison evidence
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: en8-apple-buffered-body-${{ matrix.interface }}
+        path: '${{ runner.temp }}/native-capacity.json
+
+          ${{ runner.temp }}/bench-apple-body-*/**/result.json
+
+          ${{ runner.temp }}/bench-apple-body-*/**/debug*.log
+
+          ${{ runner.temp }}/bench-apple-body-*/**/console*.log
+
+          ${{ runner.temp }}/bench-apple-body-*/**/wire.jsonl'
+        if-no-files-found: warn
+        compression-level: 6
+        retention-days: 14

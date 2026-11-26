@@ -24,7 +24,8 @@ ARCHIVE_MEMBERS = {
 }
 MODES = ("held-gap", "in-order")
 ORDER = tuple((mode, role) for mode in MODES for role in ("baseline", "candidate", "candidate", "baseline"))
-PROTOCOL_TIMEOUT = 45
+PREPARATION_TIMEOUT = 45
+DELIVERY_TIMEOUT = 45
 RESTART_TIMEOUT = 15
 HASH_LINE = re.compile(r"([0-9a-f]{64}) [ *](.+)")
 UNDO = re.compile(r" - Write undo data: ([0-9.]+)ms ")
@@ -176,7 +177,8 @@ def run(args):
         "status": "in_progress", "interface": "gui" if args.gui else "cli", "order": ORDER,
         "host": {"platform": platform.platform(), "logical_cpus": os.cpu_count(), "runner_image": os.environ.get("ImageVersion")},
         "fixture": data[0], "block_geometry": geometry, "group": body.GROUP, "request_limit": body.REQUEST_LIMIT,
-        "protocol_timeout_seconds": PROTOCOL_TIMEOUT, "restart_timeout_seconds": RESTART_TIMEOUT,
+        "preparation_timeout_seconds": PREPARATION_TIMEOUT,
+        "delivery_timeout_seconds": DELIVERY_TIMEOUT, "restart_timeout_seconds": RESTART_TIMEOUT,
         "sampled_cpu_source": "Darwin ps process CPU time and resident KiB",
         "log_timer_resolution_ms": 0.01, "standalone_block_append_timer": None,
         "inputs": {}, "samples": [],
@@ -190,7 +192,7 @@ def run(args):
         body.require(report["inputs"]["baseline"]["binary_sha256"] != report["inputs"]["candidate"]["binary_sha256"],
                      "Both arms resolved to the same release binary")
         resources = body.Resources()
-        body.PROTOCOL_TIMEOUT = PROTOCOL_TIMEOUT
+        body.PROTOCOL_TIMEOUT = PREPARATION_TIMEOUT
         body.RESTART_TIMEOUT = RESTART_TIMEOUT
         for trial, (mode, role) in enumerate(ORDER, 1):
             case = {"trial": trial, "mode": mode, "role": role, "status": "in_progress"}
@@ -199,7 +201,8 @@ def run(args):
             directory = root / f"{trial:02d}-{mode}-{role}"
             variant = SimpleNamespace(binary=Path(report["inputs"][role]["binary"]), gui=args.gui)
             start = time.monotonic()
-            measured = body.run_case(variant, mode, directory, data, resources)
+            measured = body.run_case(variant, mode, directory, data, resources,
+                                     delivery_timeout=DELIVERY_TIMEOUT)
             case["case_wall_seconds_including_restarts"] = time.monotonic() - start
             case["measurement"] = measured
             check_workload(measured, mode, data[0], data[-1])

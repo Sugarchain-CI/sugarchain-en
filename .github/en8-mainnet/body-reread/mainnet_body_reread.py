@@ -149,7 +149,9 @@ class Playback:
                 self.record("barrier", removed=first, still_requested=remaining_height, observation_seconds=seconds)
                 return
             time.sleep(0.01)
-        raise TimeoutError("Requested first seven bodies remained in flight")
+        if time.monotonic() >= self.deadline:
+            raise TimeoutError(f"Mainnet delivery phase reached its deadline at held height {remaining_height}")
+        raise TimeoutError(f"Requested bodies remained in flight for six seconds at held height {remaining_height}")
 
     def run(self, mode):
         send(self.wire, self.headers_message(self.headers[-1:]), self.deadline)
@@ -194,7 +196,7 @@ def bench_stats(log, expected_order, display_hashes, peer_id):
     }
 
 
-def run_case(args, mode, directory, data, resources):
+def run_case(args, mode, directory, data, resources, *, delivery_timeout=None):
     fixture, headers, hashes, frames, header_batch, body_bytes = data
     flags = (
         "-networkactive=0", "-connect=0", "-dnsseed=0", "-fixedseeds=0", "-dns=0", "-proxy=0",
@@ -233,6 +235,11 @@ def run_case(args, mode, directory, data, resources):
                         and not peers[0]["inbound"] and not peers[0]["permissions"], "Unexpected nonfixture peer or permissions")
                 peer_id = peers[0]["id"]
                 before_cpu, before_rss = resources.sample(proc)
+                remaining(deadline)
+                delivery_start = time.monotonic()
+                preparation_seconds = delivery_start - started
+                if delivery_timeout is not None:
+                    deadline = delivery_start + delivery_timeout
                 playback = Playback(wire, directory, port, peer_id, headers, frames, hashes, events, deadline)
                 playback.run(mode)
                 ready_state(directory, port, proc, HEIGHT, fixture["tip"], deadline)
@@ -259,6 +266,7 @@ def run_case(args, mode, directory, data, resources):
     return {
         "mode": mode, "result": stats, "state": verified, "offline_restart_state": offline,
         "primed_headers": header_prime, "header_prime_seconds_excluded": prime_seconds,
+        "pre_delivery_setup_seconds_excluded": preparation_seconds,
         "unique_bodies_sent": len(playback.sent), "body_bytes_sent": body_bytes,
         "barrier_count": len(playback.barriers), "barrier_observation_seconds_sum": sum(playback.barriers),
         "controlled_wall_seconds_including_barriers": controlled_wall,
