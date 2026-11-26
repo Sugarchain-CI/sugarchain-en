@@ -1,0 +1,122 @@
+name: En.7 short native mainnet release audit
+'on':
+  push:
+    branches:
+    - automation/en7-mainnet-audit-20261126
+permissions:
+  contents: read
+jobs:
+  macos:
+    name: macOS ${{ matrix.arch }} native mainnet audit
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: arm64
+          runner: macos-15
+        - arch: x86_64
+          runner: macos-15-intel
+    env:
+      BENCH_ARCH: ${{ matrix.arch }}
+      BENCH_RUNNER: ${{ matrix.runner }}
+    steps:
+    - name: Check out the isolated mainnet audit tools
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Verify and measure the released CLI and GUI
+      shell: bash
+      run: bash .github/mainnet-audit/macos-native.sh "$RUNNER_TEMP/en7-mainnet-macos"
+    - name: Retain native measurement evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: en7-mainnet-macos-${{ matrix.arch }}
+        path: ${{ runner.temp }}/en7-mainnet-macos/results/
+        if-no-files-found: warn
+        retention-days: 14
+  linux-arm64:
+    name: Linux ARM64 native Mainnet
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 12
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Prepare an isolated graphical test environment
+      run: 'sudo apt-get update -qq
+
+        sudo apt-get install -y --no-install-recommends xvfb xauth fonts-dejavu-core libxkbcommon-x11-0
+        libxcb-cursor0
+
+        '
+    - name: Detect native ARM hard-float compatibility
+      id: armhf
+      shell: bash
+      run: "audit=.github/mainnet-audit\noutput=\"$RUNNER_TEMP/linux-armhf-qualification\"\nif python3\
+        \ \"$audit/check-native-armhf.py\" \"$output/armhf-native.json\"; then\n  echo 'supported=true'\
+        \ >> \"$GITHUB_OUTPUT\"\nfi\n"
+    - name: Measure En.7 Linux ARM64 daemon and GUI
+      shell: bash
+      run: bash .github/mainnet-audit/run-linux-mainnet.sh aarch64-linux-gnu "$RUNNER_TEMP/linux-arm64-mainnet"
+        .github/mainnet-audit
+    - name: Measure En.7 ARM hard-float daemon and GUI if natively supported
+      if: ${{ !cancelled() && steps.armhf.outputs.supported == 'true' }}
+      shell: bash
+      run: 'sudo dpkg --add-architecture armhf
+
+        sudo apt-get update -qq
+
+        sudo apt-get install -y --no-install-recommends libc6:armhf libfontconfig1:armhf libfreetype6:armhf
+        libxkbcommon-x11-0:armhf libxcb-cursor0:armhf
+
+        bash .github/mainnet-audit/run-linux-mainnet.sh arm-linux-gnueabihf "$RUNNER_TEMP/linux-armhf-mainnet"
+        .github/mainnet-audit
+
+        '
+    - name: Retain native Linux measurements
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: mainnet-linux-arm64
+        path: '${{ runner.temp }}/linux-arm64-mainnet/results/
+
+          ${{ runner.temp }}/linux-armhf-qualification/
+
+          ${{ runner.temp }}/linux-armhf-mainnet/results/
+
+          '
+        if-no-files-found: warn
+        retention-days: 14
+  windows:
+    name: Windows x64 ${{ matrix.crt }} native mainnet audit
+    runs-on: windows-2025
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        crt:
+        - ucrt
+        - msvcrt
+    env:
+      RELEASE_CRT: ${{ matrix.crt }}
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Verify and measure the released Windows CLI and GUI
+      shell: pwsh
+      run: 'Set-Location .github/mainnet-audit
+
+        py -3 windows-mainnet.py --crt $env:RELEASE_CRT --harness mainnet_probe.py --fixture mainnet-blocks.dat.gz
+        --fixture-info fixture.json --work-dir "$env:RUNNER_TEMP/en7-mainnet-windows"'
+    - name: Retain native Windows measurements
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: en7-mainnet-windows-${{ matrix.crt }}
+        path: ${{ runner.temp }}/en7-mainnet-windows/evidence/
+        if-no-files-found: warn
+        retention-days: 14
