@@ -1,0 +1,74 @@
+diff --git a/src/crypto/yespower-1.0.1/yespower-opt.c b/src/crypto/yespower-1.0.1/yespower-opt.c
+index 3c120ee234..70d0a75ad1 100644
+--- a/src/crypto/yespower-1.0.1/yespower-opt.c
++++ b/src/crypto/yespower-1.0.1/yespower-opt.c
+@@ -699,6 +699,34 @@ static volatile uint64_t Smask2var = Smask2;
+ 
+ #elif defined(YESPOWER_APPLE_NEON)
+ 
++static inline uint64x2_t pwxform_neon_multiply(uint32x4_t value)
++{
++	return vmull_u32(vget_low_u32(vuzp1q_u32(value, value)),
++	    vget_low_u32(vuzp2q_u32(value, value)));
++}
++
++/* The table slices are disjoint and rotate only after the entire block.
++ * Look up the second value's S1 entry in parallel with the first lookup.
++ * Keep its S0 read after the first write, which may update the same entry. */
++static inline uint32x4x2_t pwxform_neon_write_pair(uint32x4_t first,
++    uint32x4_t second, uint8_t *restrict S0, uint8_t *restrict S1,
++    size_t w, uint64_t mask)
++{
++	const uint64_t i = vgetq_lane_u64(vreinterpretq_u64_u32(first), 0) & mask;
++	const uint64_t j = vgetq_lane_u64(vreinterpretq_u64_u32(second), 0) & mask;
++	const uint64x2_t s1_second = vld1q_u64((const uint64_t *)(S1 + (j >> 32)));
++	const uint64x2_t multiplied_second = pwxform_neon_multiply(second);
++	const uint64x2_t a = veorq_u64(vaddq_u64(pwxform_neon_multiply(first),
++	    vld1q_u64((const uint64_t *)(S0 + (uint32_t)i))),
++	    vld1q_u64((const uint64_t *)(S1 + (i >> 32))));
++	vst1q_u64((uint64_t *)(S0 + w), a);
++	const uint64x2_t b = veorq_u64(vaddq_u64(multiplied_second,
++	    vld1q_u64((const uint64_t *)(S0 + (uint32_t)j))), s1_second);
++	vst1q_u64((uint64_t *)(S1 + w), b);
++	const uint32x4x2_t result = {{vreinterpretq_u32_u64(a), vreinterpretq_u32_u64(b)}};
++	return result;
++}
++
+ #define PWXFORM_SIMD(x) { \
+ 	uint64_t offset = vgetq_lane_u64(vreinterpretq_u64_u32(x), 0) & Smask2; \
+ 	const uint64_t *p0 = (const uint64_t *)(S0 + (uint32_t)offset); \
+@@ -709,9 +737,11 @@ static volatile uint64_t Smask2var = Smask2;
+ 	    vld1q_u64(p0)), vld1q_u64(p1))); \
+ }
+ 
+-#define PWXFORM_SIMD_WRITE(x, Sw) \
+-	PWXFORM_SIMD(x) \
+-	vst1q_u64((uint64_t *)(Sw + w), vreinterpretq_u64_u32(x));
++#define PWXFORM_SIMD_WRITE_PAIR(first, second) { \
++	const uint32x4x2_t pair = pwxform_neon_write_pair(first, second, S0, S1, w, Smask2); \
++	first = pair.val[0]; \
++	second = pair.val[1]; \
++}
+ 
+ #define PWXFORM_ROUND \
+ 	PWXFORM_SIMD(X0) \
+@@ -720,16 +750,13 @@ static volatile uint64_t Smask2var = Smask2;
+ 	PWXFORM_SIMD(X3)
+ 
+ #define PWXFORM_ROUND_WRITE4 \
+-	PWXFORM_SIMD_WRITE(X0, S0) \
+-	PWXFORM_SIMD_WRITE(X1, S1) \
++	PWXFORM_SIMD_WRITE_PAIR(X0, X1) \
+ 	w += 16; \
+-	PWXFORM_SIMD_WRITE(X2, S0) \
+-	PWXFORM_SIMD_WRITE(X3, S1) \
++	PWXFORM_SIMD_WRITE_PAIR(X2, X3) \
+ 	w += 16;
+ 
+ #define PWXFORM_ROUND_WRITE2 \
+-	PWXFORM_SIMD_WRITE(X0, S0) \
+-	PWXFORM_SIMD_WRITE(X1, S1) \
++	PWXFORM_SIMD_WRITE_PAIR(X0, X1) \
+ 	w += 16; \
+ 	PWXFORM_SIMD(X2) \
+ 	PWXFORM_SIMD(X3)
