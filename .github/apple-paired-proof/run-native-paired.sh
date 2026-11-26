@@ -16,6 +16,11 @@ git -C "$source_dir" diff --exit-code HEAD -- src/crypto/yespower-1.0.1 src/prim
 mkdir "$work"
 
 clang=$(xcrun --find clang)
+if ! sdk=$(xcrun --sdk macosx --show-sdk-path) || [[ "$sdk" != /* || ! -d "$sdk" || ! -r "$sdk/usr/include/errno.h" ]]; then
+    printf '%s\n' 'The native macOS SDK headers could not be located.' >&2
+    exit 1
+fi
+sdk_version=$(xcrun --sdk macosx --show-sdk-version)
 flags=(-arch arm64 -mcpu=apple-m1 -O3 -flto=thin -DNDEBUG -mmacosx-version-min=14.0)
 build_flags=()
 for value in "${flags[@]}"; do
@@ -25,18 +30,18 @@ done
     sw_vers
     /usr/sbin/sysctl machdep.cpu.brand_string hw.logicalcpu hw.memsize hw.pagesize
     "$clang" --version
-    xcrun --show-sdk-version
+    printf 'macOS SDK path: %s\nmacOS SDK version: %s\n' "$sdk" "$sdk_version"
     git -C "$source_dir" rev-parse HEAD 'HEAD^{tree}'
     printf 'Native probe flags: %s\n' "${flags[*]}"
     shasum -a 256 "$tools_dir/headers-3072.bin"
 } > "$work/environment.txt"
-"$clang" "${flags[@]}" -dM -E -x c /dev/null > "$work/compiler-macros.txt"
+"$clang" "${flags[@]}" -isysroot "$sdk" -dM -E -x c /dev/null > "$work/compiler-macros.txt"
 grep -Fx '#define __ARM_FEATURE_SHA2 1' "$work/compiler-macros.txt"
 grep -Fx '#define __aarch64__ 1' "$work/compiler-macros.txt"
 grep -Fx '#define __APPLE__ 1' "$work/compiler-macros.txt"
-"$clang" "${flags[@]}" -### -x c /dev/null > "$work/compiler-target.txt" 2>&1
+"$clang" "${flags[@]}" -isysroot "$sdk" -### -x c /dev/null > "$work/compiler-target.txt" 2>&1
 
-python3 -B "$tools_dir/prepare-build.py" --source "$source_dir" --output "$work/build" --cc "$clang" \
+python3 -B "$tools_dir/prepare-build.py" --source "$source_dir" --output "$work/build" --cc "$clang" --sysroot "$sdk" \
     "${build_flags[@]}" > "$work/build.log" 2>&1
 binary="$work/build/paired_yespower_probe"
 test "$(lipo -archs "$binary")" = arm64

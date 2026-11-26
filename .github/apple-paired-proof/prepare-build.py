@@ -56,6 +56,7 @@ def main():
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cc", default="cc")
+    parser.add_argument("--sysroot", type=Path)
     parser.add_argument("--cflag", action="append", default=[])
     args = parser.parse_args()
     source, output = args.source.resolve(strict=True), args.output.resolve()
@@ -63,6 +64,11 @@ def main():
         parser.error("Expected the exact pinned product source worktree")
     if source == output or source in output.parents:
         parser.error("Build output must be outside the product checkout")
+    sdk_flags = []
+    if args.sysroot is not None:
+        if not args.sysroot.is_absolute() or not args.sysroot.is_dir():
+            parser.error("The compiler sysroot must be an existing absolute directory")
+        sdk_flags = ["-isysroot", str(args.sysroot)]
     pinned = {name: exact(source, name) for name in INPUTS}
     compiler = shutil.which(args.cc)
     if compiler is None:
@@ -80,7 +86,8 @@ def main():
     for name in ("paired-probe.h", "paired-probe.inc", "paired-yespower-probe.c"):
         shutil.copyfile(HERE / name, output / name)
     (output / "sugar-params.h").write_text(render_params(pinned["src/primitives/block.h"].decode(), pinned["src/primitives/block.cpp"].decode()), encoding="utf-8")
-    command = [compiler, "-O3", "-std=gnu11", "-Wall", "-Wextra", *args.cflag, "-pthread", "yespower-opt.c", "sha256.c", "paired-yespower-probe.c", "-o", "paired_yespower_probe"]
+    command = [compiler, "-O3", "-std=gnu11", "-Wall", "-Wextra", *args.cflag, *sdk_flags, "-pthread",
+               "yespower-opt.c", "sha256.c", "paired-yespower-probe.c", "-o", "paired_yespower_probe"]
     subprocess.run(command, cwd=output, check=True, timeout=120)
     receipt = {
         "source": SOURCE, "tree": TREE, "compiler": subprocess.check_output([compiler, "--version"], text=True, timeout=10).splitlines()[0],
