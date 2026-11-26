@@ -1,0 +1,100 @@
+name: En.8 native Windows scratch pages
+
+on:
+  push:
+    branches: [ci/en8-windows-pages]
+
+permissions:
+  contents: read
+
+jobs:
+  cross-compile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout diagnostic source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Install MinGW GCC 13 POSIX
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/windows-page-probe/evidence"
+          {
+            sudo apt-get -qq update
+            sudo apt-get -y --no-install-recommends install g++-mingw-w64-x86-64-posix
+          } 2>&1 | tee "$RUNNER_TEMP/windows-page-probe/evidence/install.log"
+      - name: Compile isolated proof probes
+        shell: bash
+        run: |
+          bash .github/windows-page-probe/build-cross.sh "$RUNNER_TEMP/windows-page-probe" \
+            2>&1 | tee "$RUNNER_TEMP/windows-page-probe/evidence/build.log"
+      - name: Retain cross-compile evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-scratch-cross-evidence
+          path: ${{ runner.temp }}/windows-page-probe/evidence/
+          if-no-files-found: warn
+      - name: Stage native test executables
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-scratch-probes
+          path: ${{ runner.temp }}/windows-page-probe/bin/
+          if-no-files-found: error
+
+  native:
+    runs-on: windows-2025
+    needs: cross-compile
+    timeout-minutes: 15
+    steps:
+      - name: Checkout diagnostic source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Download native test executables
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-scratch-probes
+          path: ${{ runner.temp }}/windows-page-probe-bin
+      - name: Compare Mainnet proof throughput and digests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $probeRoot = ".github/windows-page-probe"
+          $work = Join-Path $env:RUNNER_TEMP "windows-page-probe-native"
+          $binaries = Join-Path $env:RUNNER_TEMP "windows-page-probe-bin"
+          New-Item -ItemType Directory -Path $work | Out-Null
+          Copy-Item (Join-Path $binaries "SHA256SUMS") $work
+          $archive = Join-Path $probeRoot "headers-16384.bin.gz"
+          $expectedArchive = "6d7eb29172fb42a972143030326654e6512c987620610f10b156472e0779caba"
+          if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -ne $expectedArchive) {
+            throw "Pinned Mainnet header archive checksum differs"
+          }
+          $headers = Join-Path $work "headers.bin"
+          python -B -c "import gzip, pathlib, sys; pathlib.Path(sys.argv[2]).write_bytes(gzip.decompress(pathlib.Path(sys.argv[1]).read_bytes()))" $archive $headers
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $probeArgs = @(
+            "--page-probe", (Join-Path $binaries "pages.exe"),
+            "--reference-probe", (Join-Path $binaries "reference.exe"),
+            "--abi-probe", (Join-Path $binaries "abi.exe"),
+            "--manifest", (Join-Path $binaries "SHA256SUMS"),
+            "--headers", $headers,
+            "--headers-sha256", "ffb73ebf954cc519d092c9753f904ae0e7c8f3aba7578ff22211e1b7a878d6dc",
+            "--leading-512-proof-sha256", "7ea25860bfa17a480652531a801269a073e708023b03afefbe5c393232214338",
+            "--output", (Join-Path $work "results")
+          )
+          python -B (Join-Path $probeRoot "run-native-proof-probe.py") @probeArgs 2>&1 |
+            Tee-Object -FilePath (Join-Path $work "run.log")
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain native evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-scratch-native-evidence
+          path: |
+            ${{ runner.temp }}/windows-page-probe-native/results/
+            ${{ runner.temp }}/windows-page-probe-native/run.log
+            ${{ runner.temp }}/windows-page-probe-native/SHA256SUMS
+          if-no-files-found: warn

@@ -11,6 +11,7 @@ on:
   push:
     branches:
       - '**'
+      - '!ci/en8-windows-pages'
     tags-ignore:
       - '**'
 
