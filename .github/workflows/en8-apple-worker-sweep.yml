@@ -1,0 +1,62 @@
+name: En.8 native Apple Silicon worker sweep
+
+on:
+  push:
+    branches: [ci/en8-apple-worker-sweep]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  macos-arm64-cli:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout the diagnostic source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Download the pinned native CLI package
+        uses: actions/download-artifact@v8
+        with:
+          name: release-mac-arm64
+          run-id: "45799308927"
+          repository: Sugarchain-CI/sugarchain-en
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/en8-worker-package
+      - name: Download the pinned native proof control
+        uses: actions/download-artifact@v8
+        with:
+          name: en8-apple-prefetch
+          run-id: "45817318304"
+          repository: Sugarchain-CI/sugarchain-en
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/en8-kernel-control
+      - name: Record the same-host proof-kernel baseline before the node sweep
+        shell: bash
+        run: python3 -B .github/en8-mainnet/worker-sweep/kernel_control.py "$RUNNER_TEMP/en8-kernel-control" "$RUNNER_TEMP/en8-kernel-before.json"
+      - name: Screen packaged CLI worker counts
+        shell: bash
+        run: |
+          python3 -B .github/en8-mainnet/worker-sweep/worker_sweep.py \
+            --artifact "$RUNNER_TEMP/en8-worker-package" \
+            --headers .github/en8-mainnet/mainnet-headers-100k.bin.gz \
+            --output "$RUNNER_TEMP/en8-worker-results" \
+            2>&1 | tee "$RUNNER_TEMP/en8-worker-run.log"
+      - name: Record the same-host proof-kernel baseline after the node sweep
+        shell: bash
+        run: python3 -B .github/en8-mainnet/worker-sweep/kernel_control.py "$RUNNER_TEMP/en8-kernel-control" "$RUNNER_TEMP/en8-kernel-after.json"
+      - name: Retain result and trial logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-native-apple-worker-sweep
+          path: |
+            ${{ runner.temp }}/en8-kernel-*.json
+            ${{ runner.temp }}/en8-worker-run.log
+            ${{ runner.temp }}/en8-worker-results/result.json
+            ${{ runner.temp }}/en8-worker-results/*-workers-*/trial.json
+            ${{ runner.temp }}/en8-worker-results/*-workers-*/datadir/debug.log
+            ${{ runner.temp }}/en8-worker-results/*-workers-*/datadir/console.log
+          if-no-files-found: warn
