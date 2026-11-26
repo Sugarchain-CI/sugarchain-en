@@ -289,7 +289,7 @@ private:
 #if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
     // Only the raw Mainnet reader uses this stream. Keep its cursor and its
     // entire lifetime serialized with file writes, truncation, and pruning.
-    mutable std::optional<AutoFile> m_block_read_stream GUARDED_BY(cs_LastBlockFile);
+    mutable std::unique_ptr<std::FILE, decltype(&std::fclose)> m_block_read_stream GUARDED_BY(cs_LastBlockFile){nullptr, std::fclose};
     mutable int m_block_read_stream_num GUARDED_BY(cs_LastBlockFile){-1};
     void CloseBlockReadStream(int file_num = -1) const EXCLUSIVE_LOCKS_REQUIRED(cs_LastBlockFile);
 #endif
@@ -600,7 +600,7 @@ public:
 #if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
 private:
     ReadRawBlockResult ReadRawBlockImpl(const FlatFilePos& pos, std::optional<std::pair<size_t, size_t>> block_part,
-                                        AutoFile* cached_stream = nullptr) const;
+                                        std::FILE* cached_stream = nullptr) const;
 #endif
 };
 
