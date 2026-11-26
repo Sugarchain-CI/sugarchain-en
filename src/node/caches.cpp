@@ -68,7 +68,13 @@ CacheSizes CalculateCacheSizes(const ArgsManager& args, size_t n_indexes)
         index_sizes.filter_index = max_cache / n_indexes;
         total_cache -= index_sizes.filter_index * n_indexes;
     }
-    return {index_sizes, kernel::CacheSizes{total_cache}};
+    size_t block_tree_limit{MAX_BLOCK_DB_CACHE};
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
+    // Give header replay room for larger LevelDB memtables within the
+    // existing kernel cache budget. Preserve the low-budget allocation.
+    if (total_cache >= 512_MiB) block_tree_limit = 64_MiB;
+#endif
+    return {index_sizes, kernel::CacheSizes{total_cache, block_tree_limit}};
 }
 
 void LogOversizedDbCache(const ArgsManager& args) noexcept
