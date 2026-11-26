@@ -776,7 +776,7 @@ bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Conse
         // Enumerate cold work in order, as in the fixed path below. At most
         // eight unresolved proofs are admitted beyond the verified prefix.
         auto ordered_options{options};
-        ordered_options.split = full_frame && m_impl->workers == 8;
+        ordered_options.split = full_frame && m_impl->workers == 8 && false; // Matched diagnostic control.
         if (!m_impl->network_window->Run([headers, &params, &cache, ordered_options]() mutable -> std::optional<HeaderPoWCheck> {
                 while (!headers.empty()) {
                     const auto& header{headers.front()};
