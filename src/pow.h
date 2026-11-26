@@ -75,6 +75,9 @@ inline constexpr int MAX_HEADER_POW_WORKERS{8};
 class HeaderPoWVerifier {
     struct Impl;
     std::unique_ptr<Impl> m_impl;
+#if defined(__APPLE__) && defined(__aarch64__)
+    const bool m_native_network{false};
+#endif
 
 public:
     explicit HeaderPoWVerifier(int workers);

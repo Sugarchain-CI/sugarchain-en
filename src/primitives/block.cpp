@@ -107,22 +107,49 @@ uint256 CBlockHeader::GetHash() const
 }
 
 // Official Sugarchain YespowerSugar parameters. The block identifier remains SHA256d.
+#if defined(__APPLE__) && defined(__aarch64__)
+namespace {
+template <auto Hash>
+uint256 ComputePoWHash(const CBlockHeader& header)
+#else
 uint256 CBlockHeader::GetPoWHash() const
+#endif
 {
     static_assert(YESPOWER_SUGAR_VERSION == YESPOWER_1_0);
     static constexpr yespower_params_t params{YESPOWER_1_0, YESPOWER_SUGAR_N, YESPOWER_SUGAR_R,
         YESPOWER_SUGAR_PERSONALIZATION, sizeof(YESPOWER_SUGAR_PERSONALIZATION) - 1};
     DataStream serialized;
+#if defined(__APPLE__) && defined(__aarch64__)
+    serialized << header;
+#else
     serialized << *this;
+#endif
     yespower_binary_t result;
     auto& local{GetYespowerLocal()};
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (Hash(&local.memory, reinterpret_cast<const uint8_t*>(serialized.data()), serialized.size(), &params, &result)) {
+#else
     if (yespower(&local.memory, reinterpret_cast<const uint8_t*>(serialized.data()), serialized.size(), &params, &result)) {
+#endif
         throw std::runtime_error("YespowerSugar: failed to compute proof of work");
     }
     uint256 hash;
     std::copy(std::begin(result.uc), std::end(result.uc), hash.begin());
     return hash;
 }
+#if defined(__APPLE__) && defined(__aarch64__)
+} // namespace
+
+uint256 CBlockHeader::GetPoWHash() const
+{
+    return ComputePoWHash<yespower>(*this);
+}
+
+uint256 CBlockHeader::GetPresyncPoWHash() const
+{
+    return ComputePoWHash<yespower_presync_split>(*this);
+}
+#endif
 
 std::string CBlock::ToString() const
 {

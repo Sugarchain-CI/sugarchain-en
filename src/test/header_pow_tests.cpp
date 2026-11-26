@@ -43,6 +43,9 @@
 #include <deque>
 
 #if defined(__APPLE__) && defined(__aarch64__)
+#include <crypto/sha256.h>
+#include <logging.h>
+#include <net_processing.h>
 #include <util/ordered_check_window.h>
 
 #include <future>
@@ -690,6 +693,111 @@ BOOST_AUTO_TEST_CASE(mainnet_hashes_match_legacy_tls_bit_for_bit)
     BOOST_CHECK_LE(peak.load(), 8U);
 #endif
 }
+
+#if defined(__APPLE__) && defined(__aarch64__)
+BOOST_AUTO_TEST_CASE(apple_presync_kernel_matches_independent_golden_proofs)
+{
+    DataStream stream{test::data::sugarchain_headers};
+    CSHA256 digest;
+    for (int i{0}; i < 32; ++i) {
+        CBlockHeader header;
+        stream >> header;
+        const auto original{header.GetPoWHash()};
+        const auto split{header.GetPresyncPoWHash()};
+        BOOST_CHECK(original == split);
+        BOOST_CHECK(CheckProofOfWorkImpl(split, header.nBits, main->GetConsensus()));
+        digest.Write(split.begin(), split.size());
+    }
+    std::array<uint8_t, CSHA256::OUTPUT_SIZE> result;
+    digest.Finalize(result.data());
+    BOOST_CHECK_EQUAL(HexStr(result), "0be23889277f4ab9f50329c7641e8db2fa4fbd23bfa0fcb8bb2d1e6e5228e469");
+
+    DataStream invalid_stream{test::data::sugarchain_headers};
+    CBlockHeader invalid;
+    invalid_stream >> invalid;
+    invalid.nNonce ^= 1;
+    BOOST_CHECK(invalid.GetPresyncPoWHash() == invalid.GetPoWHash());
+    BOOST_CHECK(!CheckProofOfWorkImpl(invalid.GetPresyncPoWHash(), invalid.nBits, main->GetConsensus()));
+}
+
+BOOST_AUTO_TEST_CASE(apple_presync_kernel_selects_only_full_eight_participant_cold_remainder)
+{
+    struct RestoreLogging {
+        const BCLog::Level level{LogInstance().LogLevel()};
+        const bool bench{LogInstance().WillLogCategory(BCLog::BENCH)};
+        ~RestoreLogging()
+        {
+            LogInstance().SetLogLevel(level);
+            if (!bench) LogInstance().DisableCategory(BCLog::BENCH);
+        }
+    } restore_logging;
+    LogInstance().EnableCategory(BCLog::BENCH);
+    LogInstance().SetLogLevel(BCLog::Level::Debug);
+    CacheBudget budget{1 << 20};
+    const auto& consensus{main->GetConsensus()};
+    DataStream stream{test::data::sugarchain_headers};
+    CBlockHeader cached;
+    stream >> cached;
+    std::vector<CBlockHeader> frame(MAX_HEADERS_RESULTS, cached);
+    for (size_t i{0}; i < 9; ++i) stream >> frame[i];
+
+    const auto prime = [&] {
+        InitYespowerVerificationCache(1 << 20);
+        BOOST_REQUIRE(CheckBlockProofOfWork(cached, consensus));
+    };
+    HeaderPoWVerifier full{8, /*network=*/true};
+    prime();
+    {
+        ASSERT_DEBUG_LOG("Apple presync proof kernels: headers=2000 original=1 split=8");
+        BOOST_REQUIRE(full.Check(frame, consensus, /*established_presync=*/true));
+    }
+    {
+        ASSERT_DEBUG_LOG("Apple presync proof kernels: headers=2000 original=0 split=0");
+        BOOST_REQUIRE(full.Check(frame, consensus, /*established_presync=*/true));
+    }
+    for (const int workers : {1, 3, 8}) {
+        prime();
+        HeaderPoWVerifier verifier{workers, /*network=*/true};
+        ASSERT_DEBUG_LOG("Apple presync proof kernels: headers=2000 original=9 split=0");
+        BOOST_REQUIRE(verifier.Check(frame, consensus, /*established_presync=*/workers != 8));
+    }
+    prime();
+    {
+        ASSERT_DEBUG_LOG("Apple presync proof kernels: headers=9 original=9 split=0");
+        BOOST_REQUIRE(full.Check(std::span{frame}.first(9), consensus, /*established_presync=*/true));
+    }
+
+    auto bad{cached};
+    bad.nNonce ^= 1;
+    prime();
+    {
+        const auto good{std::exchange(frame.front(), bad)};
+        ASSERT_DEBUG_LOG("Apple presync proof kernels: headers=2000 original=1 split=0");
+        BOOST_CHECK(!full.Check(frame, consensus, /*established_presync=*/true));
+        frame.front() = good;
+    }
+    prime();
+    {
+        const auto good_bits{std::exchange(frame.back().nBits, 0)};
+        ASSERT_DEBUG_LOG("Apple presync proof kernels: headers=2000 original=1 split=0");
+        BOOST_CHECK(!full.Check(frame, consensus, /*established_presync=*/true));
+        frame.back().nBits = good_bits;
+    }
+    prime();
+    frame[1] = bad;
+    {
+        DebugLogHelper proof_count{"Apple presync proof kernels: headers=2000 original=1 split=", [](const std::string* line) {
+            if (!line) return true;
+            const auto split{line->find(" split=")};
+            const auto count{std::stoul(line->substr(split + 7))};
+            BOOST_CHECK_GE(count, 1U);
+            BOOST_CHECK_LE(count, 8U);
+            return true;
+        }};
+        BOOST_CHECK(!full.Check(frame, consensus, /*established_presync=*/true));
+    }
+}
+#endif
 
 BOOST_AUTO_TEST_CASE(cold_proofs_cache_reuse_and_worker_lifetime)
 {

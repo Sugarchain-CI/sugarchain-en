@@ -21,8 +21,13 @@
 #include <util/check.h>
 #include <util/hasher.h>
 #if defined(__APPLE__) && defined(__aarch64__)
+#include <logging.h>
+#include <net_processing.h>
 #include <util/ordered_check_window.h>
 #include <util/threadnames.h>
+
+#include <atomic>
+#include <optional>
 #endif
 
 #include <array>
@@ -295,17 +300,52 @@ YespowerVerificationCache& VerificationCache()
     return cache;
 }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+struct HeaderProofCounts {
+    const size_t headers;
+    std::atomic<unsigned> original{0};
+    std::atomic<unsigned> split{0};
+
+    explicit HeaderProofCounts(size_t size) : headers{size} {}
+    ~HeaderProofCounts()
+    {
+        try {
+            LogDebug(BCLog::BENCH, "Apple presync proof kernels: headers=%u original=%u split=%u\n",
+                     headers, original.load(std::memory_order_relaxed), split.load(std::memory_order_relaxed));
+        } catch (...) {
+            // Diagnostics must not replace a proof error or an in-flight exception.
+        }
+    }
+};
+
+struct HeaderProofOptions {
+    bool cache_result{true};
+    bool split{false};
+    HeaderProofCounts* counts{nullptr};
+};
+
+bool VerifyHeaderProof(const CBlockHeader& header, const Consensus::Params& params, const HeaderProofOptions& options);
+#endif
+
 struct HeaderPoWCheck {
     const CBlockHeader* header;
     const Consensus::Params* params;
+#if defined(__APPLE__) && defined(__aarch64__)
+    HeaderProofOptions options{};
+#else
     bool cache_result{true};
+#endif
 
     // Preserve allocation/computation errors on the calling thread; do not
     // turn a local resource failure into an invalid-header/peer penalty.
     std::optional<std::exception_ptr> operator()() const
     {
         try {
+#if defined(__APPLE__) && defined(__aarch64__)
+            if (VerifyHeaderProof(*header, *params, options)) return std::nullopt;
+#else
             if (CheckBlockProofOfWork(*header, *params, cache_result)) return std::nullopt;
+#endif
             return std::exception_ptr{};
         } catch (...) {
             return std::current_exception();
@@ -543,7 +583,12 @@ uint256 GetYespowerEvidenceDigest(const CBlockHeader& header, const Consensus::P
     return (HashWriter{} << GetYespowerEvidenceRulesHash(params) << header).GetHash();
 }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+namespace {
+bool VerifyHeaderProof(const CBlockHeader& header, const Consensus::Params& params, const HeaderProofOptions& options)
+#else
 bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params, bool cache_result)
+#endif
 {
     if (!DeriveTarget(header.nBits, params.powLimit)) return false;
     if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
@@ -552,10 +597,28 @@ bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& 
     auto& cache{VerificationCache()};
     const auto entry{cache.Entry(header)};
     if (cache.Contains(entry)) return true;
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (options.counts) {
+        auto& count{options.split ? options.counts->split : options.counts->original};
+        count.fetch_add(1, std::memory_order_relaxed);
+    }
+    const auto hash{options.split ? header.GetPresyncPoWHash() : header.GetPoWHash()};
+    if (!CheckProofOfWork(hash, header.nBits, params)) return false;
+    const bool cache_result{options.cache_result};
+#else
     if (!CheckProofOfWork(header.GetPoWHash(), header.nBits, params)) return false;
+#endif
     if (cache_result) cache.Insert(entry);
     return true;
 }
+#if defined(__APPLE__) && defined(__aarch64__)
+} // namespace
+
+bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params, bool cache_result)
+{
+    return VerifyHeaderProof(header, params, {.cache_result = cache_result});
+}
+#endif
 
 void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Params& params)
 {
@@ -624,7 +687,7 @@ HeaderPoWVerifier::HeaderPoWVerifier(int workers)
     : m_impl{workers > 1 ? std::make_unique<Impl>(workers) : nullptr} {}
 #if defined(__APPLE__) && defined(__aarch64__)
 HeaderPoWVerifier::HeaderPoWVerifier(int workers, bool network)
-    : m_impl{workers > 1 ? std::make_unique<Impl>(workers, network) : nullptr} {}
+    : m_impl{workers > 1 ? std::make_unique<Impl>(workers, network) : nullptr}, m_native_network{network} {}
 #endif
 HeaderPoWVerifier::~HeaderPoWVerifier() = default;
 
@@ -645,7 +708,11 @@ bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const C
         std::vector<HeaderPoWCheck> batch;
         batch.reserve(std::min(headers.size(), queue_batch_size));
         while (!headers.empty() && batch.size() < queue_batch_size) {
+#if defined(__APPLE__) && defined(__aarch64__)
+            batch.push_back({&headers.front(), &params, {.cache_result = cache_result}});
+#else
             batch.push_back({&headers.front(), &params, cache_result});
+#endif
             headers = headers.subspan(1);
         }
         if (!m_impl->RunBatch(std::move(batch))) return false;
@@ -664,11 +731,25 @@ bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Conse
     if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
         return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
     }
+#if defined(__APPLE__) && defined(__aarch64__)
+    HeaderProofOptions options;
+    const bool full_frame{headers.size() == MAX_HEADERS_RESULTS};
+    std::optional<HeaderProofCounts> counts;
+    if (m_native_network && LogAcceptCategory(BCLog::BENCH, BCLog::Level::Debug)) {
+        counts.emplace(headers.size());
+        options.counts = &*counts;
+    }
+    const auto check = [&](const CBlockHeader& header) { return VerifyHeaderProof(header, params, options); };
+#endif
     std::unique_lock<std::mutex> call_lock;
     if (m_impl) call_lock = std::unique_lock{m_impl->caller_mutex};
     if (headers.empty()) return true;
     // An invalid first header must not cause speculative work for the message.
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (!check(headers.front())) return false;
+#else
     if (!CheckBlockProofOfWork(headers.front(), params)) return false;
+#endif
     if (headers.size() == 1) return true;
     auto& cache{VerificationCache()};
     bool all_cached{true};
@@ -682,7 +763,11 @@ bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Conse
     if (after_first_proof) after_first_proof();
     headers = headers.subspan(1);
     if (!m_impl) {
+#if defined(__APPLE__) && defined(__aarch64__)
+        if (!std::ranges::all_of(headers, check)) return false;
+#else
         if (!std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); })) return false;
+#endif
         cache.InsertBatch(entry);
         return true;
     }
@@ -690,11 +775,13 @@ bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Conse
     if (established_presync && m_impl->network_window) {
         // Enumerate cold work in order, as in the fixed path below. At most
         // eight unresolved proofs are admitted beyond the verified prefix.
-        if (!m_impl->network_window->Run([headers, &params, &cache]() mutable -> std::optional<HeaderPoWCheck> {
+        auto ordered_options{options};
+        ordered_options.split = full_frame && m_impl->workers == 8;
+        if (!m_impl->network_window->Run([headers, &params, &cache, ordered_options]() mutable -> std::optional<HeaderPoWCheck> {
                 while (!headers.empty()) {
                     const auto& header{headers.front()};
                     headers = headers.subspan(1);
-                    if (!cache.Contains(cache.Entry(header))) return HeaderPoWCheck{&header, &params};
+                    if (!cache.Contains(cache.Entry(header))) return HeaderPoWCheck{&header, &params, ordered_options};
                 }
                 return std::nullopt;
             })) return false;
@@ -707,7 +794,11 @@ bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Conse
         batch.reserve(m_impl->workers);
         while (!headers.empty() && batch.size() < size_t(m_impl->workers)) {
             const auto& header{headers.front()};
+#if defined(__APPLE__) && defined(__aarch64__)
+            if (!cache.Contains(cache.Entry(header))) batch.push_back({&header, &params, options});
+#else
             if (!cache.Contains(cache.Entry(header))) batch.push_back({&header, &params});
+#endif
             headers = headers.subspan(1);
         }
         if (batch.empty()) continue;

@@ -17,7 +17,7 @@
 #include <vector>
 
 // Shared by hashing and persisted-evidence rules binding. Change the evidence
-// domain if header serialization or the algorithm implementation changes.
+// domain if header serialization or the proof algorithm changes.
 inline constexpr uint32_t YESPOWER_SUGAR_VERSION{10};
 inline constexpr uint32_t YESPOWER_SUGAR_N{2048};
 inline constexpr uint32_t YESPOWER_SUGAR_R{32};
@@ -66,6 +66,10 @@ public:
 
     uint256 GetHash() const;
     uint256 GetPoWHash() const;
+#if defined(__APPLE__) && defined(__aarch64__)
+    /** Equivalent proof hash for the bounded Mainnet header presync work queue. */
+    uint256 GetPresyncPoWHash() const;
+#endif
 
     NodeSeconds Time() const
     {

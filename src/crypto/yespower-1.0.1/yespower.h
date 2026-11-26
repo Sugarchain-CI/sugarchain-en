@@ -117,6 +117,13 @@ extern int yespower(yespower_local_t *local,
     const uint8_t *src, size_t srclen,
     const yespower_params_t *params, yespower_binary_t *dst);
 
+#if defined(__APPLE__) && defined(__aarch64__)
+/* The Apple Mainnet header presync entry shares the existing scratch ABI. */
+extern int yespower_presync_split(yespower_local_t *local,
+    const uint8_t *src, size_t srclen,
+    const yespower_params_t *params, yespower_binary_t *dst);
+#endif
+
 /**
  * yespower_tls(src, srclen, params, dst):
  * Compute yespower(src[0 .. srclen - 1], N, r), to be checked for "< target".

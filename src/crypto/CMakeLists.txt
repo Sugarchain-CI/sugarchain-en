@@ -2,9 +2,30 @@
 # Distributed under the MIT software license, see the accompanying
 # file COPYING or https://opensource.org/license/mit/.
 
-add_library(bitcoin_crypto STATIC EXCLUDE_FROM_ALL
+set(yespower_sources
   yespower-1.0.1/yespower-opt.c
   yespower-1.0.1/sha256.c
+)
+
+if(APPLE)
+  if(NOT CMAKE_OSX_ARCHITECTURES)
+    # Match the effective compiler target when depends supplies a target triple.
+    include(CheckCSourceCompiles)
+    check_c_source_compiles([[
+      #if !defined(__APPLE__) || !defined(__aarch64__)
+      #error The target does not use Apple ARM64
+      #endif
+      int main(void) { return 0; }
+    ]] C_TARGET_APPLE_ARM64)
+  endif()
+  if(CMAKE_OSX_ARCHITECTURES MATCHES "(^|;)(arm64|arm64e|aarch64)(;|$)" OR
+     (NOT CMAKE_OSX_ARCHITECTURES AND C_TARGET_APPLE_ARM64))
+    list(APPEND yespower_sources yespower-1.0.1/yespower-presync.c)
+  endif()
+endif()
+
+add_library(bitcoin_crypto STATIC EXCLUDE_FROM_ALL
+  ${yespower_sources}
   aes.cpp
   chacha20.cpp
   chacha20poly1305.cpp
@@ -35,8 +56,7 @@ include(CheckCCompilerFlag)
 check_c_compiler_flag("-Wleading-whitespace=blanks" C_SUPPORTS_WLEADING_WHITESPACE_BLANKS)
 if(C_SUPPORTS_WLEADING_WHITESPACE_BLANKS)
   set_property(SOURCE
-    yespower-1.0.1/yespower-opt.c
-    yespower-1.0.1/sha256.c
+    ${yespower_sources}
     APPEND PROPERTY COMPILE_OPTIONS "-Wleading-whitespace=blanks"
   )
 endif()

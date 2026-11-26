@@ -699,13 +699,25 @@ static volatile uint64_t Smask2var = Smask2;
 
 #elif defined(YESPOWER_APPLE_NEON)
 
+#ifdef SUGARCHAIN_YESPOWER_SPLIT_PWX
+/* Keep the widening product independent of the S0 addend load. */
+#define PWX_PREPARE_PRODUCT \
+	uint64x2_t product = vmull_u32(lo, hi); \
+	__asm__("" : "+w"(product));
+#define PWX_PRODUCT product
+#else
+#define PWX_PREPARE_PRODUCT
+#define PWX_PRODUCT vmull_u32(lo, hi)
+#endif
+
 #define PWXFORM_SIMD(x) { \
 	uint64_t offset = vgetq_lane_u64(vreinterpretq_u64_u32(x), 0) & Smask2; \
 	const uint64_t *p0 = (const uint64_t *)(S0 + (uint32_t)offset); \
 	const uint64_t *p1 = (const uint64_t *)(S1 + (offset >> 32)); \
 	uint32x2_t lo = vget_low_u32(vuzp1q_u32(x, x)); \
 	uint32x2_t hi = vget_low_u32(vuzp2q_u32(x, x)); \
-	x = vreinterpretq_u32_u64(veorq_u64(vaddq_u64(vmull_u32(lo, hi), \
+	PWX_PREPARE_PRODUCT \
+	x = vreinterpretq_u32_u64(veorq_u64(vaddq_u64(PWX_PRODUCT, \
 	    vld1q_u64(p0)), vld1q_u64(p1))); \
 }
 
