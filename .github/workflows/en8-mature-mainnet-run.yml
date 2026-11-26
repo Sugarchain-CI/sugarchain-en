@@ -1,0 +1,13 @@
+name: En8 mature Mainnet qualification dispatch
+on:
+  push:
+    branches: [ci/en8-mature-mainnet-qualification]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  mature-mainnet:
+    uses: ./.github/workflows/en8-mature-checkpoint-qualification.yml
+    with:
+      fixture_release_tag: en8-mainnet-tail-fixture-v1
+      fixture_manifest_sha256: 234d86232dc76cc86045b0f6cba2988a140562a112ecbbb454e82fa3f20a30f3
