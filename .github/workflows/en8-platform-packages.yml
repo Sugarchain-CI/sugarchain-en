@@ -1,8 +1,8 @@
-name: En8 Apple Silicon bounded block writer
+name: En8 Apple Silicon bounded index cache
 'on':
   push:
     branches:
-    - ci/en8-mainnet-timeout
+    - ci/en8-apple-index-cache
     paths:
     - .github/workflows/en8-platform-packages.yml
     - .github/en8-mainnet/**
@@ -29,18 +29,18 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 9104b9651effe3bbb088e687c586ddab176e29a4
+        ref: ab32802067b6fab773810d36f3ef8468195210b0
         persist-credentials: false
-        repository: decryp2kanon/sugarchain-en
+        repository: Sugarchain-CI/sugarchain-en
     - name: Verify pinned source revision
       shell: bash
       run: 'set -euo pipefail
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "9104b9651effe3bbb088e687c586ddab176e29a4"
+        test "$actual" = "ab32802067b6fab773810d36f3ef8468195210b0"
 
-        test "$(git rev-parse HEAD^{tree})" = "c9c8ee39a3367e58e8f894968105b74f2574f4c9"
+        test "$(git rev-parse HEAD^{tree})" = "93979062c95ee7050c2123243c787c744a22990f"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - uses: ./.github/actions/configure-environment
@@ -50,7 +50,7 @@ jobs:
         provider: gha
     - name: Restore En.8 branch dependency cache
       id: en8-depends
-      if: ${{ github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-mainnet-timeout'
+      if: ${{ github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-apple-index-cache'
         }}
       uses: actions/cache/restore@v5
       with:
@@ -60,7 +60,7 @@ jobs:
         key: en8-arm64-depends-v1-${{ env.DEPENDS_HASH }}
     - name: Restore En.8 branch compiler cache
       id: en8-ccache
-      if: ${{ github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-mainnet-timeout'
+      if: ${{ github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-apple-index-cache'
         }}
       uses: actions/cache/restore@v5
       with:
@@ -72,7 +72,7 @@ jobs:
         provider: gha
     - name: Cross-build with the repository's Darwin depends toolchain
       shell: bash
-      run: "test \"$(git rev-parse HEAD)\" = 9104b9651effe3bbb088e687c586ddab176e29a4\nsource ./ci/test/00_setup_env.sh\n\
+      run: "test \"$(git rev-parse HEAD)\" = ab32802067b6fab773810d36f3ef8468195210b0\nsource ./ci/test/00_setup_env.sh\n\
         export GOAL=\"install deploy\"\nexport BASE_OUTDIR=\"$BASE_BUILD_DIR/installed\"\nexport BITCOIN_CONFIG=\"\
         \n  -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\
         \ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON\n  -DBUILD_GUI=ON -DENABLE_WALLET=ON\
@@ -114,7 +114,7 @@ jobs:
         compression-level: 0
         retention-days: 7
     - name: Save En.8 branch dependency cache
-      if: ${{ github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-mainnet-timeout'
+      if: ${{ github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-apple-index-cache'
         && steps.en8-depends.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@v5
       with:
@@ -123,7 +123,7 @@ jobs:
           ${{ env.SOURCES_PATH }}'
         key: en8-arm64-depends-v1-${{ env.DEPENDS_HASH }}
     - name: Save En.8 branch compiler cache
-      if: ${{ github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-mainnet-timeout'
+      if: ${{ github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-apple-index-cache'
         && steps.en8-ccache.outputs.cache-hit != 'true' }}
       uses: actions/cache/save@v5
       with:
@@ -145,18 +145,18 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 9104b9651effe3bbb088e687c586ddab176e29a4
+        ref: ab32802067b6fab773810d36f3ef8468195210b0
         persist-credentials: false
-        repository: decryp2kanon/sugarchain-en
+        repository: Sugarchain-CI/sugarchain-en
     - name: Verify pinned source revision
       shell: bash
       run: 'set -euo pipefail
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "9104b9651effe3bbb088e687c586ddab176e29a4"
+        test "$actual" = "ab32802067b6fab773810d36f3ef8468195210b0"
 
-        test "$(git rev-parse HEAD^{tree})" = "c9c8ee39a3367e58e8f894968105b74f2574f4c9"
+        test "$(git rev-parse HEAD^{tree})" = "93979062c95ee7050c2123243c787c744a22990f"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - name: Check out the exact release diagnostics overlay
@@ -254,42 +254,75 @@ jobs:
         \    lines.append(f\"| {network} | {package.upper()} | {median:.6f} s | {samples} |\")\nwith open(os.environ['GITHUB_STEP_SUMMARY'],\
         \ 'a') as output:\n    output.write('\\n'.join(lines) + '\\n')\nfor name in ('testnet7-cli', 'testnet7-gui'):\n\
         \    print(name, result['tests'][name]['median_sync_seconds'])\nPYREPORT\n"
-    - name: Download exact pre-buffering Apple baseline
+  mature-apple:
+    name: Qualify one mature Mainnet checkpoint on Apple Silicon
+    needs: macos-pack
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      FIXTURE_TAG: en8-mainnet-tail-fixture-v1
+      MANIFEST_SHA: 234d86232dc76cc86045b0f6cba2988a140562a112ecbbb454e82fa3f20a30f3
+    steps:
+    - name: Set shared qualification deadline
+      run: echo "CHECKPOINT_DEADLINE=$(( $(date +%s) + 810 ))" >> "$GITHUB_ENV"
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.14'
+    - name: Load pinned public checkpoint manifest
+      timeout-minutes: 2
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/checkpoint-input"
+        gh release download --repo Sugarchain-CI/sugarchain-en --pattern manifest.json \
+          --dir "$RUNNER_TEMP/checkpoint-input" -- "$FIXTURE_TAG"
+        python3 -B .github/en8-mainnet/mature-checkpoint/checkpoint_fixture.py \
+          --manifest "$RUNNER_TEMP/checkpoint-input/manifest.json" \
+          --manifest-sha256 "$MANIFEST_SHA" --output "$RUNNER_TEMP/checkpoint-preflight"
+    - name: Download the signed Apple Silicon package from this run
       uses: actions/download-artifact@v8
       with:
-        name: release-mac-arm64
-        path: baseline-9c-release
+        repository: ${{ github.repository }}
         github-token: ${{ github.token }}
-        repository: Sugarchain-CI/sugarchain-en
-        run-id: '45872110419'
-    - name: Compare native Mainnet CLI block writer in fixed ABBA order
-      timeout-minutes: 7
-      run: 'python3 -B release-tools/.github/en8-mainnet/body-reread/mainnet_apple_body_ab.py --baseline baseline-9c-release
-        --candidate release --candidate-source 9104b9651effe3bbb088e687c586ddab176e29a4 --candidate-tree c9c8ee39a3367e58e8f894968105b74f2574f4c9
-        --fixture release-tools/.github/en8-mainnet/mainnet-blocks.dat.gz --fixture-info release-tools/.github/en8-mainnet/fixture.json
-        --output "$RUNNER_TEMP/bench-apple-body-cli"
-
-        '
-    - name: Compare native Mainnet GUI block writer in fixed ABBA order
-      timeout-minutes: 7
-      run: 'python3 -B release-tools/.github/en8-mainnet/body-reread/mainnet_apple_body_ab.py --baseline baseline-9c-release
-        --candidate release --candidate-source 9104b9651effe3bbb088e687c586ddab176e29a4 --candidate-tree c9c8ee39a3367e58e8f894968105b74f2574f4c9
-        --fixture release-tools/.github/en8-mainnet/mainnet-blocks.dat.gz --fixture-info release-tools/.github/en8-mainnet/fixture.json
-        --output "$RUNNER_TEMP/bench-apple-body-gui" --gui
-
-        '
-    - name: Retain native Apple body comparison evidence
+        run-id: ${{ github.run_id }}
+        name: release-mac-arm64
+        path: runtime
+    - name: Download approved public checkpoint parts once
+      timeout-minutes: 6
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        args=()
+        while IFS= read -r part; do
+          args+=(--pattern "$part")
+        done < "$RUNNER_TEMP/checkpoint-preflight/parts.txt"
+        gh release download --repo Sugarchain-CI/sugarchain-en "${args[@]}" \
+          --dir "$RUNNER_TEMP/checkpoint-input" -- "$FIXTURE_TAG"
+    - name: Qualify one candidate process and two ordered level-4 passes
+      timeout-minutes: 12
+      run: |
+        set -euo pipefail
+        python3 -B .github/en8-mainnet/mature-checkpoint/qualify_mature_checkpoint.py \
+          --runtime runtime --target apple-arm64 --fixture "$RUNNER_TEMP/checkpoint-input" \
+          --manifest-name manifest.json --fixture-manifest-sha256 "$MANIFEST_SHA" \
+          --deadline-epoch "$CHECKPOINT_DEADLINE" --output "$RUNNER_TEMP/checkpoint-qualification"
+    - name: Retain candidate capacity and owned-process map evidence
       if: ${{ always() }}
       uses: actions/upload-artifact@v7
       with:
-        name: en8-apple-buffered-body
-        path: '${{ runner.temp }}/bench-apple-body-*/**/result.json
-
-          ${{ runner.temp }}/bench-apple-body-*/**/debug*.log
-
-          ${{ runner.temp }}/bench-apple-body-*/**/console*.log
-
-          ${{ runner.temp }}/bench-apple-body-*/**/wire.jsonl'
+        name: mature-checkpoint-qualification-apple-index-cache
+        path: |
+          ${{ runner.temp }}/checkpoint-preflight/preflight.json
+          ${{ runner.temp }}/checkpoint-qualification/result.json
+          ${{ runner.temp }}/checkpoint-qualification/resources.jsonl
+          ${{ runner.temp }}/checkpoint-qualification/vmmap-samples.jsonl
+          ${{ runner.temp }}/checkpoint-qualification/vmmap-*.log
+          ${{ runner.temp }}/checkpoint-qualification/node/debug-restart.log
+          ${{ runner.temp }}/checkpoint-qualification/node/console-restart.log
         if-no-files-found: warn
-        compression-level: 6
         retention-days: 14

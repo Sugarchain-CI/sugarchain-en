@@ -33,6 +33,10 @@ from mainnet_warm import make_rpc_request, read_rpc_response
 
 RUNTIME_SOURCE = "9c502574b652804905d2533d51742ca91f694532"
 RUNTIME_TREE = "f44aa1b47f9701996046bbb396106f1d5c365e66"
+APPLE_RUNTIME_SOURCE = "ab32802067b6fab773810d36f3ef8468195210b0"
+APPLE_RUNTIME_TREE = "93979062c95ee7050c2123243c787c744a22990f"
+APPLE_CACHE_LOG = b"LevelDB bounded block index table cache enabled on Apple Silicon (table_cache=0)."
+APPLE_LOW_MEMORY_LIMIT = 8 << 30
 STARTUP_LIMIT = 480
 VERIFY_LIMIT = 90
 UTXO_LIMIT = 180
@@ -128,6 +132,45 @@ def record_resources(proc, profile, resources, timeline, done):
             done.wait(2)
 
 
+def record_apple_startup_maps(proc, started, output, done):
+    with (output / "vmmap-samples.jsonl").open("x", encoding="utf-8", buffering=1) as events:
+        for scheduled in (0, 120, 300):
+            elapsed = time.monotonic() - started
+            stopped = done.wait(max(0, scheduled - elapsed))
+            row = {"scheduled_after_launch_seconds": scheduled, "pid": proc.pid}
+            if stopped or proc.poll() is not None:
+                row["status"] = "startup_finished_or_process_exited"
+                events.write(json.dumps(row) + "\n")
+                continue
+            path = output / f"vmmap-{scheduled:03d}.log"
+            began = time.monotonic()
+            row.update(log=path.name, started_after_launch_seconds=round(began - started, 3), timeout_seconds=10)
+            try:
+                with path.open("xb") as stdout:
+                    # Restrict the summary file to at most 128 shell file-size blocks.
+                    result = subprocess.run(
+                        ["/bin/bash", "-c", 'ulimit -f 128 || exit 125; exec /usr/bin/vmmap -summary "$1"',
+                         "sample-owned-index", str(proc.pid)],
+                        stdin=subprocess.DEVNULL, stdout=stdout, stderr=subprocess.STDOUT,
+                        check=False, timeout=10)
+                row.update(status="completed" if result.returncode == 0 else "exited_nonzero",
+                           exit_code=result.returncode)
+            except subprocess.TimeoutExpired:
+                row.update(status="timeout", exit_code=None)
+            except OSError as failure:
+                row.update(status="diagnostic_error", exit_code=None, error=type(failure).__name__)
+            row["duration_seconds"] = round(time.monotonic() - began, 3)
+            row["log_bytes"] = path.stat().st_size if path.exists() else 0
+            events.write(json.dumps(row) + "\n")
+
+
+def apple_cache_logged(debug):
+    if not debug.exists():
+        return False
+    with debug.open("rb") as stream:
+        return any(APPLE_CACHE_LOG in line for line in stream)
+
+
 def verify_windows_pe(path):
     status = "runtime_architecture_failure"
     with path.open("rb") as binary:
@@ -150,7 +193,7 @@ def runtime_binary(args, output):
         guard(platform.system() == "Darwin" and platform.machine() == "arm64", "native_host_inconclusive",
               "A native Apple Silicon runner is required")
         check_host()
-        metadata = apple.check_package(args.runtime, RUNTIME_SOURCE, RUNTIME_TREE)
+        metadata = apple.check_package(args.runtime, APPLE_RUNTIME_SOURCE, APPLE_RUNTIME_TREE)
         metadata.update(apple.prepare_binary(args.runtime, output / "runtime", False))
         return metadata
 
@@ -296,6 +339,9 @@ def run(args):
         "passes": [], "first_pass_os_cache": "not reset after extraction and startup", "fast_startup": 1,
         "assumevalid": 0, "networkactive": False, "prune": "manual", "scope": "mature local checkpoint capacity and level-4 qualification",
     }
+    apple_candidate = args.target == "apple-arm64"
+    if apple_candidate:
+        report["comparison"] = "candidate-only capacity trial with no paired timing ratio"
     persist(result, report)
     overall = time.monotonic() + max(0, args.deadline_epoch - time.time())
     profile = output / "node"
@@ -323,10 +369,27 @@ def run(args):
             done = threading.Event()
             observer = threading.Thread(target=record_resources, args=(proc, profile, resources, timeline, done), daemon=True)
             observer.start()
+            vmmap_stop = threading.Event()
+            vmmap_observer = None
+            if apple_candidate:
+                vmmap_observer = threading.Thread(
+                    target=record_apple_startup_maps, args=(proc, started, output, vmmap_stop), daemon=True)
+                vmmap_observer.start()
             try:
                 deadline = stage_deadline(overall, STARTUP_LIMIT, "startup_timeout_inconclusive")
                 report["starting_tip"] = get_exact_tip(profile, port, proc, deadline, "startup_timeout_inconclusive")
                 report["startup_seconds"] = time.monotonic() - started
+                if vmmap_observer is not None:
+                    vmmap_stop.set()
+                    vmmap_observer.join(timeout=11)
+                    report["vmmap_observer_stopped_before_qualification"] = not vmmap_observer.is_alive()
+                    guard(report["vmmap_observer_stopped_before_qualification"], "diagnostic_observer_inconclusive",
+                          "Owned-process map diagnostics did not stop before level-4 timing")
+                if apple_candidate:
+                    report["apple_index_cache_activation_logged"] = apple_cache_logged(debug)
+                    ram = report["memory_before"]["physical_bytes"]
+                    guard(0 < ram <= APPLE_LOW_MEMORY_LIMIT and report["apple_index_cache_activation_logged"],
+                          "candidate_cache_not_exercised", "Low-memory Apple block index cache was not exercised")
                 network = rpc(profile, port, "getnetworkinfo")
                 guard(network and network["networkactive"] is False and rpc(profile, port, "getpeerinfo") == [],
                       "isolation_failure", "Fixture process is not isolated")
@@ -354,6 +417,9 @@ def run(args):
                 report["phase"] = "shutdown"
                 persist(result, report)
             finally:
+                vmmap_stop.set()
+                if vmmap_observer is not None and vmmap_observer.is_alive():
+                    vmmap_observer.join(timeout=11)
                 done.set()
                 observer.join(timeout=5)
         log = new_log_text(debug, 0)
@@ -378,6 +444,14 @@ def run(args):
         report.update(status=status, error=f"{type(error).__name__}: {error}")
         raise
     finally:
+        if apple_candidate:
+            try:
+                report["apple_index_cache_activation_logged"] = apple_cache_logged(debug)
+                maps = output / "vmmap-samples.jsonl"
+                if maps.exists():
+                    report["vmmap_samples"] = [json.loads(row) for row in maps.read_text().splitlines()]
+            except (OSError, ValueError) as failure:
+                report["vmmap_summary_error"] = type(failure).__name__
         try:
             report["memory_after"] = memory_state()
             report["windows_page_read_counters_after"] = windows_paging()
