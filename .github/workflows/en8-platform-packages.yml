@@ -1,6 +1,11 @@
 name: En.8 changed-platform native packages
 'on':
   workflow_dispatch: null
+  push:
+    branches:
+    - release-packaging/31.1.2-en.8-platforms
+    paths:
+    - .github/workflows/en8-platform-packages.yml
 permissions:
   contents: read
 defaults:
