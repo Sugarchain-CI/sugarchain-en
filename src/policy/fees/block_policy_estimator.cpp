@@ -102,7 +102,7 @@ private:
     // Combine the conf counts with tx counts to calculate the confirmation % for each Y,X
     // Combine the total value with the tx counts to calculate the avg feerate per bucket
 
-#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
+#if (defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))) || (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64)))
     // A freshly created estimator has only zero counters. Loading estimates or
     // recording a transaction permanently enables the normal update path.
     bool m_pristine{true};
@@ -213,7 +213,7 @@ void TxConfirmStats::resizeInMemoryCounters(size_t newbuckets) {
 // Roll the unconfirmed txs circular buffer
 void TxConfirmStats::ClearCurrent(unsigned int nBlockHeight)
 {
-#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
+#if (defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))) || (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64)))
     if (m_pristine) return;
 #endif
     for (unsigned int j = 0; j < buckets.size(); j++) {
@@ -225,7 +225,7 @@ void TxConfirmStats::ClearCurrent(unsigned int nBlockHeight)
 
 void TxConfirmStats::Record(int blocksToConfirm, double feerate)
 {
-#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
+#if (defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))) || (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64)))
     m_pristine = false;
 #endif
     // blocksToConfirm is 1-based
@@ -242,7 +242,7 @@ void TxConfirmStats::Record(int blocksToConfirm, double feerate)
 
 void TxConfirmStats::UpdateMovingAverages()
 {
-#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
+#if (defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))) || (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64)))
     if (m_pristine) return;
 #endif
     assert(confAvg.size() == failAvg.size());
@@ -435,7 +435,7 @@ void TxConfirmStats::Write(AutoFile& fileout) const
 
 void TxConfirmStats::Read(AutoFile& filein, size_t numBuckets)
 {
-#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
+#if (defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))) || (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64)))
     m_pristine = false;
 #endif
     // Read data file and do some very basic sanity checking
@@ -494,7 +494,7 @@ void TxConfirmStats::Read(AutoFile& filein, size_t numBuckets)
 
 unsigned int TxConfirmStats::NewTx(unsigned int nBlockHeight, double val)
 {
-#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
+#if (defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))) || (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64)))
     m_pristine = false;
 #endif
     unsigned int bucketindex = bucketMap.lower_bound(val)->second;
@@ -505,7 +505,7 @@ unsigned int TxConfirmStats::NewTx(unsigned int nBlockHeight, double val)
 
 void TxConfirmStats::removeTx(unsigned int entryHeight, unsigned int nBestSeenHeight, unsigned int bucketindex, bool inBlock)
 {
-#if defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))
+#if (defined(__APPLE__) && (defined(__x86_64__) || defined(__aarch64__))) || (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64)))
     m_pristine = false;
 #endif
     //nBestSeenHeight is not updated yet for the new block
