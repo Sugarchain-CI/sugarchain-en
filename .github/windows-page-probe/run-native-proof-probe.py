@@ -73,6 +73,34 @@ def persist(path, report):
     temporary.replace(path)
 
 
+def allocation_status(report):
+    mode = report["mode"]
+    tries_hint = mode == "page64"
+    expects_fallback = mode == "page64-fallback"
+    api = report["virtualalloc2"]
+    available = api["available"]
+    if (api["lookup_attempted"] is not tries_hint or type(available) is not bool
+            or (available != (api["module"] in ("kernel32.dll", "kernelbase.dll")))
+            or (available and not tries_hint)):
+        raise ValueError(f"Inconsistent VirtualAlloc2 resolution evidence for {mode}")
+    for row in report["scratch"]:
+        accepted, fell_back = row["hint_successes"], row["hint_fallbacks"]
+        if (row["allocation_calls"] != 1 or row["base_size"] <= 0 or row["allocation_seconds"] < 0
+                or (mode != "malloc" and row["base_size"] % 65536)
+                or (accepted + fell_back != int(tries_hint or expects_fallback))
+                or row["hint_attempts"] != int(tries_hint and available)
+                or (accepted and (not available or row["hint_error"]))):
+            raise ValueError(f"Unexpected allocation evidence for {mode}")
+    if not tries_hint:
+        return "control"
+    if not available:
+        return "inconclusive_api_unavailable"
+    accepted = sum(row["hint_successes"] for row in report["scratch"])
+    if accepted == report["workers"]:
+        return "accepted"
+    return "inconclusive_partial_allocation" if accepted else "inconclusive_allocation_rejected"
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--page-probe", type=Path, required=True)
@@ -110,21 +138,28 @@ def main():
         "binary_sha256": executable_digests,
         "measurement": "Yespower wall time after allocating and warming independent worker scratch",
         "page_hint": "VirtualAlloc2 success does not establish physical page size",
-        "correctness": {}, "samples": [],
+        "status": "running", "correctness": {}, "samples": [],
     }
     for label, executable, mode in [
         ("reference", reference, "as-built"), ("private-abi", abi, "as-built"),
         ("forced-page64-fallback", page_probe, "page64-fallback"),
+        ("page64-readiness", page_probe, "page64"),
     ]:
         row = run_probe(executable, smoke_headers, output / label, 8, mode, args.timeout)
         if row["proof_sha256"] != args.leading_512_proof_sha256:
             raise ValueError(f"Proof digest differs from the independent baseline: {label}")
-        if label == "forced-page64-fallback" and any(
-            item["hint_successes"] or item["hint_fallbacks"] != 1 for item in row["scratch"]
-        ):
-            raise ValueError("Forced fallback did not take the ordinary-page path")
+        if executable == page_probe:
+            row["allocation_status"] = allocation_status(row)
         report["correctness"][label] = row
         persist(report_path, report)
+    readiness = report["correctness"]["page64-readiness"]
+    print(f"VirtualAlloc2 readiness: {readiness['allocation_status']}, {readiness['virtualalloc2']}; "
+          f"allocation errors: {[row['hint_error'] for row in readiness['scratch']]}", flush=True)
+    if readiness["allocation_status"] != "accepted":
+        report["status"] = readiness["allocation_status"]
+        report["complete"] = True
+        persist(report_path, report)
+        return
     order = ("malloc", "pages", "page64", "page64", "pages", "malloc")
     for index, mode in enumerate(order, 1):
         row = run_probe(page_probe, headers, output / f"{index:02d}-{mode}", 8, mode, args.timeout)
@@ -132,21 +167,23 @@ def main():
             report["samples"] and row["proof_sha256"] != report["samples"][0]["proof_sha256"]
         ):
             raise ValueError(f"Proof digest differs: sample {index}, {mode}")
-        scratch = row["scratch"]
-        if any(item["allocation_calls"] != 1 or item["base_size"] <= 0 or item["allocation_seconds"] < 0
-               or (mode != "malloc" and item["base_size"] % 65536)
-               or (item["hint_successes"] + item["hint_fallbacks"] != int(mode == "page64"))
-               for item in scratch):
-            raise ValueError(f"Unexpected allocation evidence: sample {index}, {mode}")
+        row["allocation_status"] = allocation_status(row)
         report["samples"].append(row)
         persist(report_path, report)
         print(f"{index} {mode}: {row['proofs_per_second']:.1f} proofs/s, "
-              f"{sum(item['hint_successes'] for item in scratch)} accepted hints", flush=True)
+              f"{sum(item['hint_successes'] for item in row['scratch'])} accepted hints", flush=True)
+        if mode == "page64" and row["allocation_status"] != "accepted":
+            report["status"] = row["allocation_status"]
+            report["complete"] = True
+            persist(report_path, report)
+            print("Page hint became unavailable during timing. No comparable throughput medians.", flush=True)
+            return
     report["medians_proofs_per_second"] = {
         mode: statistics.median(item["proofs_per_second"] for item in report["samples"] if item["mode"] == mode)
         for mode in dict.fromkeys(order)
     }
     report["complete"] = True
+    report["status"] = "measured"
     persist(report_path, report)
 
 

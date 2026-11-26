@@ -30,8 +30,10 @@ struct WorkerResult {
     uint64_t allocation_frequency{};
     size_t allocation_size{};
     int allocation_calls{};
+    int hint_attempts{};
     int hint_successes{};
     int hint_fallbacks{};
+    uint32_t hint_error{};
     bool passed{};
 };
 
@@ -89,8 +91,10 @@ int main(int argc, char** argv) try
             result.allocation_ticks = stats.alloc_ticks;
             result.allocation_size = stats.base_size;
             result.allocation_calls = stats.calls;
+            result.hint_attempts = stats.hint_attempts;
             result.hint_successes = stats.hint_successes;
             result.hint_fallbacks = stats.hint_fallbacks;
+            result.hint_error = stats.hint_error;
 #endif
             if (initialised && yespower_free_local(&local)) result.passed = false;
         });
@@ -112,14 +116,28 @@ int main(int argc, char** argv) try
     if (!output) throw std::runtime_error("Unable to persist ordered proof digests");
     std::cout << std::fixed << std::setprecision(8)
               << "{\"mode\":\"" << mode << "\",\"workers\":" << workers << ",\"proofs\":" << headers.size()
-              << ",\"seconds\":" << elapsed << ",\"proofs_per_second\":" << headers.size() / elapsed
-              << ",\"scratch\":[";
+              << ",\"seconds\":" << elapsed << ",\"proofs_per_second\":" << headers.size() / elapsed;
+#ifdef SC_PAGE_PROBE
+    page_probe_api api{};
+    page_probe_get_api(&api);
+    std::cout << ",\"virtualalloc2\":{\"lookup_attempted\":" << (api.lookup_attempted ? "true" : "false")
+              << ",\"available\":" << (api.available ? "true" : "false") << ",\"module\":";
+    if (api.module) {
+        std::cout << '\"' << api.module << '\"';
+    } else {
+        std::cout << "null";
+    }
+    std::cout << ",\"kernel32_lookup_error\":" << api.kernel32_lookup_error
+              << ",\"kernelbase_lookup_error\":" << api.kernelbase_lookup_error << '}';
+#endif
+    std::cout << ",\"scratch\":[";
     for (const auto& row : results) {
         if (&row != &results.front()) std::cout << ',';
         const double allocation_seconds{row.allocation_frequency ? double(row.allocation_ticks) / row.allocation_frequency : 0};
         std::cout << "{\"first_proof_seconds\":" << row.first_proof << ",\"allocation_seconds\":" << allocation_seconds
                   << ",\"base_size\":" << row.allocation_size << ",\"allocation_calls\":" << row.allocation_calls
-                  << ",\"hint_successes\":" << row.hint_successes << ",\"hint_fallbacks\":" << row.hint_fallbacks << '}';
+                  << ",\"hint_attempts\":" << row.hint_attempts << ",\"hint_successes\":" << row.hint_successes
+                  << ",\"hint_fallbacks\":" << row.hint_fallbacks << ",\"hint_error\":" << row.hint_error << '}';
     }
     std::cout << "]}\n";
     return 0;
