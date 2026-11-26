@@ -1369,7 +1369,7 @@ using WindowJob = std::function<WindowResult()>;
 
 BOOST_AUTO_TEST_CASE(apple_ordered_checks_bound_unresolved_work)
 {
-    util::OrderedCheckWindow<WindowJob, 8> window{8};
+    util::OrderedCheckWindow<WindowJob, 8> window{8, 8};
     std::atomic_size_t admitted{0}, later_started{0};
     std::promise<void> release_head, later_started_all;
     auto head{release_head.get_future()};
@@ -1399,7 +1399,7 @@ BOOST_AUTO_TEST_CASE(apple_ordered_checks_bound_unresolved_work)
 
 BOOST_AUTO_TEST_CASE(apple_ordered_checks_drain_and_reuse_after_failure)
 {
-    util::OrderedCheckWindow<WindowJob, 8> window{2};
+    util::OrderedCheckWindow<WindowJob, 8> window{2, 2};
     std::promise<void> release_head, later_entered;
     auto head{release_head.get_future()};
     auto later{later_entered.get_future()};
@@ -1435,6 +1435,60 @@ BOOST_AUTO_TEST_CASE(apple_ordered_checks_drain_and_reuse_after_failure)
         throw std::runtime_error{"refill failure"};
     }), std::runtime_error);
     size_t remaining{5};
+    BOOST_CHECK(window.Run([&]() -> std::optional<WindowJob> {
+        if (remaining == 0) return std::nullopt;
+        --remaining;
+        return WindowJob{[]() -> WindowResult { return std::nullopt; }};
+    }));
+    BOOST_CHECK_EQUAL(remaining, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(apple_ordered_checks_separate_active_and_pending_limits)
+{
+    util::OrderedCheckWindow<WindowJob, 8> window{3, 8};
+    std::atomic_size_t admitted{0}, active{0}, later_finished{0};
+    std::atomic_bool too_many_active{false};
+    std::promise<void> release_head, release_first_peers, three_active, later_finished_all;
+    auto head{release_head.get_future()};
+    auto first_peers{release_first_peers.get_future().share()};
+    auto participants{three_active.get_future()};
+    auto peer_completion{later_finished_all.get_future()};
+    auto check{std::async(std::launch::async, [&] {
+        return window.Run([&]() -> std::optional<WindowJob> {
+            const size_t index{admitted++};
+            if (index == 25) return std::nullopt;
+            return WindowJob{[&, index]() -> WindowResult {
+                const auto running{++active};
+                if (running > 3) too_many_active = true;
+                if (index < 3 && running == 3) three_active.set_value();
+                if (index == 0) {
+                    head.wait();
+                    --active;
+                    return std::exception_ptr{};
+                }
+                if (index < 3) first_peers.wait();
+                --active;
+                if (++later_finished == 7) later_finished_all.set_value();
+                return std::nullopt;
+            }};
+        });
+    })};
+    const bool saturated{participants.wait_for(std::chrono::seconds{5}) == std::future_status::ready};
+    release_first_peers.set_value();
+    const bool finished_later{peer_completion.wait_for(std::chrono::seconds{5}) == std::future_status::ready};
+    const size_t while_blocked{admitted.load()};
+    const bool still_running{check.wait_for(std::chrono::seconds{0}) != std::future_status::ready};
+    release_head.set_value();
+    BOOST_CHECK(!check.get());
+    BOOST_CHECK(saturated);
+    BOOST_CHECK(finished_later);
+    BOOST_CHECK(still_running);
+    BOOST_CHECK(!too_many_active.load());
+    BOOST_CHECK_EQUAL(while_blocked, 8U);
+    BOOST_CHECK_EQUAL(admitted.load(), 8U);
+    BOOST_CHECK_EQUAL(active.load(), 0U);
+
+    size_t remaining{9};
     BOOST_CHECK(window.Run([&]() -> std::optional<WindowJob> {
         if (remaining == 0) return std::nullopt;
         --remaining;
