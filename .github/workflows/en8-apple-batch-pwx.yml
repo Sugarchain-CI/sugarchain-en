@@ -1,0 +1,155 @@
+name: En8 Apple batch-only PWX native comparison
+on:
+  push:
+    branches: [ci/en8-apple-index-cache]
+    paths:
+      - .github/workflows/en8-apple-batch-pwx.yml
+      - .github/apple-batch-pwx/**
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  build:
+    name: Build Apple ARM64 ${{ matrix.role }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - role: candidate
+            source: 50e84a59e2b0b4aef0986adce83e124e76eff524
+            tree: 8cc7dd2f2fb842a17f2aeec9a6adfe157443e47b
+          - role: control
+            source: ae5e984447c25e03472b43b8e6341130ccc76b68
+            tree: a4c67b35ba18eb98b97da5493bf187aad2588a29
+    env:
+      FILE_ENV: ./ci/test/00_setup_env_mac_cross.sh
+      DANGER_CI_ON_HOST_FOLDERS: 1
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: Sugarchain-CI/sugarchain-en
+          ref: ${{ matrix.source }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify the immutable source and tree
+        env:
+          EXPECTED_SOURCE: ${{ matrix.source }}
+          EXPECTED_TREE: ${{ matrix.tree }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE"
+      - uses: ./.github/actions/configure-environment
+      - uses: ./.github/actions/clear-files
+      - uses: ./.github/actions/cache/restore
+        with:
+          provider: gha
+      - uses: actions/cache/restore@v5
+        with:
+          path: |
+            ${{ env.BASE_CACHE }}
+            ${{ env.SOURCES_PATH }}
+          key: en8-arm64-depends-v1-${{ env.DEPENDS_HASH }}
+      - uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: en8-arm64-ccache-v1-${{ env.DEPENDS_HASH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: en8-arm64-ccache-v1-${{ env.DEPENDS_HASH }}-
+      - uses: ./.github/actions/configure-docker
+        with:
+          provider: gha
+      - name: Build the matched Apple CLI and test executables
+        run: |
+          set -eo pipefail
+          source ./ci/test/00_setup_env.sh
+          export GOAL="install"
+          export BASE_OUTDIR="$BASE_BUILD_DIR/installed"
+          export BITCOIN_CONFIG="$(echo '
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_CXX_FLAGS_RELEASE=-O3
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON -DBUILD_GUI=OFF -DENABLE_WALLET=ON
+            -DENABLE_IPC=OFF -DBUILD_TESTS=ON -DBUILD_GUI_TESTS=OFF -DBUILD_BENCH=OFF
+            -DBUILD_FUZZ_BINARY=OFF -DINSTALL_MAN=OFF -DWITH_USDT=OFF' | xargs)"
+          python3 ./ci/test/02_run_container.py
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: diagnostic
+          persist-credentials: false
+      - name: Collect source, toolchain and binary receipts
+        env:
+          BUILD_ROLE: ${{ matrix.role }}
+        run: |
+          set -euo pipefail
+          python3 -B diagnostic/.github/apple-batch-pwx/collect-cross.py \
+            --role "$BUILD_ROLE" --source "$PWD" --build "$BASE_BUILD_DIR" \
+            --depends-hash "$DEPENDS_HASH" --output "$RUNNER_TEMP/paired-cross"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: apple-batch-pwx-cross-${{ matrix.role }}
+          path: ${{ runner.temp }}/paired-cross/*
+          if-no-files-found: error
+          retention-days: 14
+
+  native:
+    name: Verify and compare on the same native Apple Silicon runner
+    needs: build
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: apple-batch-pwx-cross-*
+          path: ${{ runner.temp }}/incoming
+      - name: Verify and stage both native builds
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" != 1
+          mkdir "$RUNNER_TEMP/batch-evidence"
+          {
+            sw_vers
+            /usr/sbin/sysctl machdep.cpu.brand_string hw.logicalcpu hw.memsize hw.pagesize
+            git rev-parse HEAD 'HEAD^{tree}'
+          } > "$RUNNER_TEMP/batch-evidence/environment.log"
+          python3 -B .github/apple-batch-pwx/stage-native.py \
+            --candidate "$RUNNER_TEMP/incoming/apple-batch-pwx-cross-candidate" \
+            --control "$RUNNER_TEMP/incoming/apple-batch-pwx-cross-control" \
+            --output "$RUNNER_TEMP/paired-native" > "$RUNNER_TEMP/batch-evidence/stage.log" 2>&1
+          cp "$RUNNER_TEMP/paired-native/native-builds.json" "$RUNNER_TEMP/batch-evidence/"
+      - name: Run existing proof regressions and candidate selector tests
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/paired-native/candidate/test_bitcoin" \
+            --run_test=pow_tests,header_pow_tests,headers_sync_chainwork_tests \
+            --catch_system_error=no --log_level=test_suite --report_level=short \
+            > "$RUNNER_TEMP/batch-evidence/native-tests.log" 2>&1
+      - name: Run the fixed Mainnet presync matrix
+        timeout-minutes: 24
+        run: |
+          set -euo pipefail
+          python3 -B .github/apple-batch-pwx/measure-native.py \
+            --binaries "$RUNNER_TEMP/paired-native" \
+            --headers .github/en8-mainnet/mainnet-headers-100k.bin.gz \
+            --case-root "$RUNNER_TEMP/batch-cases" \
+            --output "$RUNNER_TEMP/batch-evidence/matrix" \
+            > "$RUNNER_TEMP/batch-evidence/matrix.log" 2>&1
+      - name: Retain all available native evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-apple-batch-pwx-native
+          path: ${{ runner.temp }}/batch-evidence
+          if-no-files-found: warn
+          retention-days: 14
