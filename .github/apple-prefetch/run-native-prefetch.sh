@@ -36,9 +36,8 @@ reference_names=(-Dyespower=reference_yespower -Dyespower_tls=reference_yespower
         > "$work/evidence/compiler-target.txt" 2>&1
     xcrun clang "${flags[@]}" -I"$baseline" "$tool_dir/measure-proofs.c" \
         "$baseline/yespower-opt.c" "$baseline/sha256.c" -o "$work/baseline"
-    xcrun otool -tvV "$work/baseline" \
-        | awk '/[[:space:]]eor3[[:space:]]/ { count++ } END { if (!count) exit 1; print count }' \
-        > "$work/evidence/baseline-eor3-count.txt"
+    python3 "$tool_dir/check-arm64-opcodes.py" "$work/baseline" baseline \
+        > "$work/evidence/baseline-opcodes.json"
     xcrun clang "${flags[@]}" "${reference_names[@]}" -I"$baseline" \
         -c "$baseline/yespower-opt.c" -o "$work/reference.o"
     for distance in 512 1024; do
@@ -48,9 +47,8 @@ reference_names=(-Dyespower=reference_yespower -Dyespower_tls=reference_yespower
         xcrun clang "${flags[@]}" "$option" -I"$variant" "$tool_dir/yespower-differential.c" \
             "$work/reference.o" "$variant/yespower-opt.c" "$variant/sha256.c" \
             -o "$work/differential-$distance"
-        xcrun otool -tvV "$work/prefetch-$distance" \
-            | awk '/[[:space:]]prfm[[:space:]]/ { print; found = 1 } END { if (!found) exit 1 }' \
-            > "$work/evidence/prfm-$distance.txt"
+        python3 "$tool_dir/check-arm64-opcodes.py" "$work/prefetch-$distance" prefetch \
+            > "$work/evidence/prefetch-$distance-opcodes.json"
     done
 } > "$work/evidence/build.log" 2>&1
 
