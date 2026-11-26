@@ -722,6 +722,11 @@ private:
      * This returns true if a getheaders is actually sent, and false otherwise.
      */
     bool MaybeSendGetHeaders(CNode& pfrom, const CBlockLocator& locator, Peer& peer) EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex);
+
+    /** Snapshot eligibility before entering chain and transaction lock scopes. */
+    bool CanAlignInitialHeadersSync(const CNode& node, Peer& peer) const
+        EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex, !peer.m_headers_sync_mutex);
+    const CBlockIndex* MaybeAlignInitialHeadersSyncStart(const CBlockIndex* start, bool can_align) const EXCLUSIVE_LOCKS_REQUIRED(cs_main);
     /** Potentially fetch blocks from this peer upon receipt of a new headers tip */
     void HeadersDirectFetchBlocks(CNode& pfrom, const Peer& peer, const CBlockIndex& last_header);
     /** Update peer state based on received headers message */
@@ -2696,6 +2701,25 @@ arith_uint256 PeerManagerImpl::GetAntiDoSWorkThreshold()
     return std::max(near_chaintip_work, m_chainman.MinimumChainWork());
 }
 
+bool PeerManagerImpl::CanAlignInitialHeadersSync(const CNode& node, Peer& peer) const
+{
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
+    if (m_chainparams.GetChainType() == ChainType::MAIN && m_chainman.IsInitialBlockDownload() &&
+        !node.HasPermission(NetPermissionFlags::NoBan)) {
+        LOCK(peer.m_headers_sync_mutex);
+        return !peer.m_headers_sync;
+    }
+#endif
+    return false;
+}
+
+const CBlockIndex* PeerManagerImpl::MaybeAlignInitialHeadersSyncStart(const CBlockIndex* start, bool can_align) const
+{
+    if (!start || !can_align || !m_chainman.IsInitialBlockDownload()) return start;
+    return &GetInitialHeadersSyncStart(*start, *Assert(m_chainman.m_best_header), m_chainparams,
+        m_chainman.MinimumChainWork(), m_opts.max_headers_result, can_align);
+}
+
 /**
  * Special handling for unconnecting headers that might be part of a block
  * announcement.
@@ -2706,12 +2730,13 @@ void PeerManagerImpl::HandleUnconnectingHeaders(CNode& pfrom, Peer& peer,
         const std::vector<CBlockHeader>& headers)
 {
     // Try to fill in the missing headers.
-    const CBlockIndex* best_header{WITH_LOCK(cs_main, return m_chainman.m_best_header)};
-    if (MaybeSendGetHeaders(pfrom, GetLocator(best_header), peer)) {
+    const bool can_align{CanAlignInitialHeadersSync(pfrom, peer)};
+    const CBlockIndex* start{WITH_LOCK(cs_main, return MaybeAlignInitialHeadersSyncStart(m_chainman.m_best_header, can_align))};
+    if (MaybeSendGetHeaders(pfrom, GetLocator(start), peer)) {
         LogDebug(BCLog::NET, "received header %s: missing prev block %s, sending getheaders (%d) to end (peer=%d)\n",
             headers[0].GetHash().ToString(),
             headers[0].hashPrevBlock.ToString(),
-            best_header->nHeight,
+            start->nHeight,
             pfrom.GetId());
     }
 
@@ -4202,6 +4227,7 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
         }
 
         const bool reject_tx_invs{RejectIncomingTxs(pfrom)};
+        const bool can_align{!peer.m_inv_triggered_getheaders_before_sync && CanAlignInitialHeadersSync(pfrom, peer)};
 
         LOCK2(cs_main, m_tx_download_mutex);
 
@@ -4265,9 +4291,10 @@ void PeerManagerImpl::ProcessMessage(Peer& peer, CNode& pfrom, const std::string
             // use if we turned on sync with all peers).
             CNodeState& state{*Assert(State(pfrom.GetId()))};
             if (state.fSyncStarted || (!peer.m_inv_triggered_getheaders_before_sync && *best_block != m_last_block_inv_triggering_headers_sync)) {
-                if (MaybeSendGetHeaders(pfrom, GetLocator(m_chainman.m_best_header), peer)) {
+                const auto* start{MaybeAlignInitialHeadersSyncStart(m_chainman.m_best_header, !state.fSyncStarted && can_align)};
+                if (MaybeSendGetHeaders(pfrom, GetLocator(start), peer)) {
                     LogDebug(BCLog::NET, "getheaders (%d) %s to peer=%d\n",
-                            m_chainman.m_best_header->nHeight, best_block->ToString(),
+                            start->nHeight, best_block->ToString(),
                             pfrom.GetId());
                 }
                 if (!state.fSyncStarted) {
@@ -5841,6 +5868,7 @@ bool PeerManagerImpl::SendMessages(CNode& node)
 
     MaybeSendSendHeaders(node, peer);
 
+    const bool can_align_initial_headers{CanAlignInitialHeadersSync(node, peer)};
     {
         LOCK(cs_main);
 
@@ -5885,6 +5913,7 @@ bool PeerManagerImpl::SendMessages(CNode& node)
                    got back an empty response.  */
                 if (pindexStart->pprev)
                     pindexStart = pindexStart->pprev;
+                pindexStart = MaybeAlignInitialHeadersSyncStart(pindexStart, can_align_initial_headers);
                 if (MaybeSendGetHeaders(node, GetLocator(pindexStart), peer)) {
                     LogDebug(BCLog::NET, "initial getheaders (%d) to peer=%d (startheight:%d)\n", pindexStart->nHeight, node.GetId(), peer.m_starting_height);
 
