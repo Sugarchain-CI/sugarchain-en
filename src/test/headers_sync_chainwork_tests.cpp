@@ -15,6 +15,7 @@
 
 #include <chrono>
 #include <cstddef>
+#include <utility>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -142,6 +143,82 @@ std::vector<CBlockHeader> HeadersGeneratorSetup::GenerateHeaders(
 // 3. Repeat the second set of headers in both phases to demonstrate behavior
 //    when the chain a peer provides has too little work.
 BOOST_FIXTURE_TEST_SUITE(headers_sync_chainwork_tests, HeadersGeneratorSetup)
+
+BOOST_AUTO_TEST_CASE(initial_headers_locator_aligns_only_low_work_mainnet)
+{
+    const auto mainnet{CChainParams::Main()};
+    const auto testnet{CChainParams::TestNet()};
+    constexpr arith_uint256 minimum_work{100};
+    std::vector<CBlockIndex> index(2783);
+    for (size_t height{0}; height < index.size(); ++height) {
+        auto& entry{index[height]};
+        entry.nHeight = static_cast<int>(height);
+        entry.nChainWork = minimum_work - 1;
+        if (height > 0) entry.pprev = &index[height - 1];
+        entry.BuildSkip();
+    }
+
+    struct Start { int best; int parent; int aligned; };
+    for (const auto [best, parent, aligned] : {Start{0, 0, 0}, Start{1, 0, 0}, Start{1999, 1998, 0},
+            Start{2000, 1999, 0}, Start{2001, 2000, 2000}, Start{2782, 2781, 2000}}) {
+        BOOST_TEST_CONTEXT("best header height=" << best) {
+            const auto choose = [&](const CChainParams& network, uint32_t size, bool align) {
+                return &GetInitialHeadersSyncStart(index[parent], index[best], network, minimum_work, size, align);
+            };
+            BOOST_CHECK_EQUAL(choose(*mainnet, MAX_HEADERS_RESULTS, true), &index[aligned]);
+            BOOST_CHECK_EQUAL(choose(*mainnet, MAX_HEADERS_RESULTS, false), &index[parent]);
+            BOOST_CHECK_EQUAL(choose(*testnet, MAX_HEADERS_RESULTS, true), &index[parent]);
+            BOOST_CHECK_EQUAL(choose(Params(), MAX_HEADERS_RESULTS, true), &index[parent]);
+            BOOST_CHECK_EQUAL(choose(*mainnet, 0, true), &index[parent]);
+            BOOST_CHECK_EQUAL(choose(*mainnet, 1, true), &index[parent]);
+            index[best].nChainWork = minimum_work;
+            BOOST_CHECK_EQUAL(choose(*mainnet, MAX_HEADERS_RESULTS, true), &index[parent]);
+            index[best].nChainWork = minimum_work - 1;
+        }
+    }
+    BOOST_CHECK_EQUAL(&GetInitialHeadersSyncStart(index[2781], index.back(), *mainnet, minimum_work, 997, true), &index[1994]);
+
+    // Announcement and unconnecting-header requests ordinarily start at the
+    // best header itself. Their alignment keeps an exact boundary in place.
+    for (const auto [best, aligned] : {std::pair{0, 0}, {782, 0}, {1999, 0}, {2000, 2000}, {2782, 2000}}) {
+        const auto choose = [&](const CChainParams& network, bool can_align) {
+            return &GetInitialHeadersSyncStart(index[best], index[best], network, minimum_work, MAX_HEADERS_RESULTS, can_align);
+        };
+        BOOST_CHECK_EQUAL(choose(*mainnet, true), &index[aligned]);
+        BOOST_CHECK_EQUAL(choose(*mainnet, false), &index[best]);
+        BOOST_CHECK_EQUAL(choose(*testnet, true), &index[best]);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(initial_headers_locator_keeps_aligned_anchor_on_best_fork)
+{
+    const auto mainnet{CChainParams::Main()};
+    constexpr arith_uint256 minimum_work{100};
+    std::vector<CBlockIndex> trunk(2783);
+    std::vector<CBlockIndex> fork(trunk.size() - 1999);
+    for (size_t height{0}; height < trunk.size(); ++height) {
+        auto& entry{trunk[height]};
+        entry.nHeight = static_cast<int>(height);
+        entry.nChainWork = minimum_work - 1;
+        if (height > 0) entry.pprev = &trunk[height - 1];
+        entry.BuildSkip();
+    }
+    auto* previous{&trunk[1998]};
+    for (auto& entry : fork) {
+        entry.nHeight = previous->nHeight + 1;
+        entry.nChainWork = minimum_work - 1;
+        entry.pprev = previous;
+        entry.BuildSkip();
+        previous = &entry;
+    }
+
+    const auto& anchor{GetInitialHeadersSyncStart(*fork.back().pprev, fork.back(), *mainnet, minimum_work, MAX_HEADERS_RESULTS, true)};
+    BOOST_CHECK_EQUAL(anchor.nHeight, 2000);
+    BOOST_CHECK_EQUAL(&anchor, &fork[1]);
+    BOOST_CHECK_NE(&anchor, &trunk[2000]);
+    BOOST_CHECK_EQUAL(&GetInitialHeadersSyncStart(fork[0], fork[1], *mainnet, minimum_work, MAX_HEADERS_RESULTS, true), &trunk[0]);
+    BOOST_CHECK_EQUAL(&GetInitialHeadersSyncStart(fork.back(), fork.back(), *mainnet, minimum_work, MAX_HEADERS_RESULTS, true), &fork[1]);
+}
 
 BOOST_AUTO_TEST_CASE(advancing_presync_preserves_network_wait_allowance)
 {

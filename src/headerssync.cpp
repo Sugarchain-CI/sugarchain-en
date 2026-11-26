@@ -4,6 +4,7 @@
 
 #include <headerssync.h>
 
+#include <kernel/chainparams.h>
 #include <logging.h>
 #include <pow.h>
 #include <util/check.h>
@@ -15,6 +16,21 @@
 // Our memory analysis in headerssync-params.py assumes this many bytes for a
 // CompressedHeader (we should re-calculate parameters if we compress further).
 static_assert(sizeof(CompressedHeader) == 48);
+
+const CBlockIndex& GetInitialHeadersSyncStart(const CBlockIndex& start, const CBlockIndex& best_header, const CChainParams& params,
+        const arith_uint256& minimum_chain_work, uint32_t batch_size, bool align_low_work_sync)
+{
+    if (!align_low_work_sync || params.GetChainType() != ChainType::MAIN || !params.GetConsensus().fYespowerSugar ||
+        best_header.nChainWork >= minimum_chain_work || batch_size == 0) {
+        return start;
+    }
+
+    // Matching batch boundaries can reuse the exact-header proof cache from
+    // an earlier download in this process.
+    const auto height{static_cast<uint32_t>(start.nHeight)};
+    const int aligned_height{static_cast<int>(height - height % batch_size)};
+    return *Assert(start.GetAncestor(aligned_height));
+}
 
 void HeadersSyncState::AccountForLocalPresyncProofTime(int64_t previous_height,
         std::chrono::microseconds proof_time, std::chrono::microseconds& deadline,
