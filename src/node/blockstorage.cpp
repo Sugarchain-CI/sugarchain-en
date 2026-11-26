@@ -993,6 +993,9 @@ bool BlockManager::LoadBlockIndexDB(const std::optional<uint256>& snapshot_block
 #ifdef __APPLE__
         m_block_read_file.reset();
 #endif
+#if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+        CloseBlockReadStream();
+#endif
         if (!block_closed || !undo_closed) return false;
     }
 #endif
@@ -1243,6 +1246,9 @@ bool BlockManager::FlushBlockFile(int blockfile_num, bool fFinalize, bool finali
 #if defined(WIN32) || defined(__APPLE__)
     closed = m_block_writer.Close(blockfile_num);
 #endif
+#if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+    if (fFinalize) CloseBlockReadStream(blockfile_num);
+#endif
     if (!m_block_file_seq.Flush(block_pos_old, fFinalize) || !closed) {
 #if defined(__APPLE__) && defined(__x86_64__)
         m_block_writer.RecordError();
@@ -1313,6 +1319,9 @@ void BlockManager::UnlinkPrunedFiles(const std::set<int>& setFilesToPrune) const
 #endif
 #ifdef __APPLE__
         if (m_block_read_file_num == *it) m_block_read_file.reset();
+#endif
+#if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+        CloseBlockReadStream(*it);
 #endif
         FlatFilePos pos(*it, 0);
         const bool removed_blockfile{fs::remove(m_block_file_seq.FileName(pos), ec)};
@@ -1797,6 +1806,17 @@ bool BlockManager::ReadBlock(CBlock& block, const CBlockIndex& index) const
     return ReadBlock(block, block_pos, index.GetBlockHash());
 }
 
+#if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+void BlockManager::CloseBlockReadStream(int file_num) const
+{
+    AssertLockHeld(cs_LastBlockFile);
+    if (file_num == -1 || file_num == m_block_read_stream_num) {
+        m_block_read_stream.reset();
+        m_block_read_stream_num = -1;
+    }
+}
+#endif
+
 BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& pos, std::optional<std::pair<size_t, size_t>> block_part) const
 {
     if (pos.nPos < STORAGE_HEADER_BYTES) {
@@ -1806,6 +1826,40 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
         LogError("Failed for %s while reading raw block storage header", pos.ToString());
         return util::Unexpected{ReadRawError::IO};
     }
+#if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+    if (GetParams().GetChainType() == ChainType::MAIN && GetConsensus().fYespowerSugar) {
+        LOCK(cs_LastBlockFile);
+        if (m_block_read_stream_num != pos.nFile) {
+            CloseBlockReadStream();
+            std::unique_ptr<std::FILE, decltype(&std::fclose)> opened{
+                m_block_file_seq.Open({pos.nFile, 0}, /*read_only=*/true), std::fclose};
+            if (!opened) {
+                LogError("OpenBlockFile failed for %s while reading raw block", pos.ToString());
+                return util::Unexpected{ReadRawError::IO};
+            }
+            // Discard CRT read-ahead across calls. Writers may append in the
+            // same preallocated range while this read stream is retained.
+            if (std::setvbuf(opened.get(), nullptr, _IONBF, BUFSIZ) == 0) {
+                m_block_read_stream.emplace(opened.get(), m_obfuscation);
+                opened.release();
+                m_block_read_stream_num = pos.nFile;
+            }
+        }
+        if (m_block_read_stream) {
+            auto result{ReadRawBlockImpl(pos, block_part, &*m_block_read_stream)};
+            if (!result && result.error() == ReadRawError::IO) CloseBlockReadStream();
+            return result;
+        }
+    }
+    return ReadRawBlockImpl(pos, block_part);
+}
+
+// Windows can supply its retained stream to the common raw record parser.
+// Other platforms continue directly into this body from ReadRawBlock.
+BlockManager::ReadRawBlockResult BlockManager::ReadRawBlockImpl(const FlatFilePos& pos,
+    std::optional<std::pair<size_t, size_t>> block_part, AutoFile* cached_stream) const
+{
+#endif
 #ifdef __APPLE__
     std::shared_ptr<std::FILE> read_handle;
     {
@@ -1852,7 +1906,12 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
         read_offset += static_cast<off_t>(dst.size());
     };
 #else
+#if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+    AutoFile opened{cached_stream ? AutoFile{nullptr} : OpenBlockFile({pos.nFile, pos.nPos - STORAGE_HEADER_BYTES}, /*fReadOnly=*/true)};
+    AutoFile& filein{cached_stream ? *cached_stream : opened};
+#else
     AutoFile filein{OpenBlockFile({pos.nFile, pos.nPos - STORAGE_HEADER_BYTES}, /*fReadOnly=*/true)};
+#endif
     if (filein.IsNull()) {
         LogError("OpenBlockFile failed for %s while reading raw block", pos.ToString());
         return util::Unexpected{ReadRawError::IO};
@@ -1867,6 +1926,15 @@ BlockManager::ReadRawBlockResult BlockManager::ReadRawBlock(const FlatFilePos& p
         std::array<std::byte, STORAGE_HEADER_BYTES> header;
         read_bytes(header);
         SpanReader{header} >> blk_start >> blk_size;
+#elif defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+        if (cached_stream) {
+            filein.seek(pos.nPos - STORAGE_HEADER_BYTES, SEEK_SET);
+            std::array<std::byte, STORAGE_HEADER_BYTES> header;
+            filein.read(header);
+            SpanReader{header} >> blk_start >> blk_size;
+        } else {
+            filein >> blk_start >> blk_size;
+        }
 #else
         filein >> blk_start >> blk_size;
 #endif
