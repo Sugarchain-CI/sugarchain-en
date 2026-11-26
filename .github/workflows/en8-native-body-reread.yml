@@ -1,0 +1,100 @@
+name: Native Mainnet body reread diagnostic
+permissions:
+  contents: read
+  actions: read
+jobs:
+  native-body-reread:
+    name: Mainnet body rereads on ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - platform: windows-msvcrt
+          runner: windows-2022
+          artifact: x86_64-w64-mingw32-executables-release-45841070388
+          binary: runtime/bin/sugarchaind.exe
+        - platform: windows-ucrt
+          runner: windows-2022
+          artifact: x86_64-w64-mingw32ucrt-executables-release-45841070388
+          binary: runtime/bin/sugarchaind.exe
+        - platform: apple-arm64
+          runner: macos-15
+          artifact: release-mac-arm64
+          binary: runtime/sugarchain-en-31.1.2-macos-arm64-cli/bin/sugarchaind
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.sha }}
+        persist-credentials: false
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+    - name: Download the previously verified native package
+      uses: actions/download-artifact@v8
+      with:
+        run-id: 45841070388
+        name: ${{ matrix.artifact }}
+        github-token: ${{ github.token }}
+        path: runtime
+    - name: Verify source and retained native package bytes
+      shell: bash
+      run: "set -euo pipefail\ntest \"$(cat runtime/release-source-sha.txt)\" = 8cae65e954ee78a1b40879c968ef2049d170930e\n\
+        test \"$(cat runtime/release-source-tree.txt)\" = a9b417f9093256338b09e095c42f8cb114040a65\ncase \"$RUNNER_OS\"\
+        \ in\n  Windows)\n    test \"$RUNNER_ARCH\" = X64\n    (cd runtime && sha256sum --check --strict SHA256SUMS.release-inputs)\n\
+        \    ;;\n  macOS)\n    test \"$RUNNER_ARCH\" = ARM64\n    (cd runtime && shasum -a 256 -c package.sha256)\n\
+        \    tar -xzf runtime/sugarchain-en-31.1.2-macos-arm64-cli.tar.gz -C runtime\n    codesign --verify --strict\
+        \ \"${{ matrix.binary }}\"\n    ;;\n  *) exit 2 ;;\nesac\n"
+    - name: Measure stock ConnectTip rereads with verified requested order
+      shell: bash
+      run: "set -euo pipefail\npython -B .github/en8-mainnet/body-reread/mainnet_body_reread.py \\\n  --binary \"\
+        ${{ matrix.binary }}\" \\\n  --fixture .github/en8-mainnet/mainnet-blocks.dat.gz \\\n  --fixture-info .github/en8-mainnet/fixture.json\
+        \ \\\n  --output \"$RUNNER_TEMP/en8-body-reread\"\n"
+    - name: Retain native reread counts, wire ordering and node logs
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: en8-native-body-reread-${{ matrix.platform }}
+        path: '${{ runner.temp }}/en8-body-reread/result.json
+
+          ${{ runner.temp }}/en8-body-reread/*/wire.jsonl
+
+          ${{ runner.temp }}/en8-body-reread/*/debug.log
+
+          ${{ runner.temp }}/en8-body-reread/*/debug-restart.log
+
+          ${{ runner.temp }}/en8-body-reread/*/console.log
+
+          ${{ runner.temp }}/en8-body-reread/*/console-restart.log
+
+          '
+        if-no-files-found: warn
+        retention-days: 7
+    - name: Sample stock public Mainnet presync timing
+      shell: bash
+      timeout-minutes: 2
+      continue-on-error: true
+      run: "set -euo pipefail\npython -B .github/en8-mainnet/body-reread/public_header_wait.py \\\n  --binary \"\
+        ${{ matrix.binary }}\" \\\n  --output \"$RUNNER_TEMP/en8-public-header-wait\"\n"
+    - name: Retain public header timing sample
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: en8-public-header-wait-${{ matrix.platform }}
+        path: '${{ runner.temp }}/en8-public-header-wait/result.json
+
+          ${{ runner.temp }}/en8-public-header-wait/debug.log
+
+          ${{ runner.temp }}/en8-public-header-wait/console.log
+
+          '
+        if-no-files-found: warn
+        retention-days: 7
+'on':
+  push:
+    branches:
+    - ci/en8-native-body-reread
+    paths:
+    - .github/workflows/en8-native-body-reread.yml
+    - .github/en8-mainnet/body-reread/**
