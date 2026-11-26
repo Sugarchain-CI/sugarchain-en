@@ -113,7 +113,7 @@ def main():
         download(path, verified[extension])
     with ZipFile(portable) as archive:
         archive.extractall(work)
-    binaries = {kind: work / stem / path for kind, path in PROGRAMS.items()}
+    binaries = {kind: work / f"{stem}-portable" / path for kind, path in PROGRAMS.items()}
     runtime_sha256 = {kind: verify_executable(path, verified[kind]) for kind, path in binaries.items()}
     metadata = {
         "release": RELEASE, "host": host, "crt": args.crt,
