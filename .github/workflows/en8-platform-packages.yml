@@ -29,7 +29,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 7a213205644e006b58bc86ba265eeefae4209816
+        ref: 92c2bb5dac932620b1db94aa0c7506219375e4d9
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -38,9 +38,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "7a213205644e006b58bc86ba265eeefae4209816"
+        test "$actual" = "92c2bb5dac932620b1db94aa0c7506219375e4d9"
 
-        test "$(git rev-parse HEAD^{tree})" = "4cc7f7799efca1a5d315ce5bed6759dd33cae985"
+        test "$(git rev-parse HEAD^{tree})" = "740be268f91e8b662c12a92f9d61e3f0a0643f23"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - uses: ./.github/actions/configure-environment
@@ -72,7 +72,7 @@ jobs:
         provider: gha
     - name: Cross-build with the repository's Darwin depends toolchain
       shell: bash
-      run: "test \"$(git rev-parse HEAD)\" = 7a213205644e006b58bc86ba265eeefae4209816\nsource ./ci/test/00_setup_env.sh\n\
+      run: "test \"$(git rev-parse HEAD)\" = 92c2bb5dac932620b1db94aa0c7506219375e4d9\nsource ./ci/test/00_setup_env.sh\n\
         export GOAL=\"install deploy\"\nexport BASE_OUTDIR=\"$BASE_BUILD_DIR/installed\"\nexport BITCOIN_CONFIG=\"\
         \n  -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\
         \ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON\n  -DBUILD_GUI=ON -DENABLE_WALLET=ON\
@@ -145,7 +145,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 7a213205644e006b58bc86ba265eeefae4209816
+        ref: 92c2bb5dac932620b1db94aa0c7506219375e4d9
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -154,9 +154,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "7a213205644e006b58bc86ba265eeefae4209816"
+        test "$actual" = "92c2bb5dac932620b1db94aa0c7506219375e4d9"
 
-        test "$(git rev-parse HEAD^{tree})" = "4cc7f7799efca1a5d315ce5bed6759dd33cae985"
+        test "$(git rev-parse HEAD^{tree})" = "740be268f91e8b662c12a92f9d61e3f0a0643f23"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - name: Check out the exact release diagnostics overlay
@@ -401,7 +401,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v6
       with:
-        ref: 7a213205644e006b58bc86ba265eeefae4209816
+        ref: 92c2bb5dac932620b1db94aa0c7506219375e4d9
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -410,9 +410,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "7a213205644e006b58bc86ba265eeefae4209816"
+        test "$actual" = "92c2bb5dac932620b1db94aa0c7506219375e4d9"
 
-        test "$(git rev-parse HEAD^{tree})" = "4cc7f7799efca1a5d315ce5bed6759dd33cae985"
+        test "$(git rev-parse HEAD^{tree})" = "740be268f91e8b662c12a92f9d61e3f0a0643f23"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"
 
@@ -581,7 +581,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v6
       with:
-        ref: 7a213205644e006b58bc86ba265eeefae4209816
+        ref: 92c2bb5dac932620b1db94aa0c7506219375e4d9
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -590,9 +590,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "7a213205644e006b58bc86ba265eeefae4209816"
+        test "$actual" = "92c2bb5dac932620b1db94aa0c7506219375e4d9"
 
-        test "$(git rev-parse HEAD^{tree})" = "4cc7f7799efca1a5d315ce5bed6759dd33cae985"
+        test "$(git rev-parse HEAD^{tree})" = "740be268f91e8b662c12a92f9d61e3f0a0643f23"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"
 
@@ -612,13 +612,14 @@ jobs:
       shell: bash
       run: 'set -euo pipefail
 
-        test "$(cat release-source-sha.txt)" = "7a213205644e006b58bc86ba265eeefae4209816"
+        test "$(cat release-source-sha.txt)" = "92c2bb5dac932620b1db94aa0c7506219375e4d9"
 
-        test "$(cat release-source-tree.txt)" = "4cc7f7799efca1a5d315ce5bed6759dd33cae985"
+        test "$(cat release-source-tree.txt)" = "740be268f91e8b662c12a92f9d61e3f0a0643f23"
 
         sha256sum --check --strict SHA256SUMS.release-inputs
 
         '
+      id: verified_candidate
     - name: Download retained Windows test inputs
       uses: actions/download-artifact@v8
       with:
@@ -722,6 +723,7 @@ jobs:
         (cd baseline-mainnet && sha256sum --check --strict SHA256SUMS.release-inputs)
 
         '
+      id: verified_baseline
     - name: Verify scheduled Mainnet reconnect on native Windows
       timeout-minutes: 20
       shell: pwsh
@@ -803,11 +805,13 @@ jobs:
       run: 'set -euo pipefail
 
         python -B release-tools/.github/en8-mainnet/body-reread/mainnet_body_reread_ab.py --crt ''${{ matrix.crt
-        }}'' --baseline baseline-mainnet --candidate . --candidate-source 7a213205644e006b58bc86ba265eeefae4209816
-        --candidate-tree 4cc7f7799efca1a5d315ce5bed6759dd33cae985 --fixture release-tools/.github/en8-mainnet/mainnet-blocks.dat.gz
+        }}'' --baseline baseline-mainnet --candidate . --candidate-source 92c2bb5dac932620b1db94aa0c7506219375e4d9
+        --candidate-tree 740be268f91e8b662c12a92f9d61e3f0a0643f23 --fixture release-tools/.github/en8-mainnet/mainnet-blocks.dat.gz
         --fixture-info release-tools/.github/en8-mainnet/fixture.json --output "$RUNNER_TEMP/en8-body-reader-ab"
 
         '
+      if: ${{ !cancelled() && steps.verified_candidate.outcome == 'success' && steps.verified_baseline.outcome ==
+        'success' }}
     - name: Retain native Mainnet reader comparison
       if: ${{ !cancelled() }}
       uses: actions/upload-artifact@v7
@@ -815,11 +819,11 @@ jobs:
         name: en8-body-reader-${{ matrix.crt }}
         path: '${{ runner.temp }}/en8-body-reader-ab/result.json
 
-          ${{ runner.temp }}/en8-body-reader-ab/**/wire.json
+          ${{ runner.temp }}/en8-body-reader-ab/**/wire.jsonl
 
-          ${{ runner.temp }}/en8-body-reader-ab/**/debug.log
+          ${{ runner.temp }}/en8-body-reader-ab/**/debug*.log
 
-          ${{ runner.temp }}/en8-body-reader-ab/**/console.log'
+          ${{ runner.temp }}/en8-body-reader-ab/**/console*.log'
         if-no-files-found: warn
         retention-days: 30
     timeout-minutes: 90

@@ -178,7 +178,7 @@ def measure(args, case, locators, frames, sample):
     wall = completed - wire[0]["requested"]
     user, system = after[1] - before[1], after[2] - before[2]
     log = log_text(case)
-    if proc.returncode != 0 or "Shutdown: done" not in log:
+    if proc.returncode != 0 or "Shutdown done" not in log:
         raise RuntimeError(f"Expected clean RPC shutdown, process return code {proc.returncode}")
     if wall <= 0 or before[0] != after[0] or user <= 0 or system < 0:
         raise RuntimeError("Invalid process CPU sample")
