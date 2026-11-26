@@ -1,4 +1,4 @@
-name: En8 resumed Mainnet proof-batch validation
+name: En8 bounded Mainnet request overlap and Windows reads
 'on':
   push:
     branches:
@@ -29,7 +29,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 3af0ccfb44e3f32b65e9d6bbcc20309528a8ac3f
+        ref: 7a213205644e006b58bc86ba265eeefae4209816
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -38,9 +38,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "3af0ccfb44e3f32b65e9d6bbcc20309528a8ac3f"
+        test "$actual" = "7a213205644e006b58bc86ba265eeefae4209816"
 
-        test "$(git rev-parse HEAD^{tree})" = "453e00538206d3cf7ebd37ae77f9abfc4d477366"
+        test "$(git rev-parse HEAD^{tree})" = "4cc7f7799efca1a5d315ce5bed6759dd33cae985"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - uses: ./.github/actions/configure-environment
@@ -72,7 +72,7 @@ jobs:
         provider: gha
     - name: Cross-build with the repository's Darwin depends toolchain
       shell: bash
-      run: "test \"$(git rev-parse HEAD)\" = 3af0ccfb44e3f32b65e9d6bbcc20309528a8ac3f\nsource ./ci/test/00_setup_env.sh\n\
+      run: "test \"$(git rev-parse HEAD)\" = 7a213205644e006b58bc86ba265eeefae4209816\nsource ./ci/test/00_setup_env.sh\n\
         export GOAL=\"install deploy\"\nexport BASE_OUTDIR=\"$BASE_BUILD_DIR/installed\"\nexport BITCOIN_CONFIG=\"\
         \n  -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\
         \ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON\n  -DBUILD_GUI=ON -DENABLE_WALLET=ON\
@@ -145,7 +145,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 3af0ccfb44e3f32b65e9d6bbcc20309528a8ac3f
+        ref: 7a213205644e006b58bc86ba265eeefae4209816
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -154,9 +154,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "3af0ccfb44e3f32b65e9d6bbcc20309528a8ac3f"
+        test "$actual" = "7a213205644e006b58bc86ba265eeefae4209816"
 
-        test "$(git rev-parse HEAD^{tree})" = "453e00538206d3cf7ebd37ae77f9abfc4d477366"
+        test "$(git rev-parse HEAD^{tree})" = "4cc7f7799efca1a5d315ce5bed6759dd33cae985"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - name: Check out the exact release diagnostics overlay
@@ -254,6 +254,15 @@ jobs:
         \    lines.append(f\"| {network} | {package.upper()} | {median:.6f} s | {samples} |\")\nwith open(os.environ['GITHUB_STEP_SUMMARY'],\
         \ 'a') as output:\n    output.write('\\n'.join(lines) + '\\n')\nfor name in ('testnet7-cli', 'testnet7-gui'):\n\
         \    print(name, result['tests'][name]['median_sync_seconds'])\nPYREPORT\n"
+    - name: Run native Mainnet presync protocol cases
+      timeout-minutes: 6
+      shell: bash
+      run: 'set -euo pipefail
+
+        python3 -B release-tools/.github/en8-mainnet/overlap/run-signed-mac-header-pow.py --source "$PWD" --package
+        staged/sugarchain-en-31.1.2-macos-arm64-cli --work "$RUNNER_TEMP/en8-presync-wire"
+
+        '
     - name: Verify native Mainnet local-proof deadline credits
       shell: bash
       run: 'set -euo pipefail
@@ -327,6 +336,48 @@ jobs:
           ${{ runner.temp }}/en8-reconnect-*/node/console.log'
         if-no-files-found: warn
         retention-days: 30
+    - name: Compare completed Mainnet presync in fixed ABBA order
+      timeout-minutes: 25
+      shell: bash
+      run: 'set -euo pipefail
+
+        ditto -x -k baseline-mainnet/app.zip baseline-mainnet/gui
+
+        codesign --force --deep --sign - --timestamp=none baseline-mainnet/gui/Sugarchain-Qt.app
+
+        codesign --verify --deep --strict baseline-mainnet/gui/Sugarchain-Qt.app
+
+        script=release-tools/.github/en8-mainnet/overlap/presync-overlap-paired.py
+
+        fixture=release-tools/.github/en8-mainnet/mainnet-headers-100k.bin.gz
+
+        python3 -B "$script" --baseline baseline-mainnet/cli/bin/sugarchaind --candidate staged/sugarchain-en-31.1.2-macos-arm64-cli/bin/sugarchaind
+        --headers "$fixture" --case-root "$RUNNER_TEMP/en8-overlap-cli" --output "$RUNNER_TEMP/en8-overlap-cli.json"
+        --lead-marker ''PRESYNC lead committed:''
+
+        python3 -B "$script" --baseline baseline-mainnet/gui/Sugarchain-Qt.app/Contents/MacOS/Sugarchain-Qt --candidate
+        staged/Sugarchain-Qt.app/Contents/MacOS/Sugarchain-Qt --headers "$fixture" --case-root "$RUNNER_TEMP/en8-overlap-gui"
+        --output "$RUNNER_TEMP/en8-overlap-gui.json" --gui --lead-marker ''PRESYNC lead committed:''
+
+        '
+    - name: Retain native presync protocol and overlap evidence
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: en8-presync-overlap-arm64
+        path: '${{ runner.temp }}/en8-overlap-*.json
+
+          ${{ runner.temp }}/en8-overlap-*/**/*.json
+
+          ${{ runner.temp }}/en8-overlap-*/**/debug.log
+
+          ${{ runner.temp }}/en8-overlap-*/**/console.log
+
+          ${{ runner.temp }}/en8-presync-wire/**/*.log
+
+          ${{ runner.temp }}/en8-presync-wire/config.ini'
+        if-no-files-found: warn
+        retention-days: 30
   windows-cross:
     name: Windows-cross to x86_64, ${{ matrix.crt }}
     runs-on: ubuntu-latest
@@ -350,7 +401,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v6
       with:
-        ref: 3af0ccfb44e3f32b65e9d6bbcc20309528a8ac3f
+        ref: 7a213205644e006b58bc86ba265eeefae4209816
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -359,9 +410,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "3af0ccfb44e3f32b65e9d6bbcc20309528a8ac3f"
+        test "$actual" = "7a213205644e006b58bc86ba265eeefae4209816"
 
-        test "$(git rev-parse HEAD^{tree})" = "453e00538206d3cf7ebd37ae77f9abfc4d477366"
+        test "$(git rev-parse HEAD^{tree})" = "4cc7f7799efca1a5d315ce5bed6759dd33cae985"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"
 
@@ -530,7 +581,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v6
       with:
-        ref: 3af0ccfb44e3f32b65e9d6bbcc20309528a8ac3f
+        ref: 7a213205644e006b58bc86ba265eeefae4209816
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -539,9 +590,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "3af0ccfb44e3f32b65e9d6bbcc20309528a8ac3f"
+        test "$actual" = "7a213205644e006b58bc86ba265eeefae4209816"
 
-        test "$(git rev-parse HEAD^{tree})" = "453e00538206d3cf7ebd37ae77f9abfc4d477366"
+        test "$(git rev-parse HEAD^{tree})" = "4cc7f7799efca1a5d315ce5bed6759dd33cae985"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"
 
@@ -561,9 +612,9 @@ jobs:
       shell: bash
       run: 'set -euo pipefail
 
-        test "$(cat release-source-sha.txt)" = "3af0ccfb44e3f32b65e9d6bbcc20309528a8ac3f"
+        test "$(cat release-source-sha.txt)" = "7a213205644e006b58bc86ba265eeefae4209816"
 
-        test "$(cat release-source-tree.txt)" = "453e00538206d3cf7ebd37ae77f9abfc4d477366"
+        test "$(cat release-source-tree.txt)" = "4cc7f7799efca1a5d315ce5bed6759dd33cae985"
 
         sha256sum --check --strict SHA256SUMS.release-inputs
 
@@ -617,6 +668,15 @@ jobs:
     - name: Run Windows block storage functional tests
       run: py -3 test/functional/test_runner.py -j 2 --timeout-factor=8 --tmpdirprefix="$RUNNER_TEMP" feature_blocksdir.py
         feature_blocksxor.py feature_fastprune.py feature_reindex_readonly.py mining_sugarchain_regtest.py
+    - name: Run native Mainnet presync protocol cases
+      timeout-minutes: 8
+      shell: bash
+      run: 'set -euo pipefail
+
+        py -3 -B test/functional/p2p_sugarchain_header_pow.py --configfile test/config.ini --tmpdir "$RUNNER_TEMP/en8-presync-wire"
+        --timeout-factor=8 --v1transport --nocleanup
+
+        '
     - name: Verify native Mainnet local-proof deadline credits
       shell: pwsh
       run: '$ErrorActionPreference = "Stop"
@@ -699,6 +759,67 @@ jobs:
           ${{ runner.temp }}/en8-reconnect-*/node/debug.log
 
           ${{ runner.temp }}/en8-reconnect-*/node/console.log'
+        if-no-files-found: warn
+        retention-days: 30
+    - name: Compare completed Mainnet presync in fixed ABBA order
+      timeout-minutes: 25
+      shell: bash
+      run: 'set -euo pipefail
+
+        script=release-tools/.github/en8-mainnet/overlap/presync-overlap-paired.py
+
+        fixture=release-tools/.github/en8-mainnet/mainnet-headers-100k.bin.gz
+
+        python -B "$script" --baseline baseline-mainnet/bin/sugarchaind.exe --candidate bin/sugarchaind.exe --headers
+        "$fixture" --case-root "$RUNNER_TEMP/en8-overlap-cli" --output "$RUNNER_TEMP/en8-overlap-cli.json" --lead-marker
+        ''PRESYNC lead committed:''
+
+        python -B "$script" --baseline baseline-mainnet/bin/sugarchain-qt.exe --candidate bin/sugarchain-qt.exe
+        --headers "$fixture" --case-root "$RUNNER_TEMP/en8-overlap-gui" --output "$RUNNER_TEMP/en8-overlap-gui.json"
+        --gui --lead-marker ''PRESYNC lead committed:''
+
+        '
+    - name: Retain native presync protocol and overlap evidence
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: en8-presync-overlap-${{ matrix.crt }}
+        path: '${{ runner.temp }}/en8-overlap-*.json
+
+          ${{ runner.temp }}/en8-overlap-*/**/*.json
+
+          ${{ runner.temp }}/en8-overlap-*/**/debug.log
+
+          ${{ runner.temp }}/en8-overlap-*/**/console.log
+
+          ${{ runner.temp }}/en8-presync-wire/**/*.log
+
+          ${{ runner.temp }}/en8-presync-wire/config.ini'
+        if-no-files-found: warn
+        retention-days: 30
+    - name: Compare Mainnet block rereads in fixed ABBA order
+      timeout-minutes: 15
+      shell: bash
+      run: 'set -euo pipefail
+
+        python -B release-tools/.github/en8-mainnet/body-reread/mainnet_body_reread_ab.py --crt ''${{ matrix.crt
+        }}'' --baseline baseline-mainnet --candidate . --candidate-source 7a213205644e006b58bc86ba265eeefae4209816
+        --candidate-tree 4cc7f7799efca1a5d315ce5bed6759dd33cae985 --fixture release-tools/.github/en8-mainnet/mainnet-blocks.dat.gz
+        --fixture-info release-tools/.github/en8-mainnet/fixture.json --output "$RUNNER_TEMP/en8-body-reader-ab"
+
+        '
+    - name: Retain native Mainnet reader comparison
+      if: ${{ !cancelled() }}
+      uses: actions/upload-artifact@v7
+      with:
+        name: en8-body-reader-${{ matrix.crt }}
+        path: '${{ runner.temp }}/en8-body-reader-ab/result.json
+
+          ${{ runner.temp }}/en8-body-reader-ab/**/wire.json
+
+          ${{ runner.temp }}/en8-body-reader-ab/**/debug.log
+
+          ${{ runner.temp }}/en8-body-reader-ab/**/console.log'
         if-no-files-found: warn
         retention-days: 30
     timeout-minutes: 90

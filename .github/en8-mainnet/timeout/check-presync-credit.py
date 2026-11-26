@@ -10,7 +10,7 @@ import platform
 import re
 import socket
 import time
-from mainnet_probe import node, rpc
+from mainnet_probe import node, rpc, wait_for_presynced_height
 from mainnet_paired import compact_size, hash256, message, version_payload, wait_for
 
 GENESIS = '7d5eaec2dbb75f99feadfa524c78b7cabc1d8c8204f79d4f3a83381b811b0adc'
@@ -86,8 +86,8 @@ def main():
                         batch = headers[start:start+2000]
                         conn.sendall(message(b'headers', compact_size(len(batch)) + b''.join(h + b'\0' for h in batch)))
                         wait_for(conn, b'getheaders', deadline, locator=hash256(batch[-1]))
+                    _, peers, _ = wait_for_presynced_height(data, port, proc, 8000, deadline)
                     state = rpc(data, port, 'getblockchaininfo')
-                    peers = rpc(data, port, 'getpeerinfo')
                     if state['chain'] != 'main' or state['headers'] != 0 or state['blocks'] != 0 or len(peers) != 1 or peers[0].get('presynced_headers') != 8000:
                         raise AssertionError('Unexpected Mainnet PRESYNC state')
             if proc.returncode != 0:

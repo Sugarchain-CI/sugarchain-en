@@ -51,6 +51,21 @@ def rpc(path, port, method, *params):
         return None
 
 
+def wait_for_presynced_height(path, port, proc, expected, deadline):
+    """Wait for real validation, which can finish after the next wire request."""
+    attempts = 0
+    last_peers = None
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"Node exited before validated PRESYNC height {expected}: {proc.returncode}")
+        attempts += 1
+        last_peers = rpc(path, port, "getpeerinfo")
+        if last_peers and len(last_peers) == 1 and last_peers[0].get("presynced_headers") == expected:
+            return time.perf_counter(), last_peers, attempts
+        time.sleep(0.01)
+    raise TimeoutError(f"Validated PRESYNC height {expected} not observed; last peers: {last_peers!r}")
+
+
 def check_host():
     if platform.system() == "Darwin":
         translated = subprocess.run(["sysctl", "-in", "sysctl.proc_translated"],
