@@ -14,6 +14,7 @@
 #include <util/bitdeque.h>
 #include <util/hasher.h>
 
+#include <chrono>
 #include <deque>
 #include <vector>
 
@@ -127,6 +128,11 @@ public:
 
     /** Return the amount of work in the chain received during the PRESYNC phase. */
     arith_uint256 GetPresyncWork() const { return m_current_chain_work; }
+
+    /** Apply bounded local proof time after processing a batch from an established PRESYNC. */
+    void AccountForLocalPresyncProofTime(int64_t previous_height, std::chrono::microseconds proof_time,
+                                        std::chrono::microseconds& deadline,
+                                        std::chrono::microseconds& credit_remaining) const;
 
     /** Construct a HeadersSyncState object representing a headers sync via this
      *  download-twice mechanism).

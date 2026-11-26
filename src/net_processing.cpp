@@ -97,6 +97,11 @@ TRACEPOINT_SEMAPHORE(net, misbehaving_connection);
  *  Timeout = base + per_header * (expected number of headers) */
 static constexpr auto HEADERS_DOWNLOAD_TIMEOUT_BASE = 15min;
 static constexpr auto HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER = 1ms;
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
+static constexpr bool CREDIT_LOCAL_PRESYNC_PROOF_TIME{true};
+#else
+static constexpr bool CREDIT_LOCAL_PRESYNC_PROOF_TIME{false};
+#endif
 /** How long to wait for a peer to respond to a getheaders request */
 static constexpr auto HEADERS_RESPONSE_TIME{2min};
 /** Protect at least this many outbound peers from disconnection due to slow/
@@ -412,6 +417,7 @@ struct Peer {
 
     /** When to potentially disconnect peer for stalling headers download */
     std::chrono::microseconds m_headers_sync_timeout GUARDED_BY(NetEventsInterface::g_msgproc_mutex){0us};
+    std::chrono::microseconds m_headers_sync_proof_credit GUARDED_BY(NetEventsInterface::g_msgproc_mutex){0us};
 
     /** Whether this peer wants invs or headers (when possible) for block announcements */
     bool m_prefers_headers GUARDED_BY(NetEventsInterface::g_msgproc_mutex){false};
@@ -660,7 +666,8 @@ private:
         EXCLUSIVE_LOCKS_REQUIRED(!m_peer_mutex, !m_headers_presync_mutex, g_msgproc_mutex);
     /** Various helpers for headers processing, invoked by ProcessHeadersMessage() */
     /** Return true if headers are continuous and have valid proof-of-work (DoS points assigned on failure) */
-    bool CheckHeadersPoW(const std::vector<CBlockHeader>& headers, Peer& peer);
+    bool CheckHeadersPoW(const std::vector<CBlockHeader>& headers, Peer& peer,
+                         std::chrono::microseconds* local_proof_time);
     /** Calculate an anti-DoS work threshold for headers chains */
     arith_uint256 GetAntiDoSWorkThreshold();
     /** Deal with state tracking and headers sync for peers that send
@@ -688,7 +695,7 @@ private:
      *              acceptance by the caller).
      */
     bool IsContinuationOfLowWorkHeadersSync(Peer& peer, CNode& pfrom,
-            std::vector<CBlockHeader>& headers)
+            std::vector<CBlockHeader>& headers, std::chrono::microseconds local_proof_time = 0us)
         EXCLUSIVE_LOCKS_REQUIRED(peer.m_headers_sync_mutex, !m_headers_presync_mutex, g_msgproc_mutex);
     /** Check work on a headers chain to be processed, and if insufficient,
      * initiate our anti-DoS headers sync mechanism.
@@ -2632,7 +2639,8 @@ void PeerManagerImpl::SendBlockTransactions(CNode& pfrom, Peer& peer, const CBlo
     MakeAndPushMessage(pfrom, NetMsgType::BLOCKTXN, resp);
 }
 
-bool PeerManagerImpl::CheckHeadersPoW(const std::vector<CBlockHeader>& headers, Peer& peer)
+bool PeerManagerImpl::CheckHeadersPoW(const std::vector<CBlockHeader>& headers, Peer& peer,
+                                    std::chrono::microseconds* local_proof_time)
 {
     if (m_chainparams.GetConsensus().fYespowerSugar) {
         LOCK(cs_main);
@@ -2646,14 +2654,25 @@ bool PeerManagerImpl::CheckHeadersPoW(const std::vector<CBlockHeader>& headers, 
     }
     // Do these headers have proof-of-work matching what's claimed?
 #if defined(__APPLE__) && defined(__aarch64__)
-    const bool established_presync = WITH_LOCK(peer.m_headers_sync_mutex, return peer.m_headers_sync &&
-        peer.m_headers_sync->GetState() == HeadersSyncState::State::PRESYNC);
-    if (!m_header_pow_verifier.Check(headers, m_chainparams.GetConsensus(), established_presync)) {
+    constexpr bool check_presync_phase{true};
 #else
-    if (!m_header_pow_verifier.Check(headers, m_chainparams.GetConsensus())) {
+    const bool check_presync_phase{local_proof_time != nullptr};
 #endif
+    const bool established_presync = check_presync_phase && WITH_LOCK(peer.m_headers_sync_mutex, return peer.m_headers_sync &&
+        peer.m_headers_sync->GetState() == HeadersSyncState::State::PRESYNC);
+    const bool measure_proof_time{local_proof_time && established_presync};
+    const auto proof_started{measure_proof_time ? SteadyClock::now() : SteadyClock::time_point{}};
+#if defined(__APPLE__) && defined(__aarch64__)
+    const bool valid{m_header_pow_verifier.Check(headers, m_chainparams.GetConsensus(), established_presync)};
+#else
+    const bool valid{m_header_pow_verifier.Check(headers, m_chainparams.GetConsensus())};
+#endif
+    if (!valid) {
         Misbehaving(peer, "header with invalid proof of work");
         return false;
+    }
+    if (measure_proof_time) {
+        *local_proof_time = std::chrono::duration_cast<std::chrono::microseconds>(SteadyClock::now() - proof_started);
     }
 
     // Are these headers connected to each other?
@@ -2714,10 +2733,25 @@ bool PeerManagerImpl::CheckHeadersAreContinuous(const std::vector<CBlockHeader>&
     return true;
 }
 
-bool PeerManagerImpl::IsContinuationOfLowWorkHeadersSync(Peer& peer, CNode& pfrom, std::vector<CBlockHeader>& headers)
+bool PeerManagerImpl::IsContinuationOfLowWorkHeadersSync(Peer& peer, CNode& pfrom,
+        std::vector<CBlockHeader>& headers, std::chrono::microseconds local_proof_time)
 {
     if (peer.m_headers_sync) {
+        const std::optional<int64_t> previous_presync_height{
+            local_proof_time > 0us && peer.m_headers_sync->GetState() == HeadersSyncState::State::PRESYNC
+                ? std::optional{peer.m_headers_sync->GetPresyncHeight()} : std::nullopt};
         auto result = peer.m_headers_sync->ProcessNextHeaders(headers, headers.size() == m_opts.max_headers_result);
+        if (previous_presync_height && result.success && result.request_more) {
+            const auto credit_before{peer.m_headers_sync_proof_credit};
+            peer.m_headers_sync->AccountForLocalPresyncProofTime(*previous_presync_height, local_proof_time,
+                peer.m_headers_sync_timeout, peer.m_headers_sync_proof_credit);
+            const auto granted{credit_before - peer.m_headers_sync_proof_credit};
+            if (granted > 0us) {
+                LogDebug(BCLog::NET, "PRESYNC proof time credit: peer=%d granted_us=%d remaining_us=%d height=%d\n",
+                    pfrom.GetId(), granted.count(), peer.m_headers_sync_proof_credit.count(),
+                    peer.m_headers_sync->GetPresyncHeight());
+            }
+        }
         // If it is a valid continuation, we should treat the existing getheaders request as responded to.
         if (result.success) peer.m_last_getheaders_timestamp = {};
         if (result.request_more) {
@@ -3016,7 +3050,11 @@ void PeerManagerImpl::ProcessHeadersMessage(CNode& pfrom, Peer& peer,
     // We'll rely on headers having valid proof-of-work further down, as an
     // anti-DoS criteria (note: this check is required before passing any
     // headers into HeadersSyncState).
-    if (!CheckHeadersPoW(headers, peer)) {
+    std::chrono::microseconds local_proof_time{0};
+    const bool measure_local_proofs{peer.m_headers_sync_proof_credit > 0us &&
+        peer.m_headers_sync_timeout > 0us && peer.m_headers_sync_timeout < std::chrono::microseconds::max()};
+    auto* proof_timer{measure_local_proofs ? &local_proof_time : nullptr};
+    if (!CheckHeadersPoW(headers, peer, proof_timer)) {
         // Misbehaving() calls are handled within CheckHeadersPoW(), so we can
         // just return. (Note that even if a header is announced via compact
         // block, the header itself should be valid, so this type of error can
@@ -3038,7 +3076,7 @@ void PeerManagerImpl::ProcessHeadersMessage(CNode& pfrom, Peer& peer,
     {
         LOCK(peer.m_headers_sync_mutex);
 
-        already_validated_work = IsContinuationOfLowWorkHeadersSync(peer, pfrom, headers);
+        already_validated_work = IsContinuationOfLowWorkHeadersSync(peer, pfrom, headers, local_proof_time);
 
         // The headers we passed in may have been:
         // - untouched, perhaps if no headers-sync was in progress, or some
@@ -5851,13 +5889,16 @@ bool PeerManagerImpl::SendMessages(CNode& node)
                     LogDebug(BCLog::NET, "initial getheaders (%d) to peer=%d (startheight:%d)\n", pindexStart->nHeight, node.GetId(), peer.m_starting_height);
 
                     state.fSyncStarted = true;
-                    peer.m_headers_sync_timeout = current_time + HEADERS_DOWNLOAD_TIMEOUT_BASE +
-                        (
-                         // Convert HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER to microseconds before scaling
-                         // to maintain precision
-                         std::chrono::microseconds{HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER} *
-                         Ticks<std::chrono::seconds>(NodeClock::now() - m_chainman.m_best_header->Time()) / consensusParams.nPowTargetSpacing
-                        );
+                    // Convert to microseconds before scaling to maintain precision.
+                    const auto missing_headers_allowance{
+                        std::chrono::microseconds{HEADERS_DOWNLOAD_TIMEOUT_PER_HEADER} *
+                        Ticks<std::chrono::seconds>(NodeClock::now() - m_chainman.m_best_header->Time()) / consensusParams.nPowTargetSpacing};
+                    peer.m_headers_sync_timeout = current_time + HEADERS_DOWNLOAD_TIMEOUT_BASE + missing_headers_allowance;
+                    if (CREDIT_LOCAL_PRESYNC_PROOF_TIME && m_chainparams.GetChainType() == ChainType::MAIN &&
+                        consensusParams.fYespowerSugar) {
+                        // Bound total local credit without changing the peer's original network allowance.
+                        peer.m_headers_sync_proof_credit = std::max(0us, missing_headers_allowance);
+                    }
                     nSyncStarted++;
                 }
             }
