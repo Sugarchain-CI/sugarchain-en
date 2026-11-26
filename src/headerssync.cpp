@@ -16,6 +16,20 @@
 // CompressedHeader (we should re-calculate parameters if we compress further).
 static_assert(sizeof(CompressedHeader) == 48);
 
+void HeadersSyncState::AccountForLocalPresyncProofTime(int64_t previous_height,
+        std::chrono::microseconds proof_time, std::chrono::microseconds& deadline,
+        std::chrono::microseconds& credit_remaining) const
+{
+    constexpr auto disabled{std::chrono::microseconds::max()};
+    if (m_download_state == State::FINAL || m_current_height <= previous_height ||
+        proof_time <= 0us || credit_remaining <= 0us || deadline <= 0us || deadline == disabled) {
+        return;
+    }
+    const auto credit{std::min({proof_time, credit_remaining, disabled - 1us - deadline})};
+    deadline += credit;
+    credit_remaining -= credit;
+}
+
 HeadersSyncState::HeadersSyncState(NodeId id,
                                    const Consensus::Params& consensus_params,
                                    const HeadersSyncParams& params,

@@ -10,8 +10,10 @@
 #include <pow.h>
 #include <test/util/common.h>
 #include <test/util/setup_common.h>
+#include <util/time.h>
 #include <validation.h>
 
+#include <chrono>
 #include <cstddef>
 #include <vector>
 
@@ -140,6 +142,108 @@ std::vector<CBlockHeader> HeadersGeneratorSetup::GenerateHeaders(
 // 3. Repeat the second set of headers in both phases to demonstrate behavior
 //    when the chain a peer provides has too little work.
 BOOST_FIXTURE_TEST_SUITE(headers_sync_chainwork_tests, HeadersGeneratorSetup)
+
+BOOST_AUTO_TEST_CASE(advancing_presync_preserves_network_wait_allowance)
+{
+    struct ResetClock {
+        ~ResetClock() { MockableSteadyClock::ClearMockTime(); }
+    } reset_clock;
+    const auto now = [] {
+        return std::chrono::duration_cast<std::chrono::microseconds>(MockableSteadyClock::now().time_since_epoch());
+    };
+    MockableSteadyClock::SetMockTime(1s);
+    auto deadline{now() + 4s};
+    std::chrono::microseconds remaining_credit{2s};
+
+    auto state{CreateState()};
+    const std::span chain{FirstChain()};
+    BOOST_REQUIRE(state.ProcessNextHeaders(chain.first(1), /*full_headers_message=*/true).request_more);
+    const auto previous_height{state.GetPresyncHeight()};
+
+    MockableSteadyClock::SetMockTime(4500ms);
+    const auto start{now()};
+    MockableSteadyClock::SetMockTime(5500ms);
+    BOOST_CHECK(now() > deadline);
+    const auto advanced{state.ProcessNextHeaders(chain.subspan(1, 1), /*full_headers_message=*/true)};
+    BOOST_REQUIRE(advanced.success && advanced.request_more);
+    state.AccountForLocalPresyncProofTime(previous_height, now() - start, deadline, remaining_credit);
+    BOOST_CHECK(deadline - now() == 500ms);
+    BOOST_CHECK(remaining_credit == 1s);
+
+    MockableSteadyClock::SetMockTime(6001ms);
+    BOOST_CHECK(now() > deadline);
+}
+
+BOOST_AUTO_TEST_CASE(presync_proof_credit_requires_live_advancement)
+{
+    auto state{CreateState()};
+    const std::span chain{SecondChain()};
+    BOOST_REQUIRE(state.ProcessNextHeaders(chain.first(1), /*full_headers_message=*/true).request_more);
+    const auto previous_height{state.GetPresyncHeight()};
+    std::chrono::microseconds deadline{10s};
+    std::chrono::microseconds remaining_credit{2s};
+
+    state.AccountForLocalPresyncProofTime(previous_height, 1s, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 10s);
+    BOOST_CHECK(remaining_credit == 2s);
+
+    const auto invalid{state.ProcessNextHeaders(chain.first(1), /*full_headers_message=*/true)};
+    BOOST_CHECK(!invalid.success);
+    state.AccountForLocalPresyncProofTime(previous_height, 1s, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 10s);
+    BOOST_CHECK(remaining_credit == 2s);
+
+    auto incomplete_state{CreateState()};
+    BOOST_REQUIRE(incomplete_state.ProcessNextHeaders(chain.first(1), /*full_headers_message=*/true).request_more);
+    const auto incomplete_before{incomplete_state.GetPresyncHeight()};
+    const auto incomplete{incomplete_state.ProcessNextHeaders(chain.subspan(1, 1), /*full_headers_message=*/false)};
+    BOOST_CHECK(incomplete.success && !incomplete.request_more);
+    incomplete_state.AccountForLocalPresyncProofTime(incomplete_before, 1s, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 10s);
+    BOOST_CHECK(remaining_credit == 2s);
+}
+
+BOOST_AUTO_TEST_CASE(presync_proof_credit_is_bounded_and_keeps_deadline_sentinels)
+{
+    auto state{CreateState()};
+    const std::span chain{FirstChain()};
+    BOOST_REQUIRE(state.ProcessNextHeaders(chain.first(1), /*full_headers_message=*/true).request_more);
+    const auto initial_height{state.GetPresyncHeight()};
+    BOOST_REQUIRE(state.ProcessNextHeaders(chain.subspan(1, 1), /*full_headers_message=*/true).request_more);
+    std::chrono::microseconds deadline{10s};
+    std::chrono::microseconds remaining_credit{2s};
+    state.AccountForLocalPresyncProofTime(initial_height, 1s, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 11s);
+    BOOST_CHECK(remaining_credit == 1s);
+
+    const auto previous_height{state.GetPresyncHeight()};
+    const auto transition{state.ProcessNextHeaders(chain.subspan(2), /*full_headers_message=*/false)};
+    BOOST_REQUIRE(transition.success && transition.request_more);
+    BOOST_CHECK(state.GetState() == State::REDOWNLOAD);
+    state.AccountForLocalPresyncProofTime(previous_height, -1us, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 11s);
+    state.AccountForLocalPresyncProofTime(previous_height, 3s, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 12s);
+    BOOST_CHECK(remaining_credit == 0us);
+    state.AccountForLocalPresyncProofTime(previous_height, 3s, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 12s);
+
+    constexpr auto disabled{std::chrono::microseconds::max()};
+    deadline = disabled - 2us;
+    remaining_credit = 3us;
+    state.AccountForLocalPresyncProofTime(previous_height, 3us, deadline, remaining_credit);
+    BOOST_CHECK(deadline == disabled - 1us);
+    BOOST_CHECK(remaining_credit == 2us);
+
+    deadline = disabled;
+    state.AccountForLocalPresyncProofTime(previous_height, 3us, deadline, remaining_credit);
+    BOOST_CHECK(deadline == disabled);
+    BOOST_CHECK(remaining_credit == 2us);
+    deadline = 0us;
+    state.AccountForLocalPresyncProofTime(previous_height, 3us, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 0us);
+    BOOST_CHECK(remaining_credit == 2us);
+}
 
 BOOST_AUTO_TEST_CASE(sneaky_redownload)
 {
