@@ -29,7 +29,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 92c2bb5dac932620b1db94aa0c7506219375e4d9
+        ref: 9c502574b652804905d2533d51742ca91f694532
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -38,9 +38,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "92c2bb5dac932620b1db94aa0c7506219375e4d9"
+        test "$actual" = "9c502574b652804905d2533d51742ca91f694532"
 
-        test "$(git rev-parse HEAD^{tree})" = "740be268f91e8b662c12a92f9d61e3f0a0643f23"
+        test "$(git rev-parse HEAD^{tree})" = "f44aa1b47f9701996046bbb396106f1d5c365e66"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - uses: ./.github/actions/configure-environment
@@ -72,7 +72,7 @@ jobs:
         provider: gha
     - name: Cross-build with the repository's Darwin depends toolchain
       shell: bash
-      run: "test \"$(git rev-parse HEAD)\" = 92c2bb5dac932620b1db94aa0c7506219375e4d9\nsource ./ci/test/00_setup_env.sh\n\
+      run: "test \"$(git rev-parse HEAD)\" = 9c502574b652804905d2533d51742ca91f694532\nsource ./ci/test/00_setup_env.sh\n\
         export GOAL=\"install deploy\"\nexport BASE_OUTDIR=\"$BASE_BUILD_DIR/installed\"\nexport BITCOIN_CONFIG=\"\
         \n  -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON\
         \ -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON\n  -DBUILD_GUI=ON -DENABLE_WALLET=ON\
@@ -145,7 +145,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6
       with:
-        ref: 92c2bb5dac932620b1db94aa0c7506219375e4d9
+        ref: 9c502574b652804905d2533d51742ca91f694532
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -154,9 +154,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "92c2bb5dac932620b1db94aa0c7506219375e4d9"
+        test "$actual" = "9c502574b652804905d2533d51742ca91f694532"
 
-        test "$(git rev-parse HEAD^{tree})" = "740be268f91e8b662c12a92f9d61e3f0a0643f23"
+        test "$(git rev-parse HEAD^{tree})" = "f44aa1b47f9701996046bbb396106f1d5c365e66"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"'
     - name: Check out the exact release diagnostics overlay
@@ -401,7 +401,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v6
       with:
-        ref: 92c2bb5dac932620b1db94aa0c7506219375e4d9
+        ref: 9c502574b652804905d2533d51742ca91f694532
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -410,9 +410,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "92c2bb5dac932620b1db94aa0c7506219375e4d9"
+        test "$actual" = "9c502574b652804905d2533d51742ca91f694532"
 
-        test "$(git rev-parse HEAD^{tree})" = "740be268f91e8b662c12a92f9d61e3f0a0643f23"
+        test "$(git rev-parse HEAD^{tree})" = "f44aa1b47f9701996046bbb396106f1d5c365e66"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"
 
@@ -581,7 +581,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v6
       with:
-        ref: 92c2bb5dac932620b1db94aa0c7506219375e4d9
+        ref: 9c502574b652804905d2533d51742ca91f694532
         persist-credentials: false
         repository: decryp2kanon/sugarchain-en
     - name: Verify pinned source revision
@@ -590,9 +590,9 @@ jobs:
 
         actual=$(git rev-parse HEAD)
 
-        test "$actual" = "92c2bb5dac932620b1db94aa0c7506219375e4d9"
+        test "$actual" = "9c502574b652804905d2533d51742ca91f694532"
 
-        test "$(git rev-parse HEAD^{tree})" = "740be268f91e8b662c12a92f9d61e3f0a0643f23"
+        test "$(git rev-parse HEAD^{tree})" = "f44aa1b47f9701996046bbb396106f1d5c365e66"
 
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"
 
@@ -612,9 +612,9 @@ jobs:
       shell: bash
       run: 'set -euo pipefail
 
-        test "$(cat release-source-sha.txt)" = "92c2bb5dac932620b1db94aa0c7506219375e4d9"
+        test "$(cat release-source-sha.txt)" = "9c502574b652804905d2533d51742ca91f694532"
 
-        test "$(cat release-source-tree.txt)" = "740be268f91e8b662c12a92f9d61e3f0a0643f23"
+        test "$(cat release-source-tree.txt)" = "f44aa1b47f9701996046bbb396106f1d5c365e66"
 
         sha256sum --check --strict SHA256SUMS.release-inputs
 
@@ -805,8 +805,8 @@ jobs:
       run: 'set -euo pipefail
 
         python -B release-tools/.github/en8-mainnet/body-reread/mainnet_body_reread_ab.py --crt ''${{ matrix.crt
-        }}'' --baseline baseline-mainnet --candidate . --candidate-source 92c2bb5dac932620b1db94aa0c7506219375e4d9
-        --candidate-tree 740be268f91e8b662c12a92f9d61e3f0a0643f23 --fixture release-tools/.github/en8-mainnet/mainnet-blocks.dat.gz
+        }}'' --baseline baseline-mainnet --candidate . --candidate-source 9c502574b652804905d2533d51742ca91f694532
+        --candidate-tree f44aa1b47f9701996046bbb396106f1d5c365e66 --fixture release-tools/.github/en8-mainnet/mainnet-blocks.dat.gz
         --fixture-info release-tools/.github/en8-mainnet/fixture.json --output "$RUNNER_TEMP/en8-body-reader-ab"
 
         '
