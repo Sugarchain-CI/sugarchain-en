@@ -1,0 +1,68 @@
+name: Native Mainnet proof capacity investigation
+'on':
+  push:
+    branches:
+    - diagnostics/en8-native-presync-resource
+    paths:
+    - .github/workflows/en8-native-proof-profile.yml
+  workflow_dispatch: null
+permissions:
+  contents: read
+jobs:
+  native-windows-proof:
+    name: Windows ${{ matrix.crt }} 4/8-worker mainnet profile
+    runs-on: windows-2025
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        crt:
+        - ucrt
+        - msvcrt
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Measure exact En.7 runtime using real mainnet header batches
+      shell: pwsh
+      env:
+        CRT: ${{ matrix.crt }}
+      run: py -3 -B .github/windows-proof-profile/run-windows-proof-profile.py --crt $env:CRT --fixture .github/windows-proof-profile/mainnet-headers-100k.bin.gz --count 40000 --output "$env:RUNNER_TEMP/en8-proof-profile"
+    - name: Retain measurements and owned-node debug logs
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: windows-proof-profile-${{ matrix.crt }}
+        path: '${{ runner.temp }}/en8-proof-profile/profile/result.json
+
+          ${{ runner.temp }}/en8-proof-profile/profile/*/node/debug.log
+
+          ${{ runner.temp }}/en8-proof-profile/profile/*/node/console.log
+
+          '
+        if-no-files-found: error
+        retention-days: 14
+  apple-mainnet-sweep:
+    name: Apple Silicon native Mainnet worker sweep
+    runs-on: macos-15
+    timeout-minutes: 65
+    steps:
+    - name: Check out the fixed mainnet diagnostic
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Measure exact published packages on native Apple Silicon
+      shell: bash
+      run: bash .github/mainnet-audit/apple-mainnet-sweep/run-native-sweep.sh "$RUNNER_TEMP/apple-mainnet-sweep"
+    - name: Retain wall and process CPU samples
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: apple-mainnet-worker-sweep
+        path: '${{ runner.temp }}/apple-mainnet-sweep/results/
+
+          ${{ runner.temp }}/apple-mainnet-sweep/fresh-datadirs/**/debug.log
+
+          ${{ runner.temp }}/apple-mainnet-sweep/fresh-datadirs/**/console.log'
+        if-no-files-found: error
+        retention-days: 14
