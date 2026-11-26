@@ -14,6 +14,10 @@ else:
     assert platform.system()=='Windows' and platform.machine().lower() in ('amd64','x86_64')
     crt=os.environ['CRT'];name=prefix+f'windows-x86_64-{crt}-portable.zip'
     specs=[('cli',name,'daemon/sugarchaind.exe',Path('bin/sugarchaind.exe')),('gui',name,'sugarchain-qt.exe',Path('bin/sugarchain-qt.exe'))]
+status=[]
+def record(mode,name,code):
+    status.append({'mode':mode,'script':name,'exit':code})
+    (root/'execution-status.json').write_text(json.dumps(status,indent=2)+'\n')
 for mode,name,suffix,candidate in specs:
     destination=root/name
     if not destination.exists():
@@ -35,4 +39,21 @@ for mode,name,suffix,candidate in specs:
         assert subprocess.check_output(['lipo','-archs',str(candidate)],text=True).strip()=='arm64'
     command=[sys.executable,'-B',str(here/'mainnet_paired.py'),'--baseline',str(binaries[0].resolve()),'--candidate',str(candidate.resolve()),'--fixture',str(here/'mainnet-blocks.dat.gz'),'--fixture-info',str(here/'fixture.json'),'--output',str(root/mode),'--repeats','3']
     if mode=='gui':command+=['--gui']
-    subprocess.run(command,check=True)
+    code=subprocess.run(command).returncode
+    record(mode,Path(command[2]).name,code)
+    command[2]=str(here/'mainnet_warm.py')
+    command[command.index('--output')+1]=str(root/('warm-'+mode))
+    code=subprocess.run(command).returncode
+    record(mode,Path(command[2]).name,code)
+    delivery=[sys.executable,'-B',str(here/'delivery/mainnet_delivery_compare.py'),'--baseline',str(binaries[0].resolve()),'--candidate',str(candidate.resolve()),'--fixture',str(here/'mainnet-blocks.dat.gz'),'--fixture-info',str(here/'fixture.json'),'--output',str(root/('delivery-'+mode))]
+    if mode=='gui':delivery+=['--gui']
+    code=subprocess.run(delivery).returncode
+    record(mode,'automatic-mainnet-delivery',code)
+    if platform.system()=='Darwin':
+        long=[sys.executable,'-B',str(here/'apple-long/apple_presync_paired.py'),'--baseline',str(binaries[0].resolve()),'--candidate',str(candidate.resolve()),'--headers',str(here/'mainnet-headers-100k.bin.gz'),'--output',str(root/('long-'+mode+'.json'))]
+        if mode=='gui':long+=['--gui']
+        code=subprocess.run(long).returncode
+        record(mode,'100k-mainnet-presync',code)
+    (root/'execution-status.json').write_text(json.dumps(status,indent=2)+'\n')
+if any(row['exit'] for row in status):raise SystemExit(1)
+

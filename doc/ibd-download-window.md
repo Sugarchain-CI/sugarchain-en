@@ -6,7 +6,7 @@
 
 IBD uses an internal 4096-block lookahead. **There is no `-maxibddownloadwindow` option.** The earlier opt-in implementation and startup instructions are superseded. Remove that argument if it was copied into a startup command. Rebuild/restart is required to run the new implementation; this work did not restart or reconfigure the operating node.
 
-Existing resource/concurrency controls keep their meanings and defaults. The comparison fixed the user's settings:
+Existing resource and concurrency controls keep their meanings. The comparison used fixed settings:
 
 ```text
 -parpow=8 -maxpowcache=2048 -maxibdblocksinflight=128 -dbcache=4096
@@ -15,6 +15,12 @@ Existing resource/concurrency controls keep their meanings and defaults. The com
 No additional tuning option is needed. These controls are not a hard cap on whole-process RSS/CPU. The 4096 value is height lookahead beyond the peer's last common linked block, not a global request count or byte limit. Per-peer inflight remains independent and capped at 128; outside IBD the existing 1024-block lookahead remains unchanged. Faster peers can continue useful requests while earlier blocks from slower peers are outstanding.
 
 PoW, chainwork, proof-failure bounds, evidence reuse, DB formats and durability semantics are unchanged. This does not directly accelerate presync or Yespower computation.
+
+## Default per-peer request ceiling
+
+During Mainnet IBD, Windows x86-64 and Apple Silicon builds default to a ceiling of 64 with at least 4 GiB of detected physical RAM and 128 with at least 8 GiB. Lower or undetected RAM uses 16. Other platforms and networks default to 16. An explicit `-maxibdblocksinflight` value still takes precedence and is clamped to 16–128. The delivery controller adapts within 16 and the selected ceiling. Outside IBD the per-peer limit stays at 16.
+
+Outstanding requests track block references. They do not reserve receive buffers per block. The per-connection receive-queue pause threshold (5,000,000 bytes by default), individual message size limits, stall timeouts and 4096-block IBD lookahead still apply. The pause threshold is backpressure rather than a strict memory cap. Complete messages can be queued above that threshold before reads pause, and transport and validation use additional memory. Higher ceilings may increase live buffering, disk activity and peak RSS during IBD.
 
 ## No-option comparison
 

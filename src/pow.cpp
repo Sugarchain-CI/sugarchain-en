@@ -20,6 +20,10 @@
 #include <uint256.h>
 #include <util/check.h>
 #include <util/hasher.h>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <util/ordered_check_window.h>
+#include <util/threadnames.h>
+#endif
 
 #include <array>
 #include <mutex>
@@ -565,20 +569,25 @@ void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Par
 
 struct HeaderPoWVerifier::Impl {
     const int workers;
-#if defined(__APPLE__) && defined(__aarch64__)
-    const int parallelism;
-    const size_t network_batch_size;
-#endif
     std::mutex caller_mutex;
-    CCheckQueue<HeaderPoWCheck> queue;
 #if defined(__APPLE__) && defined(__aarch64__)
-    explicit Impl(int count, int max_parallelism = MAX_HEADER_POW_WORKERS)
-        : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)},
-          parallelism{std::clamp(max_parallelism, 1, workers)},
-          // Use whole worker groups without admitting additional cold work.
-          network_batch_size{size_t(workers / parallelism * parallelism)},
-          queue{1, parallelism - 1, "powch"} {}
+    using NetworkWindow = util::OrderedCheckWindow<HeaderPoWCheck, MAX_HEADER_POW_WORKERS>;
+    std::unique_ptr<CCheckQueue<HeaderPoWCheck>> queue;
+    std::unique_ptr<NetworkWindow> network_window;
+
+    explicit Impl(int count, bool network = false)
+        : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)}
+    {
+        if (network) {
+            network_window = std::make_unique<NetworkWindow>(size_t(workers), [](size_t i) {
+                util::ThreadRename(strprintf("powch.%u", i));
+            });
+        } else {
+            queue = std::make_unique<CCheckQueue<HeaderPoWCheck>>(1, workers - 1, "powch");
+        }
+    }
 #else
+    CCheckQueue<HeaderPoWCheck> queue;
     explicit Impl(int count)
         : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)}, queue{1, workers - 1, "powch"} {}
 #endif
@@ -587,7 +596,21 @@ struct HeaderPoWVerifier::Impl {
     // policies. Worker exceptions reach the caller; validation failure returns false.
     bool RunBatch(std::vector<HeaderPoWCheck>&& batch)
     {
+#if defined(__APPLE__) && defined(__aarch64__)
+        if (network_window) {
+            // Use FIFO checks within the existing finite cohort outside
+            // established PRESYNC. Reuse the same worker threads.
+            return network_window->Run([remaining = std::span{batch}]() mutable -> std::optional<HeaderPoWCheck> {
+                if (remaining.empty()) return std::nullopt;
+                auto job{remaining.front()};
+                remaining = remaining.subspan(1);
+                return job;
+            });
+        }
+        CCheckQueueControl<HeaderPoWCheck> control{*queue};
+#else
         CCheckQueueControl<HeaderPoWCheck> control{queue};
+#endif
         control.Add(std::move(batch));
         if (const auto error{control.Complete()}) {
             if (*error) std::rethrow_exception(*error);
@@ -600,8 +623,8 @@ struct HeaderPoWVerifier::Impl {
 HeaderPoWVerifier::HeaderPoWVerifier(int workers)
     : m_impl{workers > 1 ? std::make_unique<Impl>(workers) : nullptr} {}
 #if defined(__APPLE__) && defined(__aarch64__)
-HeaderPoWVerifier::HeaderPoWVerifier(int workers, int parallelism)
-    : m_impl{workers > 1 ? std::make_unique<Impl>(workers, parallelism) : nullptr} {}
+HeaderPoWVerifier::HeaderPoWVerifier(int workers, bool network)
+    : m_impl{workers > 1 ? std::make_unique<Impl>(workers, network) : nullptr} {}
 #endif
 HeaderPoWVerifier::~HeaderPoWVerifier() = default;
 
@@ -630,7 +653,17 @@ bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const C
     return true;
 }
 
+#if defined(__APPLE__) && defined(__aarch64__)
 bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params)
+{
+    return Check(headers, params, /*established_presync=*/false);
+}
+
+bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params,
+                              bool established_presync)
+#else
+bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params)
+#endif
 {
     if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
         return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
@@ -657,14 +690,25 @@ bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Conse
         return true;
     }
 #if defined(__APPLE__) && defined(__aarch64__)
-    const size_t network_batch_size{m_impl->network_batch_size};
-#else
-    const size_t network_batch_size{size_t(m_impl->workers)};
+    if (established_presync && m_impl->network_window) {
+        // Enumerate cold work in order, as in the fixed path below. At most
+        // eight unresolved proofs are admitted beyond the verified prefix.
+        if (!m_impl->network_window->Run([headers, &params, &cache]() mutable -> std::optional<HeaderPoWCheck> {
+                while (!headers.empty()) {
+                    const auto& header{headers.front()};
+                    headers = headers.subspan(1);
+                    if (!cache.Contains(cache.Entry(header))) return HeaderPoWCheck{&header, &params};
+                }
+                return std::nullopt;
+            })) return false;
+        cache.InsertBatch(entry);
+        return true;
+    }
 #endif
     while (!headers.empty()) {
         std::vector<HeaderPoWCheck> batch;
-        batch.reserve(network_batch_size);
-        while (!headers.empty() && batch.size() < network_batch_size) {
+        batch.reserve(m_impl->workers);
+        while (!headers.empty() && batch.size() < size_t(m_impl->workers)) {
             const auto& header{headers.front()};
             if (!cache.Contains(cache.Entry(header))) batch.push_back({&header, &params});
             headers = headers.subspan(1);

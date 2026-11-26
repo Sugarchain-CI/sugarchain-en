@@ -4,19 +4,16 @@
 
 #include <chainparams.h>
 #include <common/args.h>
-#if defined(__APPLE__) && defined(__aarch64__)
-#include <common/system.h>
-#endif
 #include <node/miner.h>
 #include <node/ibd_download.h>
 #include <node/peerman_args.h>
 #include <net_processing.h>
 #include <pow.h>
 #include <test/util/setup_common.h>
+#include <util/chaintype.h>
 #include <validation.h>
 
 #include <boost/test/unit_test.hpp>
-#include <algorithm>
 #include <limits>
 
 BOOST_FIXTURE_TEST_SUITE(peerman_tests, RegTestingSetup)
@@ -25,22 +22,15 @@ BOOST_AUTO_TEST_CASE(header_pow_default_and_explicit_override)
 {
     ArgsManager args;
     PeerManager::Options options;
-    node::ApplyArgsManOptions(args, options);
+    node::ApplyArgsManOptions(args, options, ChainType::REGTEST, /*total_ram=*/0);
     BOOST_CHECK_EQUAL(options.header_pow_workers, 8);
     BOOST_CHECK_EQUAL(MAX_HEADER_POW_WORKERS, 8);
-#if defined(__APPLE__) && defined(__aarch64__)
-    const int cores{GetNumCores()};
-    BOOST_CHECK_EQUAL(options.header_pow_parallelism, cores > 0 ? std::min(cores, MAX_HEADER_POW_WORKERS) : MAX_HEADER_POW_WORKERS);
-#endif
     // Configuration bounds only: this test does not launch worker threads.
     for (const auto& [value, expected] : std::vector<std::pair<const char*, int>>{
              {"1", 1}, {"2", 2}, {"4", 4}, {"8", 8}, {"0", 1}, {"16", 8}}) {
         args.ForceSetArg("-parpow", value);
-        node::ApplyArgsManOptions(args, options);
+        node::ApplyArgsManOptions(args, options, ChainType::REGTEST, /*total_ram=*/0);
         BOOST_CHECK_EQUAL(options.header_pow_workers, expected);
-#if defined(__APPLE__) && defined(__aarch64__)
-        BOOST_CHECK_EQUAL(options.header_pow_parallelism, MAX_HEADER_POW_WORKERS);
-#endif
     }
 }
 
@@ -101,17 +91,42 @@ BOOST_AUTO_TEST_CASE(ibd_delivery_budget_is_bounded_and_ignores_idle_time)
     BOOST_CHECK_LE(distant.Limit(16, 128), 128);
 }
 
-BOOST_AUTO_TEST_CASE(ibd_request_budget_is_opt_in_and_bounded)
+BOOST_AUTO_TEST_CASE(ibd_request_budget_defaults_to_platform_and_ram_policy)
+{
+    constexpr uint64_t four_gib{4ULL << 30};
+    constexpr uint64_t eight_gib{8ULL << 30};
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
+    constexpr int mainnet_4_gib_limit{64};
+    constexpr int mainnet_8_gib_limit{128};
+#else
+    constexpr int mainnet_4_gib_limit{16};
+    constexpr int mainnet_8_gib_limit{16};
+#endif
+    const ArgsManager args;
+    for (const auto& [total_ram, expected] : std::vector<std::pair<uint64_t, int>>{
+             {0, 16}, {four_gib - 1, 16}, {four_gib, mainnet_4_gib_limit},
+             {eight_gib - 1, mainnet_4_gib_limit}, {eight_gib, mainnet_8_gib_limit},
+             {std::numeric_limits<uint64_t>::max(), mainnet_8_gib_limit}}) {
+        PeerManager::Options options;
+        node::ApplyArgsManOptions(args, options, ChainType::MAIN, total_ram);
+        BOOST_CHECK_EQUAL(options.ibd_block_request_limit, expected);
+    }
+    for (ChainType chain : {ChainType::TESTNET, ChainType::TESTNET4, ChainType::SIGNET, ChainType::REGTEST}) {
+        PeerManager::Options options;
+        node::ApplyArgsManOptions(args, options, chain, eight_gib);
+        BOOST_CHECK_EQUAL(options.ibd_block_request_limit, 16);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(ibd_request_budget_explicit_override_is_bounded)
 {
     ArgsManager args;
-    PeerManager::Options options;
-    node::ApplyArgsManOptions(args, options);
-    BOOST_CHECK_EQUAL(options.ibd_block_request_limit, 16);
     for (const auto& [text, expected] : std::vector<std::pair<const char*, int>>{
              {"-9223372036854775808", 16}, {"0", 16}, {"15", 16}, {"16", 16},
-             {"64", 64}, {"128", 128}, {"129", 128}, {"9223372036854775807", 128}}) {
+             {"32", 32}, {"64", 64}, {"128", 128}, {"129", 128}, {"9223372036854775807", 128}}) {
+        PeerManager::Options options;
         args.ForceSetArg("-maxibdblocksinflight", text);
-        node::ApplyArgsManOptions(args, options);
+        node::ApplyArgsManOptions(args, options, ChainType::MAIN, /*total_ram=*/8ULL << 30);
         BOOST_CHECK_EQUAL(options.ibd_block_request_limit, expected);
         BOOST_CHECK_EQUAL(options.header_pow_workers, DEFAULT_HEADER_POW_WORKERS);
     }

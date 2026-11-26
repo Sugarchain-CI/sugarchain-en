@@ -25,9 +25,9 @@ struct CacheSizes {
     size_t coins_db;
     size_t coins;
 
-    CacheSizes(size_t total_cache)
+    CacheSizes(size_t total_cache, size_t block_tree_limit = MAX_BLOCK_DB_CACHE)
     {
-        block_tree_db = std::min(total_cache / 8, MAX_BLOCK_DB_CACHE);
+        block_tree_db = std::min(total_cache / 8, block_tree_limit);
         total_cache -= block_tree_db;
         coins_db = std::min(total_cache / 2, MAX_COINS_DB_CACHE);
         total_cache -= coins_db;

@@ -7,10 +7,13 @@
 
 #include <net_processing.h>
 
+#include <cstdint>
+
 class ArgsManager;
+enum class ChainType;
 
 namespace node {
-void ApplyArgsManOptions(const ArgsManager& argsman, PeerManager::Options& options);
+void ApplyArgsManOptions(const ArgsManager& argsman, PeerManager::Options& options, ChainType chain, uint64_t total_ram);
 } // namespace node
 
 #endif // BITCOIN_NODE_PEERMAN_ARGS_H

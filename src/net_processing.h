@@ -102,10 +102,6 @@ public:
         bool private_broadcast{DEFAULT_PRIVATE_BROADCAST};
         //! Global per-node limit, not a separate worker pool for each peer.
         int header_pow_workers{DEFAULT_HEADER_POW_WORKERS};
-#if defined(__APPLE__) && defined(__aarch64__)
-        //! Bound simultaneous workers separately from the next failure decision.
-        int header_pow_parallelism{MAX_HEADER_POW_WORKERS};
-#endif
         //! Opt-in IBD pipeline budget; normal relay/direct-fetch limits are unchanged.
         int ibd_block_request_limit{DEFAULT_IBD_BLOCK_REQUEST_LIMIT};
     };
