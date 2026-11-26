@@ -412,3 +412,27 @@ jobs:
         if-no-files-found: error
         retention-days: 14
     timeout-minutes: 90
+  apple-pwx:
+    name: Apple Silicon native Yespower comparison
+    runs-on: macos-15
+    timeout-minutes: 12
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - uses: actions/checkout@v6
+      with:
+        repository: decryp2kanon/sugarchain-en
+        ref: 496f41971274712a98f45d1f0d49c796788aaf49
+        path: apple-baseline
+        persist-credentials: false
+    - name: Compare exact proofs and measure native proof throughput
+      shell: bash
+      run: "bash .github/mainnet-audit/apple-pwx-diagnostic/run-apple-pwx.sh \\\n  \"$GITHUB_WORKSPACE/apple-baseline\" \\\n  \"$GITHUB_WORKSPACE/.github/mainnet-audit/mainnet-blocks.dat.gz\" \\\n  \"$RUNNER_TEMP/apple-pwx\"\n"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: apple-pwx-comparison
+        path: ${{ runner.temp }}/apple-pwx/evidence/
+        if-no-files-found: warn
+        retention-days: 14
