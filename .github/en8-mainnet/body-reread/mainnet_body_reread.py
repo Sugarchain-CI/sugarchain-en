@@ -46,6 +46,13 @@ def send(wire, frame, deadline):
     wire.sendall(frame)
 
 
+def fixture_version_payload(port):
+    # The retained playback helper advertises 4,000 headers. Preserve its wire
+    # fields and relay byte while declaring this fixture's complete height.
+    payload = version_payload(port)
+    return payload[:-5] + HEIGHT.to_bytes(4, "little", signed=True) + payload[-1:]
+
+
 def ready_state(path, port, proc, expected_height, expected_hash, deadline):
     last = None
     while time.monotonic() < deadline:
@@ -218,7 +225,7 @@ def run_case(args, mode, directory, data, resources):
             with wire:
                 wire.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 wait_for(wire, b"version", deadline)
-                send(wire, message(b"version", version_payload(listener.getsockname()[1], starting_height=HEIGHT))
+                send(wire, message(b"version", fixture_version_payload(listener.getsockname()[1]))
                      + message(b"verack", b""), deadline)
                 wait_for(wire, b"verack", deadline)
                 peers = rpc(directory, port, "getpeerinfo")

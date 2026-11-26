@@ -46,6 +46,7 @@ jobs:
         \    ;;\n  macOS)\n    test \"$RUNNER_ARCH\" = ARM64\n    (cd runtime && shasum -a 256 -c package.sha256)\n\
         \    tar -xzf runtime/sugarchain-en-31.1.2-macos-arm64-cli.tar.gz -C runtime\n    codesign --verify --strict\
         \ \"${{ matrix.binary }}\"\n    ;;\n  *) exit 2 ;;\nesac\n"
+      id: verified_inputs
     - name: Measure stock ConnectTip rereads with verified requested order
       shell: bash
       run: "set -euo pipefail\npython -B .github/en8-mainnet/body-reread/mainnet_body_reread.py \\\n  --binary \"\
@@ -77,6 +78,7 @@ jobs:
       continue-on-error: true
       run: "set -euo pipefail\npython -B .github/en8-mainnet/body-reread/public_header_wait.py \\\n  --binary \"\
         ${{ matrix.binary }}\" \\\n  --output \"$RUNNER_TEMP/en8-public-header-wait\"\n"
+      if: ${{ !cancelled() && steps.verified_inputs.outcome == 'success' }}
     - name: Retain public header timing sample
       if: always()
       uses: actions/upload-artifact@v7
