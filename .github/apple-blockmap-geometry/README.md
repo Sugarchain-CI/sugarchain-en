@@ -1,0 +1,7 @@
+# Native Apple Silicon block-map allocation geometry
+
+This diagnostic measures the pool allocation requests made by the source-9c `node::BlockMap` optimized backend under the native macOS SDK and standard library. It compiles exact `node/blockmap.h` and `chain.h`. A private copy of the pinned `pool.h` adds one observation immediately before the pooled-versus-fallback branch and one after a chunk is allocated. Production source and object layouts remain unchanged.
+
+Construct the empty optimized map, reserve 1.5 times the sample count and insert 8,192 index entries. Verify key pointers and parent pointers for every entry. Record the request size, alignment, counts and selected pool branch by phase. The capacity calculation requires one initial 256 KiB chunk, a separate heap allocation for the bucket array, and the same pooled node geometry for all entries. A different allocation pattern is retained as an inconclusive receipt for review.
+
+For the exact sealed Mainnet checkpoint with 44,946,269 index rows, the reported arena size assumes the same map geometry, one pooled node per row, no extra pooled startup allocations, and no retained parent placeholders beyond the rows. The report combines the resulting arena size with the unpacked fixture, a strictly sequential part-extraction estimate, and an 8 GiB disk reserve. APFS free space is sampled on this job's temporary volume. The estimate does not reserve disk, test a mature checkpoint, measure page residency, or start Sugarchain.

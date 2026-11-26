@@ -1,0 +1,46 @@
+name: En8 native Apple block-map allocation geometry
+'on':
+  push:
+    branches:
+      - ci/en8-apple-blockmap-geometry
+    paths:
+      - .github/workflows/en8-apple-blockmap-geometry.yml
+      - .github/apple-blockmap-geometry/**
+permissions:
+  contents: read
+jobs:
+  native-geometry:
+    name: Apple Silicon block-map geometry
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check out pinned production headers
+        uses: actions/checkout@v6
+        with:
+          repository: Sugarchain-CI/sugarchain-en
+          ref: 9c502574b652804905d2533d51742ca91f694532
+          path: audited-source
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Measure native allocation shape
+        shell: bash
+        run: >-
+          bash .github/apple-blockmap-geometry/run-native.sh
+          "$GITHUB_WORKSPACE/audited-source" "$RUNNER_TEMP/apple-blockmap-geometry"
+      - name: Retain geometry and provenance
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: apple-blockmap-geometry
+          path: |
+            ${{ runner.temp }}/apple-blockmap-geometry/*.txt
+            ${{ runner.temp }}/apple-blockmap-geometry/*.log
+            ${{ runner.temp }}/apple-blockmap-geometry/*.json
+            ${{ runner.temp }}/apple-blockmap-geometry/*.sha256
+          retention-days: 14
+          if-no-files-found: warn
