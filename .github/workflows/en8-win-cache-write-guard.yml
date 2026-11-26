@@ -1,0 +1,46 @@
+name: En8 Windows block-index write guard
+'on':
+  push:
+    branches:
+      - ci/en8-win-cache-write-guard
+    paths:
+      - .github/workflows/en8-win-cache-write-guard.yml
+      - .github/en8-mainnet/cache-write-guard/**
+permissions:
+  contents: read
+jobs:
+  windows-cache-write-guard:
+    name: Windows block-index write guard
+    runs-on: windows-2022
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check out pinned production LevelDB
+        uses: actions/checkout@v6
+        with:
+          repository: Sugarchain-CI/sugarchain-en
+          ref: 9c502574b652804905d2533d51742ca91f694532
+          path: audited-storage-source
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Run the fixed native Windows storage sequence
+        shell: bash
+        run: >-
+          python -B .github/en8-mainnet/cache-write-guard/run_native.py
+          --source audited-storage-source --output "$RUNNER_TEMP/sc-writeguard" --parallel 2
+      - name: Retain run receipts and timings
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-cache-write-guard
+          path: |
+            ${{ runner.temp }}/sc-writeguard/evidence/**
+            !${{ runner.temp }}/sc-writeguard/evidence/**/synthetic-index/**
+          retention-days: 14
+          if-no-files-found: warn
