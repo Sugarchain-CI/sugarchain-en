@@ -1,0 +1,48 @@
+diff --git a/src/crypto/yespower-1.0.1/yespower-opt.c b/src/crypto/yespower-1.0.1/yespower-opt.c
+index 3c120ee234..33d4244318 100644
+--- a/src/crypto/yespower-1.0.1/yespower-opt.c
++++ b/src/crypto/yespower-1.0.1/yespower-opt.c
+@@ -859,6 +859,9 @@ static uint32_t blockmix_xor(const salsa20_blk_t *restrict Bin1,
+ 	/* Convert count of 128-byte blocks to max index of 64-byte block */
+ 	r = r * 2 - 1;
+ 
++#if defined(YESPOWER_APPLE_NEON) && defined(YESPOWER_APPLE_PREFETCH_BLOCKS) && _YESPOWER_OPT_C_PASS_ > 1
++	__builtin_prefetch(&Bin2[0], 0, 2);
++#endif
+ #ifdef PREFETCH
+ 	PREFETCH(&Bin2[r], _MM_HINT_T0)
+ 	for (i = 0; i < r; i++) {
+@@ -873,6 +876,12 @@ static uint32_t blockmix_xor(const salsa20_blk_t *restrict Bin1,
+ 	i = 0;
+ 	r--;
+ 	do {
++#if defined(YESPOWER_APPLE_NEON) && defined(YESPOWER_APPLE_PREFETCH_BLOCKS) && _YESPOWER_OPT_C_PASS_ > 1
++		/* The next table block is data dependent, but this input is contiguous.
++		 * Hint one later cache line while mixing the current pair of blocks. */
++		if (r - i >= YESPOWER_APPLE_PREFETCH_BLOCKS)
++			__builtin_prefetch(&Bin2[i + YESPOWER_APPLE_PREFETCH_BLOCKS], 0, 2);
++#endif
+ 		XOR_X(Bin1[i])
+ 		XOR_X(Bin2[i])
+ 		PWXFORM
+@@ -917,6 +926,9 @@ static uint32_t blockmix_xor_save(salsa20_blk_t *restrict Bin1out,
+ 	/* Convert count of 128-byte blocks to max index of 64-byte block */
+ 	r = r * 2 - 1;
+ 
++#if defined(YESPOWER_APPLE_NEON) && defined(YESPOWER_APPLE_PREFETCH_BLOCKS) && _YESPOWER_OPT_C_PASS_ > 1
++	__builtin_prefetch(&Bin2[0], 0, 2);
++#endif
+ #ifdef PREFETCH
+ 	PREFETCH(&Bin2[r], _MM_HINT_T0)
+ 	for (i = 0; i < r; i++) {
+@@ -931,6 +943,10 @@ static uint32_t blockmix_xor_save(salsa20_blk_t *restrict Bin1out,
+ 	i = 0;
+ 	r--;
+ 	do {
++#if defined(YESPOWER_APPLE_NEON) && defined(YESPOWER_APPLE_PREFETCH_BLOCKS) && _YESPOWER_OPT_C_PASS_ > 1
++		if (r - i >= YESPOWER_APPLE_PREFETCH_BLOCKS)
++			__builtin_prefetch(&Bin2[i + YESPOWER_APPLE_PREFETCH_BLOCKS], 0, 2);
++#endif
+ 		XOR_X_WRITE_XOR_Y_2(Bin2[i], Bin1out[i])
+ 		PWXFORM
+ 		WRITE_X(Bin1out[i])
