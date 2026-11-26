@@ -155,7 +155,7 @@ def main():
     vendor = pinned[f"{VENDOR}/yespower-opt.c"].decode()
     fixed_source = '#include "yespower-opt.c"\n#include "fixed-probe.h"\n#include "sugar-params.h"\n\n'
     (output / "fixed-sugar.c").write_text(fixed_source + generate_probe(vendor) + DISPATCH, encoding="utf-8")
-    for name in ("fixed-probe.h", "fixed-yespower-probe.c"):
+    for name in ("fixed-probe.h", "fixed-yespower-probe.c", "probe-clock.h"):
         shutil.copyfile(HERE / name, output / name)
     (output / "sugar-params.h").write_text(render_params(pinned["src/primitives/block.h"].decode(), pinned["src/primitives/block.cpp"].decode()), encoding="utf-8")
     command = [compiler, "-O3", "-std=gnu11", "-Wall", "-Wextra", *args.cflag, "-pthread", "fixed-sugar.c", "sha256.c", "fixed-yespower-probe.c", "-o", "fixed_yespower_probe"]

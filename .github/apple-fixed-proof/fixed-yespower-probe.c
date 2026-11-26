@@ -1,8 +1,10 @@
 #include "fixed-probe.h"
+#include "probe-clock.h"
 #include "sha256.h"
 #include "sugar-params.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -139,28 +141,38 @@ struct worker {
     size_t begin, end;
     int repeats;
     proof_function call;
+    uint64_t cpu_ns;
 };
+
+static uint64_t clock_ns(clockid_t clock)
+{
+    uint64_t sample;
+    require(probe_clock_ns(clock, &sample), "Could not sample benchmark clock");
+    return sample;
+}
+
+static uint64_t clock_delta(clockid_t clock, uint64_t start)
+{
+    const uint64_t end = clock_ns(clock);
+    require(end >= start, "Benchmark clock ran backwards");
+    return end - start;
+}
 
 static void *run_worker(void *pointer)
 {
-    const struct worker *const task = pointer;
+    struct worker *const task = pointer;
     yespower_local_t local;
     require(yespower_init_local(&local) == 0, "Could not initialize owned proof scratch");
+    const uint64_t start = clock_ns(CLOCK_THREAD_CPUTIME_ID);
     for (int pass = 0; pass < task->repeats; ++pass) {
         for (size_t i = task->begin; i < task->end; ++i) {
             require(task->call(&local, task->headers + i * PROBE_HEADER_BYTES, PROBE_HEADER_BYTES,
                 &probe_params, &task->proofs[i]) == 0, "Benchmark proof failed");
         }
     }
+    task->cpu_ns = clock_delta(CLOCK_THREAD_CPUTIME_ID, start);
     require(yespower_free_local(&local) == 0, "Could not release owned proof scratch");
     return NULL;
-}
-
-static double clock_seconds(clockid_t clock)
-{
-    struct timespec now;
-    require(clock_gettime(clock, &now) == 0, "Could not sample benchmark clock");
-    return (double)now.tv_sec + (double)now.tv_nsec * 1e-9;
 }
 
 static void run_benchmark(enum arm arm, const uint8_t *headers, size_t count, int repeats, int workers)
@@ -175,19 +187,40 @@ static void run_benchmark(enum arm arm, const uint8_t *headers, size_t count, in
             .begin = count * (size_t)i / (size_t)workers, .end = count * (size_t)(i + 1) / (size_t)workers,
             .repeats = repeats, .call = entry};
     }
-    double start_wall = clock_seconds(CLOCK_MONOTONIC);
-    double start_cpu = clock_seconds(CLOCK_PROCESS_CPUTIME_ID);
+    uint64_t thread_resolution, wall_resolution;
+    require(probe_clock_resolution_ns(CLOCK_THREAD_CPUTIME_ID, &thread_resolution) &&
+        probe_clock_resolution_ns(CLOCK_MONOTONIC, &wall_resolution), "Could not get benchmark clock resolution");
+    const uint64_t start_wall = clock_ns(CLOCK_MONOTONIC);
+    const uint64_t start_main_cpu = clock_ns(CLOCK_THREAD_CPUTIME_ID);
+    uint64_t start_process_cpu = 0, end_process_cpu = 0;
+    const bool have_process_cpu = probe_clock_ns(CLOCK_PROCESS_CPUTIME_ID, &start_process_cpu);
     for (int i = 0; i < workers; ++i)
         require(pthread_create(&threads[i], NULL, run_worker, &tasks[i]) == 0, "Could not create owned benchmark worker");
     for (int i = 0; i < workers; ++i)
         require(pthread_join(threads[i], NULL) == 0, "Could not join owned benchmark worker");
-    double cpu = clock_seconds(CLOCK_PROCESS_CPUTIME_ID) - start_cpu;
-    double wall = clock_seconds(CLOCK_MONOTONIC) - start_wall;
-    require(cpu > 0 && wall > 0, "Invalid benchmark timing");
+    const uint64_t main_cpu = clock_delta(CLOCK_THREAD_CPUTIME_ID, start_main_cpu);
+    const bool have_process_delta = have_process_cpu && probe_clock_ns(CLOCK_PROCESS_CPUTIME_ID, &end_process_cpu) &&
+        start_process_cpu <= INT64_MAX && end_process_cpu <= INT64_MAX;
+    const uint64_t wall = clock_delta(CLOCK_MONOTONIC, start_wall);
+    uint64_t worker_total = 0;
+    for (int i = 0; i < workers; ++i) {
+        require(tasks[i].cpu_ns <= UINT64_MAX - worker_total, "Worker CPU total overflow");
+        worker_total += tasks[i].cpu_ns;
+    }
     uint8_t digest[32];
     SHA256_Buf(proofs, count * sizeof(*proofs), digest);
-    printf("{\"arm\":\"%s\",\"workers\":%d,\"headers\":%zu,\"repeats\":%d,\"cpu_seconds\":%.9f,\"wall_seconds\":%.9f,\"proof_digest\":\"",
-        arm_names[arm], workers, count, repeats, cpu, wall);
+    printf("{\"arm\":\"%s\",\"workers\":%d,\"headers\":%zu,\"repeats\":%d,\"wall_ns\":%" PRIu64
+        ",\"thread_clock_resolution_ns\":%" PRIu64 ",\"wall_clock_resolution_ns\":%" PRIu64
+        ",\"main_thread_cpu_ns\":%" PRIu64 ",\"worker_cpu_total_ns\":%" PRIu64 ",\"worker_cpu_ns\":[",
+        arm_names[arm], workers, count, repeats, wall, thread_resolution, wall_resolution, main_cpu, worker_total);
+    for (int i = 0; i < workers; ++i)
+        printf("%s%" PRIu64, i ? "," : "", tasks[i].cpu_ns);
+    printf("],\"diagnostic_process_cpu_ns\":");
+    if (have_process_delta)
+        printf("%" PRId64, (int64_t)end_process_cpu - (int64_t)start_process_cpu);
+    else
+        printf("null");
+    printf(",\"proof_digest\":\"");
     for (size_t i = 0; i < sizeof(digest); ++i)
         printf("%02x", digest[i]);
     printf("\"}\n");
