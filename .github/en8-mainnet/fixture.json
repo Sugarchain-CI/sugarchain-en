@@ -1,0 +1,11 @@
+{
+  "chain": "main",
+  "first_height": 1,
+  "last_height": 4096,
+  "genesis": "7d5eaec2dbb75f99feadfa524c78b7cabc1d8c8204f79d4f3a83381b811b0adc",
+  "tip": "d65c628a2759d5e956d586c824172681553e187e6b0b194c86ff2f8a54dcccc9",
+  "blocks_sha256": "d3ab941f31aa5d1a6c6781d02d7212cdea95db75bafb054743a4adf3a82563d4",
+  "archive_sha256": "eb0a6130b5a561bed197918face18106711715ba8e0c7862f5ad83b541b3082d",
+  "bytes": 1319603,
+  "archive_bytes": 428681
+}

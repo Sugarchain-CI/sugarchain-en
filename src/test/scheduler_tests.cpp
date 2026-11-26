@@ -1,0 +1,475 @@
+// Copyright (c) 2012-present The Bitcoin Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#include <random.h>
+#include <scheduler.h>
+#include <util/time.h>
+
+#include <boost/test/unit_test.hpp>
+
+#include <functional>
+#ifdef __APPLE__
+#include <future>
+#endif
+#include <mutex>
+#include <stdexcept>
+#include <thread>
+#include <vector>
+
+#if defined(__APPLE__) && defined(__x86_64__)
+struct SchedulerWaiterTestAccess {
+    static bool WaitForSleeper(CScheduler& scheduler)
+    {
+        const auto deadline{std::chrono::steady_clock::now() + 5s};
+        do {
+            if (WITH_LOCK(scheduler.newTaskMutex, return scheduler.m_waiting_threads != 0)) return true;
+            std::this_thread::yield();
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
+    static size_t WaitingThreads(CScheduler& scheduler)
+    {
+        return WITH_LOCK(scheduler.newTaskMutex, return scheduler.m_waiting_threads);
+    }
+};
+#endif
+
+BOOST_AUTO_TEST_SUITE(scheduler_tests)
+
+static void microTask(CScheduler& s, std::mutex& mutex, int& counter, int delta, std::chrono::steady_clock::time_point rescheduleTime)
+{
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        counter += delta;
+    }
+    auto noTime = std::chrono::steady_clock::time_point::min();
+    if (rescheduleTime != noTime) {
+        CScheduler::Function f = std::bind_front(&microTask, std::ref(s), std::ref(mutex), std::ref(counter), -delta + 1, noTime);
+        s.schedule(f, rescheduleTime);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(manythreads)
+{
+    // Stress test: hundreds of microsecond-scheduled tasks,
+    // serviced by 10 threads.
+    //
+    // So... ten shared counters, which if all the tasks execute
+    // properly will sum to the number of tasks done.
+    // Each task adds or subtracts a random amount from one of the
+    // counters, and then schedules another task 0-1000
+    // microseconds in the future to subtract or add from
+    // the counter -random_amount+1, so in the end the shared
+    // counters should sum to the number of initial tasks performed.
+    CScheduler microTasks;
+
+    std::mutex counterMutex[10];
+    int counter[10] = { 0 };
+    FastRandomContext rng{/*fDeterministic=*/true};
+    auto zeroToNine = [](FastRandomContext& rc) -> int { return rc.randrange(10); }; // [0, 9]
+    auto randomMsec = [](FastRandomContext& rc) -> int { return -11 + (int)rc.randrange(1012); }; // [-11, 1000]
+    auto randomDelta = [](FastRandomContext& rc) -> int { return -1000 + (int)rc.randrange(2001); }; // [-1000, 1000]
+
+    auto start = std::chrono::steady_clock::now();
+    auto now = start;
+    std::chrono::steady_clock::time_point first, last;
+    size_t nTasks = microTasks.getQueueInfo(first, last);
+    BOOST_CHECK(nTasks == 0);
+
+    for (int i = 0; i < 100; ++i) {
+        auto t = now + std::chrono::microseconds(randomMsec(rng));
+        auto tReschedule = now + std::chrono::microseconds(500 + randomMsec(rng));
+        int whichCounter = zeroToNine(rng);
+        CScheduler::Function f = std::bind_front(&microTask, std::ref(microTasks),
+                                             std::ref(counterMutex[whichCounter]), std::ref(counter[whichCounter]),
+                                             randomDelta(rng), tReschedule);
+        microTasks.schedule(f, t);
+    }
+    nTasks = microTasks.getQueueInfo(first, last);
+    BOOST_CHECK(nTasks == 100);
+    BOOST_CHECK(first < last);
+    BOOST_CHECK(last > now);
+
+    // As soon as these are created they will start running and servicing the queue
+    std::vector<std::thread> microThreads;
+    microThreads.reserve(10);
+    for (int i = 0; i < 5; i++)
+        microThreads.emplace_back(std::bind_front(&CScheduler::serviceQueue, &microTasks));
+
+    UninterruptibleSleep(std::chrono::microseconds{600});
+    now = std::chrono::steady_clock::now();
+
+    // More threads and more tasks:
+    for (int i = 0; i < 5; i++)
+        microThreads.emplace_back(std::bind_front(&CScheduler::serviceQueue, &microTasks));
+    for (int i = 0; i < 100; i++) {
+        auto t = now + std::chrono::microseconds(randomMsec(rng));
+        auto tReschedule = now + std::chrono::microseconds(500 + randomMsec(rng));
+        int whichCounter = zeroToNine(rng);
+        CScheduler::Function f = std::bind_front(&microTask, std::ref(microTasks),
+                                             std::ref(counterMutex[whichCounter]), std::ref(counter[whichCounter]),
+                                             randomDelta(rng), tReschedule);
+        microTasks.schedule(f, t);
+    }
+
+    // Drain the task queue then exit threads
+    microTasks.StopWhenDrained();
+    // wait until all the threads are done
+    for (auto& thread: microThreads) {
+        if (thread.joinable()) thread.join();
+    }
+
+    int counterSum = 0;
+    for (int i = 0; i < 10; i++) {
+        BOOST_CHECK(counter[i] != 0);
+        counterSum += counter[i];
+    }
+    BOOST_CHECK_EQUAL(counterSum, 200);
+}
+
+BOOST_AUTO_TEST_CASE(wait_until_past)
+{
+    std::condition_variable condvar;
+    Mutex mtx;
+    WAIT_LOCK(mtx, lock);
+
+    const auto no_wait = [&](const std::chrono::seconds& d) {
+        return condvar.wait_until(lock, std::chrono::steady_clock::now() - d);
+    };
+
+    BOOST_CHECK(std::cv_status::timeout == no_wait(std::chrono::seconds{1}));
+    BOOST_CHECK(std::cv_status::timeout == no_wait(std::chrono::minutes{1}));
+    BOOST_CHECK(std::cv_status::timeout == no_wait(std::chrono::hours{1}));
+    BOOST_CHECK(std::cv_status::timeout == no_wait(std::chrono::hours{10}));
+    BOOST_CHECK(std::cv_status::timeout == no_wait(std::chrono::hours{100}));
+    BOOST_CHECK(std::cv_status::timeout == no_wait(std::chrono::hours{1000}));
+}
+
+BOOST_AUTO_TEST_CASE(singlethreadedscheduler_ordered)
+{
+    CScheduler scheduler;
+
+    // each queue should be well ordered with respect to itself but not other queues
+    SerialTaskRunner queue1(scheduler);
+    SerialTaskRunner queue2(scheduler);
+
+    // create more threads than queues
+    // if the queues only permit execution of one task at once then
+    // the extra threads should effectively be doing nothing
+    // if they don't we'll get out of order behaviour
+    std::vector<std::thread> threads;
+    threads.reserve(5);
+    for (int i = 0; i < 5; ++i) {
+        threads.emplace_back([&] { scheduler.serviceQueue(); });
+    }
+
+    // these are not atomic, if SerialTaskRunner prevents
+    // parallel execution at the queue level no synchronization should be required here
+    int counter1 = 0;
+    int counter2 = 0;
+
+    // just simply count up on each queue - if execution is properly ordered then
+    // the callbacks should run in exactly the order in which they were enqueued
+    for (int i = 0; i < 100; ++i) {
+        queue1.insert([i, &counter1]() {
+            bool expectation = i == counter1++;
+            assert(expectation);
+        });
+
+        queue2.insert([i, &counter2]() {
+            bool expectation = i == counter2++;
+            assert(expectation);
+        });
+    }
+
+    // finish up
+    scheduler.StopWhenDrained();
+    for (auto& thread: threads) {
+        if (thread.joinable()) thread.join();
+    }
+
+    BOOST_CHECK_EQUAL(counter1, 100);
+    BOOST_CHECK_EQUAL(counter2, 100);
+}
+
+#if defined(__APPLE__) && defined(__x86_64__)
+BOOST_AUTO_TEST_CASE(scheduler_wakes_other_worker_while_callback_blocked)
+{
+    CScheduler scheduler;
+    std::promise<void> first_started, release_first, second_finished;
+    auto first_ready{first_started.get_future()};
+    auto release{release_first.get_future()};
+    auto second_ready{second_finished.get_future()};
+    scheduler.scheduleFromNow([&] {
+        first_started.set_value();
+        release.wait();
+    }, 0ms);
+    std::thread first_worker{[&] { scheduler.serviceQueue(); }};
+    std::thread second_worker{[&] { scheduler.serviceQueue(); }};
+    const auto started{first_ready.wait_for(5s)};
+    const bool sleeping{SchedulerWaiterTestAccess::WaitForSleeper(scheduler)};
+    // The blocked callback cannot service this task. A different worker must
+    // wake even though another task is currently executing.
+    scheduler.scheduleFromNow([&] { second_finished.set_value(); }, 0ms);
+    const auto finished{second_ready.wait_for(5s)};
+    release_first.set_value();
+    scheduler.StopWhenDrained();
+    first_worker.join();
+    second_worker.join();
+    BOOST_CHECK(started == std::future_status::ready);
+    BOOST_CHECK(sleeping);
+    BOOST_CHECK(finished == std::future_status::ready);
+    BOOST_CHECK_EQUAL(SchedulerWaiterTestAccess::WaitingThreads(scheduler), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(scheduler_new_earliest_deadline_wakes_worker)
+{
+    CScheduler scheduler;
+    std::promise<void> immediate_finished;
+    auto finished{immediate_finished.get_future()};
+    bool future_ran{false};
+    scheduler.scheduleFromNow([&] { future_ran = true; }, 1h);
+    std::thread worker{[&] { scheduler.serviceQueue(); }};
+    const bool sleeping{SchedulerWaiterTestAccess::WaitForSleeper(scheduler)};
+    scheduler.scheduleFromNow([&] { immediate_finished.set_value(); }, 0ms);
+    const auto status{finished.wait_for(5s)};
+    scheduler.stop();
+    worker.join();
+    BOOST_CHECK(status == std::future_status::ready);
+    BOOST_CHECK(sleeping);
+    BOOST_CHECK(!future_ran);
+    BOOST_CHECK_EQUAL(SchedulerWaiterTestAccess::WaitingThreads(scheduler), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(scheduler_due_tasks_keep_order_and_future_deadlines)
+{
+    CScheduler scheduler;
+    std::vector<int> order;
+    const auto past{std::chrono::steady_clock::now() - 1s};
+    const auto future{std::chrono::steady_clock::now() + 20ms};
+    std::chrono::steady_clock::time_point executed_at;
+    scheduler.schedule([&] { order.push_back(3); }, past + 2ms);
+    scheduler.schedule([&] { order.push_back(4); }, past + 2ms);
+    scheduler.schedule([&] {
+        order.push_back(1);
+        // A newly queued due task must use deadline order, including while
+        // already draining, without changing FIFO order for equal deadlines.
+        scheduler.schedule([&] { order.push_back(2); }, past + 1ms);
+    }, past);
+    scheduler.schedule([&] {
+        executed_at = std::chrono::steady_clock::now();
+        order.push_back(5);
+    }, future);
+    scheduler.StopWhenDrained();
+    scheduler.serviceQueue();
+
+    const std::vector<int> expected{1, 2, 3, 4, 5};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+    BOOST_CHECK(executed_at >= future);
+    std::chrono::steady_clock::time_point first, last;
+    BOOST_CHECK_EQUAL(scheduler.getQueueInfo(first, last), 0U);
+}
+
+BOOST_AUTO_TEST_CASE(scheduler_due_tasks_respect_immediate_shutdown)
+{
+    CScheduler scheduler;
+    std::vector<int> order;
+    const auto past{std::chrono::steady_clock::now() - 1s};
+    scheduler.schedule([&] { order.push_back(1); }, past);
+    scheduler.schedule([&] {
+        order.push_back(2);
+        scheduler.stop();
+    }, past + 1ms);
+    scheduler.schedule([&] { order.push_back(3); }, past + 2ms);
+    scheduler.serviceQueue();
+
+    const std::vector<int> expected{1, 2};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+    std::chrono::steady_clock::time_point first, last;
+    BOOST_CHECK_EQUAL(scheduler.getQueueInfo(first, last), 1U);
+}
+#endif
+
+#if defined(__APPLE__) && defined(__aarch64__)
+BOOST_AUTO_TEST_CASE(validation_worker_capacity_and_shutdown)
+{
+    ValidationTaskRunner runner;
+    std::vector<int> order;
+    std::thread::id worker_id;
+    std::thread::id draining_id;
+    std::promise<void> first_started, release_first, release_last;
+    auto first_gate{release_first.get_future()};
+    auto last_gate{release_last.get_future()};
+
+    runner.insert([&] {
+        worker_id = std::this_thread::get_id();
+        order.push_back(1);
+        first_started.set_value();
+        first_gate.wait();
+    });
+    first_started.get_future().wait();
+    runner.insert([&] {
+        order.push_back(2);
+        // The last callback waits inside its body. Queue capacity is released
+        // on dequeue, so the producer can unblock it without draining the FIFO.
+        last_gate.wait();
+    });
+    const size_t held_pending{runner.size()};
+    release_first.set_value();
+    const bool capacity_released{runner.waitForPendingAtMost(0)};
+    release_last.set_value();
+    runner.stop();
+
+    // Shutdown can still enqueue final chainstate notifications. The caller
+    // drains them after the worker has stopped, including nested notifications.
+    runner.insert([&] {
+        draining_id = std::this_thread::get_id();
+        order.push_back(3);
+        runner.insert([&] { order.push_back(5); });
+    });
+    runner.insert([&] { order.push_back(4); });
+    BOOST_CHECK_EQUAL(runner.size(), 2U);
+    runner.flush();
+    const std::vector<int> expected{1, 2, 3, 4, 5};
+    BOOST_CHECK_EQUAL(held_pending, 1U);
+    BOOST_CHECK(capacity_released);
+    BOOST_CHECK(worker_id != std::this_thread::get_id());
+    BOOST_CHECK(draining_id == std::this_thread::get_id());
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+    BOOST_CHECK_EQUAL(runner.size(), 0U);
+}
+#endif
+
+BOOST_AUTO_TEST_CASE(serial_callbacks_resume_after_exception_and_stop)
+{
+    CScheduler scheduler;
+    SerialTaskRunner runner{scheduler};
+    std::vector<int> order;
+    runner.insert([&] { order.push_back(1); });
+    runner.insert([&] {
+        order.push_back(2);
+        throw std::runtime_error{"validation callback"};
+    });
+    runner.insert([&] {
+        order.push_back(3);
+        scheduler.stop();
+    });
+    runner.insert([&] { order.push_back(4); });
+
+    BOOST_CHECK_THROW(scheduler.serviceQueue(), std::runtime_error);
+    BOOST_CHECK_EQUAL(order.size(), 2U);
+    scheduler.serviceQueue();
+    BOOST_CHECK_EQUAL(runner.size(), 1U);
+    runner.flush();
+
+    const std::vector<int> expected{1, 2, 3, 4};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+}
+
+#if defined(__APPLE__) && defined(__x86_64__)
+BOOST_AUTO_TEST_CASE(serial_callbacks_wake_append_and_drain)
+{
+    CScheduler scheduler;
+    SerialTaskRunner runner{scheduler};
+    std::vector<int> order;
+    std::promise<void> scheduler_started, first_started, release_first, drained;
+    auto first_ready{first_started.get_future()};
+    auto gate{release_first.get_future()};
+    auto finished{drained.get_future()};
+
+    // Start servicing before the first callback is inserted, so insertion must
+    // wake an idle scheduler rather than rely on an already reserved turn.
+    scheduler.scheduleFromNow([&] { scheduler_started.set_value(); }, 0ms);
+    std::thread worker{[&] { scheduler.serviceQueue(); }};
+    scheduler_started.get_future().wait();
+    runner.insert([&] {
+        order.push_back(1);
+        first_started.set_value();
+        gate.wait();
+        // A callback can append more work without deadlocking or overtaking
+        // callbacks inserted while it was running.
+        runner.insert([&] {
+            order.push_back(19);
+            drained.set_value();
+        });
+    });
+    const auto wake_status{first_ready.wait_for(5s)};
+    for (int i{2}; i <= 18; ++i) {
+        runner.insert([&, i] { order.push_back(i); });
+    }
+    const size_t held_pending{runner.size()};
+    release_first.set_value();
+    const auto drain_status{finished.wait_for(5s)};
+    scheduler.stop();
+    worker.join();
+    // Drain on failure too, so no callback outlives the test's captured state.
+    runner.flush();
+
+    BOOST_CHECK(wake_status == std::future_status::ready);
+    BOOST_CHECK(drain_status == std::future_status::ready);
+    BOOST_CHECK_EQUAL(held_pending, 17U);
+    BOOST_REQUIRE_EQUAL(order.size(), 19U);
+    for (size_t i{0}; i < order.size(); ++i) BOOST_CHECK_EQUAL(order[i], i + 1);
+
+    // Final notifications may arrive after scheduler shutdown. They must stay
+    // queued and be drained in FIFO order, including reentrant insertion.
+    const auto caller{std::this_thread::get_id()};
+    std::thread::id draining_thread;
+    runner.insert([&] {
+        draining_thread = std::this_thread::get_id();
+        order.push_back(20);
+        runner.insert([&] { order.push_back(22); });
+    });
+    runner.insert([&] { order.push_back(21); });
+    BOOST_CHECK_EQUAL(runner.size(), 2U);
+    runner.flush();
+    BOOST_CHECK(draining_thread == caller);
+    BOOST_CHECK_EQUAL(runner.size(), 0U);
+    const std::vector<int> expected{20, 21, 22};
+    BOOST_CHECK_EQUAL_COLLECTIONS(order.end() - 3, order.end(), expected.begin(), expected.end());
+}
+#endif
+
+BOOST_AUTO_TEST_CASE(mockforward)
+{
+    CScheduler scheduler;
+
+    int counter{0};
+    CScheduler::Function dummy = [&counter]{counter++;};
+
+    // schedule jobs for 2, 5 & 8 minutes into the future
+
+    scheduler.scheduleFromNow(dummy, std::chrono::minutes{2});
+    scheduler.scheduleFromNow(dummy, std::chrono::minutes{5});
+    scheduler.scheduleFromNow(dummy, std::chrono::minutes{8});
+
+    // check taskQueue
+    std::chrono::steady_clock::time_point first, last;
+    size_t num_tasks = scheduler.getQueueInfo(first, last);
+    BOOST_CHECK_EQUAL(num_tasks, 3ul);
+
+    std::thread scheduler_thread([&]() { scheduler.serviceQueue(); });
+
+    // bump the scheduler forward 5 minutes
+    scheduler.MockForward(std::chrono::minutes{5});
+
+    // ensure scheduler has chance to process all tasks queued for before 1 ms from now.
+    scheduler.scheduleFromNow([&scheduler] { scheduler.stop(); }, std::chrono::milliseconds{1});
+    scheduler_thread.join();
+
+    // check that the queue only has one job remaining
+    num_tasks = scheduler.getQueueInfo(first, last);
+    BOOST_CHECK_EQUAL(num_tasks, 1ul);
+
+    // check that the dummy function actually ran
+    BOOST_CHECK_EQUAL(counter, 2);
+
+    // check that the time of the remaining job has been updated
+    auto now = std::chrono::steady_clock::now();
+    int delta = std::chrono::duration_cast<std::chrono::seconds>(first - now).count();
+    // should be between 2 & 3 minutes from now
+    BOOST_CHECK(delta > 2*60 && delta < 3*60);
+}
+
+BOOST_AUTO_TEST_SUITE_END()

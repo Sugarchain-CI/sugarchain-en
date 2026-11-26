@@ -1,0 +1,49 @@
+// Copyright (c) 2023-present The Bitcoin Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or https://opensource.org/license/mit.
+
+#include <node/peerman_args.h>
+
+#include <common/args.h>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <common/system.h>
+#endif
+#include <net_processing.h>
+
+#include <algorithm>
+#include <limits>
+
+namespace node {
+
+void ApplyArgsManOptions(const ArgsManager& argsman, PeerManager::Options& options)
+{
+    if (auto value{argsman.GetBoolArg("-txreconciliation")}) options.reconcile_txs = *value;
+
+    if (auto value{argsman.GetIntArg("-blockreconstructionextratxn")}) {
+        options.max_extra_txs = uint32_t((std::clamp<int64_t>(*value, 0, std::numeric_limits<uint32_t>::max())));
+    }
+
+    if (auto value{argsman.GetBoolArg("-capturemessages")}) options.capture_messages = *value;
+
+    if (auto value{argsman.GetBoolArg("-blocksonly")}) options.ignore_incoming_txs = *value;
+
+    if (auto value{argsman.GetBoolArg("-privatebroadcast")}) options.private_broadcast = *value;
+
+    if (auto value{argsman.GetIntArg("-parpow")}) {
+        options.header_pow_workers = std::clamp<int64_t>(*value, 1, MAX_HEADER_POW_WORKERS);
+    }
+#if defined(__APPLE__) && defined(__aarch64__)
+    // Network verification waits after each bounded group. Avoid waking more
+    // default workers than hardware threads on small Apple Silicon hosts and
+    // VMs, while preserving the hard limit and any explicit -parpow override.
+    const int cores{GetNumCores()};
+    options.header_pow_parallelism = !argsman.IsArgSet("-parpow") && cores > 0
+        ? std::min(cores, MAX_HEADER_POW_WORKERS) : MAX_HEADER_POW_WORKERS;
+#endif
+    if (auto value{argsman.GetIntArg("-maxibdblocksinflight")}) {
+        options.ibd_block_request_limit = std::clamp<int64_t>(*value, DEFAULT_IBD_BLOCK_REQUEST_LIMIT, MAX_IBD_BLOCK_REQUEST_LIMIT);
+    }
+}
+
+} // namespace node
+

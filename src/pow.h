@@ -1,0 +1,107 @@
+// Copyright (c) 2009-2010 Satoshi Nakamoto
+// Copyright (c) 2009-present The Bitcoin Core developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#ifndef BITCOIN_POW_H
+#define BITCOIN_POW_H
+
+#include <consensus/params.h>
+#include <kernel/cs_main.h>
+
+#include <cstdint>
+#include <cstddef>
+#include <memory>
+#include <span>
+
+class CBlockHeader;
+class CBlockIndex;
+class uint256;
+class arith_uint256;
+
+/**
+ * Convert nBits value to target.
+ *
+ * @param[in] nBits     compact representation of the target
+ * @param[in] pow_limit PoW limit (consensus parameter)
+ *
+ * @return              the proof-of-work target or nullopt if the nBits value
+ *                      is invalid (due to overflow or exceeding pow_limit)
+ */
+std::optional<arith_uint256> DeriveTarget(unsigned int nBits, uint256 pow_limit);
+
+unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params&);
+unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params&);
+/** Exact SugarShield arithmetic, shared by full-history and rolling-sum callers. */
+unsigned int CalculateSugarShieldWorkRequired(const arith_uint256& target_sum, int64_t mtp_span, const Consensus::Params&);
+
+/** Check whether a block hash satisfies the proof-of-work requirement specified by nBits */
+bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params, bool cache_result = true);
+bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params&);
+bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Params&);
+/** Domain of local persisted results; not a cryptographic proof of execution. */
+uint256 GetYespowerEvidenceRulesHash(const Consensus::Params& params);
+uint256 GetYespowerEvidenceDigest(const CBlockHeader& header, const Consensus::Params& params);
+
+inline constexpr size_t DEFAULT_YESPOWER_CACHE_BYTES{16 << 20};
+// Also keeps CuckooCache's uint32_t epoch-size arithmetic below overflow.
+inline constexpr size_t MAX_YESPOWER_CACHE_BYTES{size_t{2048} << 20};
+/** Configure process-local proof evidence; resizing discards all old entries.
+ * In fast startup, grow the cache within the same budget as proofs accumulate.
+ */
+void InitYespowerVerificationCache(size_t bytes, bool grow_on_demand = false);
+
+/** Proof storage only: excludes hash flags, allocator overhead and batch-cache metadata. */
+struct YespowerCacheUsage {
+    size_t budget_bytes{};
+    size_t proof_capacity_bytes{};
+    size_t proof_storage_bytes{};
+    size_t tiers{};
+};
+YespowerCacheUsage GetYespowerVerificationCacheUsage();
+/** Drop IBD-era RAM evidence, preserving the configured budget and verification policy.
+ * Must be called outside cs_main. Old storage is destroyed outside the cache lock.
+ */
+bool ShrinkYespowerVerificationCache();
+
+/** With cs_main held, restore an evicted proof from a genuinely checked live index. */
+void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Params& params) EXCLUSIVE_LOCKS_REQUIRED(::cs_main);
+
+inline constexpr int DEFAULT_HEADER_POW_WORKERS{8};
+inline constexpr int MAX_HEADER_POW_WORKERS{8};
+
+/** Bounded, node-owned verification workers; no trust from peer/index status. */
+class HeaderPoWVerifier {
+    struct Impl;
+    std::unique_ptr<Impl> m_impl;
+
+public:
+    explicit HeaderPoWVerifier(int workers);
+#if defined(__APPLE__) && defined(__aarch64__)
+    /** Limit simultaneous work and admit whole groups within the existing bound. */
+    HeaderPoWVerifier(int workers, int parallelism);
+#endif
+    ~HeaderPoWVerifier();
+    HeaderPoWVerifier(const HeaderPoWVerifier&) = delete;
+    HeaderPoWVerifier& operator=(const HeaderPoWVerifier&) = delete;
+    bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params);
+    /** Check every header once, including on warm-cache hits; used for startup block-index validation. */
+    // Background historical scans persist evidence on disk instead of filling the RAM cache.
+    bool CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params, bool cache_result = true);
+};
+
+/**
+ * Return false if the proof-of-work requirement specified by new_nbits at a
+ * given height is not possible, given the proof-of-work on the prior block as
+ * specified by old_nbits.
+ *
+ * This function only checks that the new value is within a factor of 4 of the
+ * old value for blocks at the difficulty adjustment interval, and otherwise
+ * requires the values to be the same.
+ *
+ * Always returns true on networks where min difficulty blocks are allowed,
+ * such as regtest/testnet.
+ */
+bool PermittedDifficultyTransition(const Consensus::Params& params, int64_t height, uint32_t old_nbits, uint32_t new_nbits);
+
+#endif // BITCOIN_POW_H

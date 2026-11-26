@@ -1,0 +1,679 @@
+// Copyright (c) 2009-2010 Satoshi Nakamoto
+// Copyright (c) 2009-present The Bitcoin Core developers
+// Copyright (c) 2016-2018 The Zcash developers
+// Copyright (c) 2018-2020 The Sugarchain Yumekawa developers
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or http://www.opensource.org/licenses/mit-license.php.
+
+#include <pow.h>
+
+#include <arith_uint256.h>
+#include <algorithm>
+#include <chain.h>
+#include <checkqueue.h>
+#include <crypto/common.h>
+#include <crypto/sha256.h>
+#include <cuckoocache.h>
+#include <hash.h>
+#include <primitives/block.h>
+#include <random.h>
+#include <uint256.h>
+#include <util/check.h>
+#include <util/hasher.h>
+
+#include <array>
+#include <mutex>
+#include <exception>
+#include <limits>
+#include <shared_mutex>
+#include <stdexcept>
+#include <variant>
+#include <vector>
+
+namespace {
+// Exact unsigned long division, eight base-2^32 limbs instead of 256 bit steps.
+// remainder < divisor <= UINT32_MAX keeps each intermediate within uint64_t.
+arith_uint256 DivideSugarShieldTarget(const arith_uint256& value, int64_t divisor)
+{
+    if (divisor <= 0 || uint64_t(divisor) > UINT32_MAX) return value / arith_uint256{uint64_t(divisor)};
+    uint256 quotient{ArithToUint256(value)};
+    uint64_t remainder{0};
+    for (int offset{28}; offset >= 0; offset -= 4) {
+        const uint64_t part{(remainder << 32) | ReadLE32(quotient.begin() + offset)};
+        WriteLE32(quotient.begin() + offset, part / uint64_t(divisor));
+        remainder = part % uint64_t(divisor);
+    }
+    return UintToArith256(quotient);
+}
+
+static_assert(MAX_YESPOWER_CACHE_BYTES / sizeof(uint256) <= std::numeric_limits<uint32_t>::max() / 45);
+// As with the signature cache, store only successful verification, under a
+// salted digest of the entire input. This is bounded, process-local evidence:
+// neither a peer nor a persisted block-index status can populate it.
+// Construct initialized proof objects only on writes. Untouched pages behave
+// exactly like a contiguous zero-initialized table, without touching its whole
+// entry budget during tier growth. All access uses the enclosing cache lock.
+class PagedYespowerProofs {
+    static constexpr size_t PAGE_ITEMS{128};
+    using Page = std::array<uint256, PAGE_ITEMS>;
+    std::vector<std::unique_ptr<Page>> m_pages;
+
+public:
+    void resize(size_t size) { m_pages.resize((size + PAGE_ITEMS - 1) / PAGE_ITEMS); }
+    size_t AllocatedBytes() const
+    {
+        return m_pages.capacity() * sizeof(std::unique_ptr<Page>) +
+            std::count_if(m_pages.begin(), m_pages.end(), [](const auto& page) { return bool(page); }) * sizeof(Page);
+    }
+    const uint256& operator[](size_t index) const
+    {
+        static const uint256 empty{};
+        const auto& page{m_pages[index / PAGE_ITEMS]};
+        return page ? (*page)[index % PAGE_ITEMS] : empty;
+    }
+    uint256& operator[](size_t index)
+    {
+        auto& page{m_pages[index / PAGE_ITEMS]};
+        if (!page) page = std::make_unique<Page>();
+        return (*page)[index % PAGE_ITEMS];
+    }
+};
+
+class YespowerVerificationCache {
+    using Cache = CuckooCache::cache<uint256, SignatureCacheHasher>;
+    using GrowingProofCache = CuckooCache::cache<uint256, SignatureCacheHasher, PagedYespowerProofs>;
+    // Only the fast backend owns tier metadata. The legacy backend remains
+    // the original single CuckooCache with eager configured-budget allocation.
+    struct GrowingCache {
+        std::vector<std::unique_ptr<GrowingProofCache>> valid;
+        size_t budget;
+        size_t allocated;
+        uint32_t active_slots;
+        uint32_t active_inserts{0};
+        bool growth_disabled{false};
+
+        explicit GrowingCache(size_t valid_budget) : budget{valid_budget}
+        {
+            allocated = std::min(budget, std::min(DEFAULT_YESPOWER_CACHE_BYTES, std::max(size_t{64}, budget / 128)));
+            auto initial{std::make_unique<GrowingProofCache>()};
+            active_slots = initial->setup_bytes(allocated).first;
+            valid.push_back(std::move(initial));
+        }
+        bool Contains(const uint256& entry) const
+        {
+            for (auto it{valid.rbegin()}; it != valid.rend(); ++it) {
+                if ((*it)->contains(entry, false)) return true;
+            }
+            return false;
+        }
+        void Insert(const uint256& entry)
+        {
+            if (Contains(entry)) return;
+            // Preserve older positive proof evidence and the configured budget.
+            if (!growth_disabled && active_inserts >= active_slots * 45 / 100 && allocated < budget) {
+                const size_t remaining{budget - allocated};
+                const size_t next_bytes{std::min(allocated * 2, remaining)};
+                if (next_bytes >= allocated) {
+                    try {
+                        auto next{std::make_unique<GrowingProofCache>()};
+                        const auto [slots, _]{next->setup_bytes(next_bytes)};
+                        valid.push_back(std::move(next));
+                        allocated += next_bytes;
+                        active_slots = slots;
+                        active_inserts = 0;
+                    } catch (const std::bad_alloc&) {
+                        growth_disabled = true;
+                    }
+                } else {
+                    growth_disabled = true;
+                }
+            }
+            valid.back()->insert(entry);
+            if (!growth_disabled && allocated < budget) ++active_inserts;
+        }
+    };
+    using ValidStore = std::variant<std::unique_ptr<Cache>, std::unique_ptr<GrowingCache>>;
+    CSHA256 m_hasher;
+    ValidStore m_valid;
+    std::unique_ptr<Cache> m_batches;
+    std::shared_mutex m_mutex;
+    size_t m_budget_bytes{};
+    bool m_grow_on_demand{false};
+
+    YespowerCacheUsage UsageLocked() const
+    {
+        YespowerCacheUsage usage{.budget_bytes = m_budget_bytes};
+        if (m_valid.index() == 1) {
+            const auto& growing{*std::get<1>(m_valid)};
+            usage.proof_capacity_bytes = growing.allocated;
+            usage.tiers = growing.valid.size();
+            for (const auto& tier : growing.valid) usage.proof_storage_bytes += tier->GetStorage().AllocatedBytes();
+        } else {
+            const size_t batch_bytes{m_budget_bytes >= 1024 ? std::min(m_budget_bytes / 8, size_t{2} << 20) : 0};
+            usage.proof_capacity_bytes = usage.proof_storage_bytes = m_budget_bytes - batch_bytes;
+            usage.tiers = 1;
+        }
+        return usage;
+    }
+
+    bool ContainsLocked(const uint256& entry) const
+    {
+        if (m_valid.index() == 0) return std::get<0>(m_valid)->contains(entry, false);
+        return std::get<1>(m_valid)->Contains(entry);
+    }
+    void InsertLocked(const uint256& entry)
+    {
+        if (m_valid.index() == 0) std::get<0>(m_valid)->insert(entry);
+        else std::get<1>(m_valid)->Insert(entry);
+    }
+
+public:
+    YespowerVerificationCache()
+    {
+        const auto nonce{GetRandHash()};
+        m_hasher.Write(nonce.begin(), nonce.size());
+        Reset(DEFAULT_YESPOWER_CACHE_BYTES);
+    }
+
+    void Reset(size_t bytes, bool grow_on_demand = false)
+    {
+        const size_t batch_bytes{bytes >= 1024 ? std::min(bytes / 8, size_t{2} << 20) : 0};
+        const size_t valid_budget{bytes - batch_bytes};
+        ValidStore replacement;
+        if (grow_on_demand) replacement.emplace<1>(std::make_unique<GrowingCache>(valid_budget));
+        else replacement.emplace<0>(std::make_unique<Cache>());
+        std::unique_ptr<Cache> batches;
+        if (batch_bytes) {
+            batches = std::make_unique<Cache>();
+            batches->setup_bytes(batch_bytes);
+        }
+        // Original mode-zero setup and insertion policy: one full-size cache.
+        if (!grow_on_demand) std::get<0>(replacement)->setup_bytes(valid_budget);
+        std::unique_lock lock{m_mutex};
+        std::swap(m_valid, replacement);
+        std::swap(m_batches, batches);
+        m_budget_bytes = bytes;
+        m_grow_on_demand = grow_on_demand;
+    }
+
+    YespowerCacheUsage Usage()
+    {
+        std::shared_lock lock{m_mutex};
+        return UsageLocked();
+    }
+
+    bool Shrink()
+    {
+        ValidStore replacement;
+        std::unique_ptr<Cache> batches;
+        {
+            std::unique_lock lock{m_mutex};
+            if (!m_grow_on_demand) return false;
+            const size_t batch_bytes{m_budget_bytes >= 1024 ? std::min(m_budget_bytes / 8, size_t{2} << 20) : 0};
+            const size_t valid_budget{m_budget_bytes - batch_bytes};
+            const auto usage{UsageLocked()};
+            // An untouched initial tier has nothing useful to release. The same
+            // operation is harmless on a freshly restarted, already-synced node.
+            if (usage.proof_storage_bytes <= DEFAULT_YESPOWER_CACHE_BYTES && usage.tiers == 1) return false;
+            replacement.emplace<1>(std::make_unique<GrowingCache>(valid_budget));
+            if (batch_bytes) {
+                batches = std::make_unique<Cache>();
+                batches->setup_bytes(batch_bytes);
+            }
+            std::swap(m_valid, replacement);
+            std::swap(m_batches, batches);
+        }
+        // Salt, target checks and cache-miss semantics are unchanged. In-flight
+        // checks may insert genuinely computed results into the new cache.
+        return true;
+    }
+
+    uint256 Entry(const CBlockHeader& header) const
+    {
+        // GetHash commits to all 80 serialized bytes, including nBits. The
+        // YespowerSugar algorithm and personalization are fixed in GetPoWHash.
+        const auto hash{header.GetHash()};
+        uint256 entry;
+        CSHA256{m_hasher}.Write(hash.begin(), hash.size()).Finalize(entry.begin());
+        return entry;
+    }
+
+    bool Contains(const uint256& entry)
+    {
+        std::shared_lock lock{m_mutex};
+        return ContainsLocked(entry);
+    }
+
+    void Insert(const uint256& entry)
+    {
+        std::unique_lock lock{m_mutex};
+        InsertLocked(entry);
+    }
+
+    uint256 BatchEntry(std::span<const CBlockHeader> headers) const
+    {
+        // Bind order, count and all header bytes. Separate the batch domain
+        // from individual proofs; neither kind of evidence survives restart.
+        const unsigned char domain{1};
+        unsigned char count[8];
+        WriteLE64(count, headers.size());
+        auto hasher{m_hasher};
+        hasher.Write(&domain, 1).Write(count, sizeof(count));
+        for (const auto& header : headers) {
+            const auto hash{header.GetHash()};
+            hasher.Write(hash.begin(), hash.size());
+        }
+        uint256 entry;
+        hasher.Finalize(entry.begin());
+        return entry;
+    }
+
+    bool RestoreBatch(const uint256& entry, std::span<const CBlockHeader> headers)
+    {
+        std::unique_lock lock{m_mutex};
+        if (!m_batches || !m_batches->contains(entry, false)) return false;
+        // Repopulate ordinary proof evidence for subsequent AcceptBlockHeader
+        // checks. The caller must first recheck every current target limit.
+        for (const auto& header : headers) InsertLocked(Entry(header));
+        return true;
+    }
+
+    void InsertBatch(const uint256& entry)
+    {
+        std::unique_lock lock{m_mutex};
+        if (m_batches) m_batches->insert(entry);
+    }
+};
+
+YespowerVerificationCache& VerificationCache()
+{
+    static YespowerVerificationCache cache;
+    return cache;
+}
+
+struct HeaderPoWCheck {
+    const CBlockHeader* header;
+    const Consensus::Params* params;
+    bool cache_result{true};
+
+    // Preserve allocation/computation errors on the calling thread; do not
+    // turn a local resource failure into an invalid-header/peer penalty.
+    std::optional<std::exception_ptr> operator()() const
+    {
+        try {
+            if (CheckBlockProofOfWork(*header, *params, cache_result)) return std::nullopt;
+            return std::exception_ptr{};
+        } catch (...) {
+            return std::current_exception();
+        }
+    }
+};
+} // namespace
+
+void InitYespowerVerificationCache(size_t bytes, bool grow_on_demand)
+{
+    if (!bytes || bytes > MAX_YESPOWER_CACHE_BYTES) {
+        throw std::invalid_argument("Yespower cache size must be positive and at most 2048 MiB");
+    }
+    VerificationCache().Reset(bytes, grow_on_demand);
+}
+
+YespowerCacheUsage GetYespowerVerificationCacheUsage()
+{
+    return VerificationCache().Usage();
+}
+
+bool ShrinkYespowerVerificationCache()
+{
+    AssertLockNotHeld(cs_main);
+    return VerificationCache().Shrink();
+}
+
+// Preserve integer operation ordering (divide before multiply) for consensus.
+unsigned int CalculateSugarShieldWorkRequired(const arith_uint256& total, int64_t span, const Consensus::Params& params)
+{
+    assert(params.nPowAveragingWindow > 0);
+    const arith_uint256 limit = UintToArith256(params.powLimit);
+    span = params.AveragingWindowTimespan() + (span - params.AveragingWindowTimespan()) / 4;
+    span = std::clamp(span, params.MinActualTimespan(), params.MaxActualTimespan());
+    arith_uint256 next = DivideSugarShieldTarget(total, params.nPowAveragingWindow);
+    next = DivideSugarShieldTarget(next, params.AveragingWindowTimespan());
+    // Mainnet's clamped timespan fits one limb; synthetic large windows must
+    // retain the full multiplier instead of narrowing it to uint32_t.
+    if (span <= std::numeric_limits<uint32_t>::max()) {
+        next *= static_cast<uint32_t>(span);
+    } else {
+        next *= arith_uint256{static_cast<uint64_t>(span)};
+    }
+    if (next > limit) next = limit;
+    return next.GetCompact();
+}
+
+// Official Sugarchain SugarShield: average 510 targets, using endpoint MTPs.
+static unsigned int GetSugarShieldWorkRequired(const CBlockIndex* last, const Consensus::Params& params)
+{
+    const CBlockIndex* first = last;
+    arith_uint256 total{0};
+    for (int64_t i = 0; first && i < params.nPowAveragingWindow; ++i) {
+        arith_uint256 target;
+        target.SetCompact(first->nBits);
+        total += target;
+        first = first->pprev;
+    }
+    if (!first) return UintToArith256(params.powLimit).GetCompact();
+    return CalculateSugarShieldWorkRequired(total, last->GetMedianTimePast() - first->GetMedianTimePast(), params);
+}
+
+unsigned int GetNextWorkRequired(const CBlockIndex* pindexLast, const CBlockHeader *pblock, const Consensus::Params& params)
+{
+    assert(pindexLast != nullptr);
+    if (params.nPowAveragingWindow) return GetSugarShieldWorkRequired(pindexLast, params);
+    unsigned int nProofOfWorkLimit = UintToArith256(params.powLimit).GetCompact();
+
+    // Only change once per difficulty adjustment interval
+    if ((pindexLast->nHeight+1) % params.DifficultyAdjustmentInterval() != 0)
+    {
+        if (params.fPowAllowMinDifficultyBlocks)
+        {
+            // Special difficulty rule for testnet:
+            // If the new block's timestamp is more than 2* 10 minutes
+            // then it MUST be a min-difficulty block.
+            if (pblock->GetBlockTime() > pindexLast->GetBlockTime() + params.nPowTargetSpacing*2)
+                return nProofOfWorkLimit;
+            else
+            {
+                // Return the last non-special-min-difficulty-rules-block
+                const CBlockIndex* pindex = pindexLast;
+                while (pindex->pprev && pindex->nHeight % params.DifficultyAdjustmentInterval() != 0 && pindex->nBits == nProofOfWorkLimit)
+                    pindex = pindex->pprev;
+                return pindex->nBits;
+            }
+        }
+        return pindexLast->nBits;
+    }
+
+    // Go back by what we want to be 14 days worth of blocks
+    int nHeightFirst = pindexLast->nHeight - (params.DifficultyAdjustmentInterval()-1);
+    assert(nHeightFirst >= 0);
+    const CBlockIndex* pindexFirst = pindexLast->GetAncestor(nHeightFirst);
+    assert(pindexFirst);
+
+    return CalculateNextWorkRequired(pindexLast, pindexFirst->GetBlockTime(), params);
+}
+
+unsigned int CalculateNextWorkRequired(const CBlockIndex* pindexLast, int64_t nFirstBlockTime, const Consensus::Params& params)
+{
+    if (params.fPowNoRetargeting)
+        return pindexLast->nBits;
+
+    // Limit adjustment step
+    int64_t nActualTimespan = pindexLast->GetBlockTime() - nFirstBlockTime;
+    if (nActualTimespan < params.nPowTargetTimespan/4)
+        nActualTimespan = params.nPowTargetTimespan/4;
+    if (nActualTimespan > params.nPowTargetTimespan*4)
+        nActualTimespan = params.nPowTargetTimespan*4;
+
+    // Retarget
+    const arith_uint256 bnPowLimit = UintToArith256(params.powLimit);
+    arith_uint256 bnNew;
+
+    // Special difficulty rule for Testnet4
+    if (params.enforce_BIP94) {
+        // Here we use the first block of the difficulty period. This way
+        // the real difficulty is always preserved in the first block as
+        // it is not allowed to use the min-difficulty exception.
+        int nHeightFirst = pindexLast->nHeight - (params.DifficultyAdjustmentInterval()-1);
+        const CBlockIndex* pindexFirst = pindexLast->GetAncestor(nHeightFirst);
+        bnNew.SetCompact(pindexFirst->nBits);
+    } else {
+        bnNew.SetCompact(pindexLast->nBits);
+    }
+
+    bnNew *= nActualTimespan;
+    bnNew /= params.nPowTargetTimespan;
+
+    if (bnNew > bnPowLimit)
+        bnNew = bnPowLimit;
+
+    return bnNew.GetCompact();
+}
+
+// Check that on difficulty adjustments, the new difficulty does not increase
+// or decrease beyond the permitted limits.
+bool PermittedDifficultyTransition(const Consensus::Params& params, int64_t height, uint32_t old_nbits, uint32_t new_nbits)
+{
+    if (params.fPowAllowMinDifficultyBlocks) return true;
+
+    if (height % params.DifficultyAdjustmentInterval() == 0) {
+        int64_t smallest_timespan = params.nPowTargetTimespan/4;
+        int64_t largest_timespan = params.nPowTargetTimespan*4;
+
+        const arith_uint256 pow_limit = UintToArith256(params.powLimit);
+        arith_uint256 observed_new_target;
+        observed_new_target.SetCompact(new_nbits);
+
+        // Calculate the largest difficulty value possible:
+        arith_uint256 largest_difficulty_target;
+        largest_difficulty_target.SetCompact(old_nbits);
+        largest_difficulty_target *= largest_timespan;
+        largest_difficulty_target /= params.nPowTargetTimespan;
+
+        if (largest_difficulty_target > pow_limit) {
+            largest_difficulty_target = pow_limit;
+        }
+
+        // Round and then compare this new calculated value to what is
+        // observed.
+        arith_uint256 maximum_new_target;
+        maximum_new_target.SetCompact(largest_difficulty_target.GetCompact());
+        if (maximum_new_target < observed_new_target) return false;
+
+        // Calculate the smallest difficulty value possible:
+        arith_uint256 smallest_difficulty_target;
+        smallest_difficulty_target.SetCompact(old_nbits);
+        smallest_difficulty_target *= smallest_timespan;
+        smallest_difficulty_target /= params.nPowTargetTimespan;
+
+        if (smallest_difficulty_target > pow_limit) {
+            smallest_difficulty_target = pow_limit;
+        }
+
+        // Round and then compare this new calculated value to what is
+        // observed.
+        arith_uint256 minimum_new_target;
+        minimum_new_target.SetCompact(smallest_difficulty_target.GetCompact());
+        if (minimum_new_target > observed_new_target) return false;
+    } else if (old_nbits != new_nbits) {
+        return false;
+    }
+    return true;
+}
+
+// Bypasses the actual proof of work check during fuzz testing with a simplified validation checking whether
+// the most significant bit of the last byte of the hash is set.
+bool CheckProofOfWork(uint256 hash, unsigned int nBits, const Consensus::Params& params)
+{
+    if (EnableFuzzDeterminism()) return (hash.data()[31] & 0x80) == 0;
+    return CheckProofOfWorkImpl(hash, nBits, params);
+}
+
+std::optional<arith_uint256> DeriveTarget(unsigned int nBits, const uint256 pow_limit)
+{
+    bool fNegative;
+    bool fOverflow;
+    arith_uint256 bnTarget;
+
+    bnTarget.SetCompact(nBits, &fNegative, &fOverflow);
+
+    // Check range
+    if (fNegative || bnTarget == 0 || fOverflow || bnTarget > UintToArith256(pow_limit))
+        return {};
+
+    return bnTarget;
+}
+
+bool CheckProofOfWorkImpl(uint256 hash, unsigned int nBits, const Consensus::Params& params)
+{
+    auto bnTarget{DeriveTarget(nBits, params.powLimit)};
+    if (!bnTarget) return false;
+
+    // Check proof of work matches claimed amount
+    if (UintToArith256(hash) > bnTarget)
+        return false;
+
+    return true;
+}
+
+// Always validate the current network's target limit, including on cache hits.
+uint256 GetYespowerEvidenceRulesHash(const Consensus::Params& params)
+{
+    return (HashWriter{} << std::string{"sugarchain-local-yespower-evidence-v2"}
+        << params.hashGenesisBlock << params.powLimit << params.fYespowerSugar
+        << YESPOWER_SUGAR_VERSION << YESPOWER_SUGAR_N << YESPOWER_SUGAR_R
+        << std::string{reinterpret_cast<const char*>(YESPOWER_SUGAR_PERSONALIZATION),
+                       sizeof(YESPOWER_SUGAR_PERSONALIZATION) - 1}).GetHash();
+}
+
+uint256 GetYespowerEvidenceDigest(const CBlockHeader& header, const Consensus::Params& params)
+{
+    return (HashWriter{} << GetYespowerEvidenceRulesHash(params) << header).GetHash();
+}
+
+bool CheckBlockProofOfWork(const CBlockHeader& header, const Consensus::Params& params, bool cache_result)
+{
+    if (!DeriveTarget(header.nBits, params.powLimit)) return false;
+    if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
+        return CheckProofOfWork(params.fYespowerSugar ? header.GetPoWHash() : header.GetHash(), header.nBits, params);
+    }
+    auto& cache{VerificationCache()};
+    const auto entry{cache.Entry(header)};
+    if (cache.Contains(entry)) return true;
+    if (!CheckProofOfWork(header.GetPoWHash(), header.nBits, params)) return false;
+    if (cache_result) cache.Insert(entry);
+    return true;
+}
+
+void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Params& params)
+{
+    AssertLockHeld(cs_main);
+    if (!params.fYespowerSugar || EnableFuzzDeterminism() || !index.m_checked_yespower || !index.phashBlock) return;
+    const auto header{index.GetBlockHeader()};
+    if (header.GetHash() != index.GetBlockHash() || !DeriveTarget(header.nBits, params.powLimit)) return;
+    auto& cache{VerificationCache()};
+    cache.Insert(cache.Entry(header));
+}
+
+struct HeaderPoWVerifier::Impl {
+    const int workers;
+#if defined(__APPLE__) && defined(__aarch64__)
+    const int parallelism;
+    const size_t network_batch_size;
+#endif
+    std::mutex caller_mutex;
+    CCheckQueue<HeaderPoWCheck> queue;
+#if defined(__APPLE__) && defined(__aarch64__)
+    explicit Impl(int count, int max_parallelism = MAX_HEADER_POW_WORKERS)
+        : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)},
+          parallelism{std::clamp(max_parallelism, 1, workers)},
+          // Use whole worker groups without admitting additional cold work.
+          network_batch_size{size_t(workers / parallelism * parallelism)},
+          queue{1, parallelism - 1, "powch"} {}
+#else
+    explicit Impl(int count)
+        : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)}, queue{1, workers - 1, "powch"} {}
+#endif
+
+    // Share queue execution without merging Check() and CheckEach() header/cache
+    // policies. Worker exceptions reach the caller; validation failure returns false.
+    bool RunBatch(std::vector<HeaderPoWCheck>&& batch)
+    {
+        CCheckQueueControl<HeaderPoWCheck> control{queue};
+        control.Add(std::move(batch));
+        if (const auto error{control.Complete()}) {
+            if (*error) std::rethrow_exception(*error);
+            return false;
+        }
+        return true;
+    }
+};
+
+HeaderPoWVerifier::HeaderPoWVerifier(int workers)
+    : m_impl{workers > 1 ? std::make_unique<Impl>(workers) : nullptr} {}
+#if defined(__APPLE__) && defined(__aarch64__)
+HeaderPoWVerifier::HeaderPoWVerifier(int workers, int parallelism)
+    : m_impl{workers > 1 ? std::make_unique<Impl>(workers, parallelism) : nullptr} {}
+#endif
+HeaderPoWVerifier::~HeaderPoWVerifier() = default;
+
+bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params, bool cache_result)
+{
+    // Startup sends every stored header through CheckBlockProofOfWork, which
+    // may hit the process-local cache. Unlike Check(), it never uses message
+    // batch evidence to skip individual calls; Check() also admits its first
+    // header separately and has a warm-cache fast path.
+    if (!m_impl || !params.fYespowerSugar || EnableFuzzDeterminism()) {
+        return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params, cache_result); });
+    }
+    std::unique_lock call_lock{m_impl->caller_mutex};
+    // Keep workers fed across variable proof durations, with bounded queue
+    // storage. Startup callers supplying one worker-sized group are unchanged.
+    const size_t queue_batch_size{size_t(m_impl->workers) * 64};
+    while (!headers.empty()) {
+        std::vector<HeaderPoWCheck> batch;
+        batch.reserve(std::min(headers.size(), queue_batch_size));
+        while (!headers.empty() && batch.size() < queue_batch_size) {
+            batch.push_back({&headers.front(), &params, cache_result});
+            headers = headers.subspan(1);
+        }
+        if (!m_impl->RunBatch(std::move(batch))) return false;
+    }
+    return true;
+}
+
+bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params)
+{
+    if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
+        return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
+    }
+    std::unique_lock<std::mutex> call_lock;
+    if (m_impl) call_lock = std::unique_lock{m_impl->caller_mutex};
+    if (headers.empty()) return true;
+    // An invalid first header must not cause speculative work for the message.
+    if (!CheckBlockProofOfWork(headers.front(), params)) return false;
+    if (headers.size() == 1) return true;
+    auto& cache{VerificationCache()};
+    bool all_cached{true};
+    for (const auto& header : headers) {
+        if (!DeriveTarget(header.nBits, params.powLimit)) return false;
+        all_cached = all_cached && cache.Contains(cache.Entry(header));
+    }
+    if (all_cached) return true; // Preserve the ordinary warm-cache fast path.
+    const auto entry{cache.BatchEntry(headers)};
+    if (cache.RestoreBatch(entry, headers)) return true;
+    headers = headers.subspan(1);
+    if (!m_impl) {
+        if (!std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); })) return false;
+        cache.InsertBatch(entry);
+        return true;
+    }
+#if defined(__APPLE__) && defined(__aarch64__)
+    const size_t network_batch_size{m_impl->network_batch_size};
+#else
+    const size_t network_batch_size{size_t(m_impl->workers)};
+#endif
+    while (!headers.empty()) {
+        std::vector<HeaderPoWCheck> batch;
+        batch.reserve(network_batch_size);
+        while (!headers.empty() && batch.size() < network_batch_size) {
+            const auto& header{headers.front()};
+            if (!cache.Contains(cache.Entry(header))) batch.push_back({&header, &params});
+            headers = headers.subspan(1);
+        }
+        if (batch.empty()) continue;
+        // At most eight cold checks may run before the next failure decision,
+        // independently of message/peer count. Never enqueue the whole message.
+        if (!m_impl->RunBatch(std::move(batch))) return false;
+    }
+    cache.InsertBatch(entry);
+    return true;
+}
