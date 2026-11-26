@@ -7,6 +7,9 @@
 #include <chain.h>
 #include <support/allocators/pool.h>
 #include <util/hasher.h>
+#if defined(SUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC) && defined(__APPLE__) && defined(__aarch64__)
+#include <node/blockmap_file_backing.h>
+#endif
 #include <iterator>
 #include <memory>
 #include <tuple>
@@ -35,6 +38,10 @@ public:
     using value_type = Legacy::value_type;
 private:
     // Destruction order keeps the pool alive until all map nodes are freed.
+#if defined(SUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC) && defined(__APPLE__) && defined(__aarch64__)
+    // Keep the backing live until the pool releases all borrowed chunks.
+    std::unique_ptr<diagnostics::AppleBlockMapFileBacking> m_file_backing;
+#endif
     std::unique_ptr<PoolResource<512, 8>> m_fast_resource;
     std::variant<Legacy, std::unique_ptr<FastBlockMap>> m_backend;
 
@@ -92,16 +99,31 @@ public:
     using iterator = Iterator<false>;
     using const_iterator = Iterator<true>;
 
+#if defined(SUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC) && defined(__APPLE__) && defined(__aarch64__)
+    explicit BlockMap(bool fast = false, std::unique_ptr<diagnostics::AppleBlockMapFileBacking> backing = {})
+        : m_file_backing{std::move(backing)}
+#else
     explicit BlockMap(bool fast = false)
+#endif
     {
         if (fast) {
+#if defined(SUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC) && defined(__APPLE__) && defined(__aarch64__)
+            using Resource = PoolResource<512, 8>;
+            m_fast_resource = m_file_backing ?
+                std::make_unique<Resource>(diagnostics::StrictBlockMapBacking::CHUNK_BYTES, m_file_backing.get()) :
+                std::make_unique<Resource>();
+#else
             m_fast_resource = std::make_unique<PoolResource<512, 8>>();
+#endif
             m_backend.emplace<1>(std::make_unique<FastBlockMap>(
                 0, FastBlockHasher{}, std::equal_to<uint256>{}, FastBlockMap::allocator_type{m_fast_resource.get()}));
         }
     }
     BlockMap(const BlockMap&) = delete;
     BlockMap& operator=(const BlockMap&) = delete;
+#if defined(SUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC) && defined(__APPLE__) && defined(__aarch64__)
+    diagnostics::AppleBlockMapFileBacking* FileBacking() { return m_file_backing.get(); }
+#endif
     bool IsFast() const { return m_backend.index() == 1; }
     size_t size() const { return Visit([](const auto& map) { return map.size(); }); }
     bool empty() const { return size() == 0; }

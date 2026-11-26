@@ -16,6 +16,10 @@
 
 #include <util/check.h>
 
+#if (defined(SUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC) && defined(__APPLE__) && defined(__aarch64__)) || defined(SUGARCHAIN_DIAGNOSTIC_POOL_TEST)
+#define SUGARCHAIN_DIAGNOSTIC_POOL_BACKING_ENABLED
+#endif
+
 /**
  * A memory resource similar to std::pmr::unsynchronized_pool_resource, but
  * optimized for node-based containers. It has the following properties:
@@ -68,6 +72,18 @@
  * some memory available for the blocks, and when m_available_memory_it is at the
  * end, a new chunk will be allocated and added to the list.
  */
+#ifdef SUGARCHAIN_DIAGNOSTIC_POOL_BACKING_ENABLED
+/** Optional raw chunk source. It must outlive every pool that uses it. */
+class PoolChunkBacking
+{
+public:
+    virtual ~PoolChunkBacking() = default;
+    virtual void CheckAllocation(size_t, size_t, bool) {}
+    virtual void* TryAllocateChunk(size_t bytes, size_t alignment) = 0;
+    virtual bool Owns(const void* address) const noexcept = 0;
+};
+#endif
+
 template <std::size_t MAX_BLOCK_SIZE_BYTES, std::size_t ALIGN_BYTES>
 class PoolResource final
 {
@@ -96,6 +112,9 @@ class PoolResource final
      * Size in bytes to allocate per chunk
      */
     const size_t m_chunk_size_bytes;
+#ifdef SUGARCHAIN_DIAGNOSTIC_POOL_BACKING_ENABLED
+    PoolChunkBacking* const m_chunk_backing;
+#endif
 
     /**
      * Contains all allocated pools of memory, used to free the data in the destructor.
@@ -154,19 +173,40 @@ class PoolResource final
      */
     void AllocateChunk()
     {
+#ifdef SUGARCHAIN_DIAGNOSTIC_POOL_BACKING_ENABLED
+        // Allocation can fail. Keep the old chunk and freelists unmodified
+        // until both the new chunk and its ownership record exist.
+        void* storage{nullptr};
+        m_allocated_chunks.emplace_back(nullptr);
+        try {
+            if (m_chunk_backing) storage = m_chunk_backing->TryAllocateChunk(m_chunk_size_bytes, ELEM_ALIGN_BYTES);
+            if (!storage) storage = ::operator new(m_chunk_size_bytes, std::align_val_t{ELEM_ALIGN_BYTES});
+        } catch (...) {
+            m_allocated_chunks.pop_back();
+            throw;
+        }
+        const size_t remaining_available_bytes = m_available_memory_it ? m_available_memory_end - m_available_memory_it : 0;
+#else
         // if there is still any available memory left, put it into the freelist.
         size_t remaining_available_bytes = m_available_memory_end - m_available_memory_it;
+#endif
         if (0 != remaining_available_bytes) {
             ASAN_UNPOISON_MEMORY_REGION(m_available_memory_it, sizeof(ListNode));
             PlacementAddToList(m_available_memory_it, m_free_lists[remaining_available_bytes / ELEM_ALIGN_BYTES]);
             ASAN_POISON_MEMORY_REGION(m_available_memory_it, sizeof(ListNode));
         }
 
+#ifndef SUGARCHAIN_DIAGNOSTIC_POOL_BACKING_ENABLED
         void* storage = ::operator new (m_chunk_size_bytes, std::align_val_t{ELEM_ALIGN_BYTES});
+#endif
         m_available_memory_it = new (storage) std::byte[m_chunk_size_bytes];
         m_available_memory_end = m_available_memory_it + m_chunk_size_bytes;
         ASAN_POISON_MEMORY_REGION(m_available_memory_it, m_chunk_size_bytes);
+#ifdef SUGARCHAIN_DIAGNOSTIC_POOL_BACKING_ENABLED
+        m_allocated_chunks.back() = m_available_memory_it;
+#else
         m_allocated_chunks.emplace_back(m_available_memory_it);
+#endif
     }
 
     /**
@@ -179,8 +219,15 @@ public:
      * Construct a new PoolResource object which allocates the first chunk.
      * chunk_size_bytes will be rounded up to next multiple of ELEM_ALIGN_BYTES.
      */
+#ifdef SUGARCHAIN_DIAGNOSTIC_POOL_BACKING_ENABLED
+    explicit PoolResource(std::size_t chunk_size_bytes, PoolChunkBacking* chunk_backing = nullptr)
+#else
     explicit PoolResource(std::size_t chunk_size_bytes)
+#endif
         : m_chunk_size_bytes(NumElemAlignBytes(chunk_size_bytes) * ELEM_ALIGN_BYTES)
+#ifdef SUGARCHAIN_DIAGNOSTIC_POOL_BACKING_ENABLED
+        , m_chunk_backing{chunk_backing}
+#endif
     {
         assert(m_chunk_size_bytes >= MAX_BLOCK_SIZE_BYTES);
         AllocateChunk();
@@ -206,7 +253,13 @@ public:
     {
         for (std::byte* chunk : m_allocated_chunks) {
             std::destroy(chunk, chunk + m_chunk_size_bytes);
+#ifdef SUGARCHAIN_DIAGNOSTIC_POOL_BACKING_ENABLED
+            if (!m_chunk_backing || !m_chunk_backing->Owns(chunk)) {
+                ::operator delete((void*)chunk, std::align_val_t{ELEM_ALIGN_BYTES});
+            }
+#else
             ::operator delete ((void*)chunk, std::align_val_t{ELEM_ALIGN_BYTES});
+#endif
             ASAN_UNPOISON_MEMORY_REGION(chunk, m_chunk_size_bytes);
         }
     }
@@ -217,6 +270,9 @@ public:
      */
     void* Allocate(std::size_t bytes, std::size_t alignment)
     {
+#ifdef SUGARCHAIN_DIAGNOSTIC_POOL_BACKING_ENABLED
+        if (m_chunk_backing) m_chunk_backing->CheckAllocation(bytes, alignment, IsFreeListUsable(bytes, alignment));
+#endif
         if (IsFreeListUsable(bytes, alignment)) {
             const std::size_t num_alignments = NumElemAlignBytes(bytes);
             if (nullptr != m_free_lists[num_alignments]) {

@@ -820,6 +820,15 @@ CBlockIndex* BlockManager::InsertBlockIndex(const uint256& hash, std::vector<CBl
 
 bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockhash, std::set<int>& block_files, std::vector<CBlockIndex*>& vSortedByHeight)
 {
+#if defined(SUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC) && defined(__APPLE__) && defined(__aarch64__)
+    if (m_block_index.FileBacking()) {
+        bool reindexing{false};
+        m_block_tree_db->ReadReindexing(reindexing);
+        if (reindexing || snapshot_blockhash || !m_block_index.empty()) {
+            throw std::runtime_error("Mapped block map requires a first load of the owned complete checkpoint");
+        }
+    }
+#endif
     std::vector<CBlockIndex*> loaded_indices;
     if (m_opts.startup_optimizations) {
         // Retain in-memory entries on reload, then append newly inserted indexes
@@ -828,6 +837,14 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
         if (!m_block_tree_db->LoadBlockIndexGuts(
                 GetConsensus(), [this, &loaded_indices](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) { return this->InsertBlockIndex(hash, &loaded_indices); }, m_interrupt, m_opts.startup_pow_workers, m_opts.fast_startup,
                 [this, &loaded_indices](uint64_t count) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
+#if defined(SUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC) && defined(__APPLE__) && defined(__aarch64__)
+                    if (auto* backing = m_block_index.FileBacking()) {
+                        backing->CheckCount(count);
+                        LogInfo("Mapped block map reserving %u bytes for %u rows", backing->ReservationBytes(), count);
+                        backing->Prepare(count);
+                        LogInfo("Mapped block map reservation complete");
+                    }
+#endif
                     loaded_indices.reserve(std::max<uint64_t>(loaded_indices.size(), count));
                     // Reserve modest lookup headroom: 1.5x balanced startup time
                     // and bucket memory in repeated snapshot measurements.
@@ -838,11 +855,21 @@ bool BlockManager::LoadBlockIndex(const std::optional<uint256>& snapshot_blockha
                     try {
                         m_block_index.reserve(static_cast<size_t>(capacity));
                     } catch (const std::bad_alloc&) {
+#if defined(SUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC) && defined(__APPLE__) && defined(__aarch64__)
+                        if (m_block_index.FileBacking()) throw;
+#endif
                         LogWarning("Unable to reserve block index buckets; using incremental growth.");
                     }
                 }, m_opts.startup_optimizations, &m_opts.notifications)) {
             return false;
         }
+#if defined(SUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC) && defined(__APPLE__) && defined(__aarch64__)
+        if (const auto* backing = m_block_index.FileBacking()) {
+            const size_t chunks{backing->VerifyComplete(m_block_index.size())};
+            LogInfo("Mapped block map loaded %u rows using %u mapped chunks and one initial heap chunk",
+                    m_block_index.size(), chunks);
+        }
+#endif
     } else if (!m_block_tree_db->LoadBlockIndexGuts(
                    GetConsensus(), [this](const uint256& hash) EXCLUSIVE_LOCKS_REQUIRED(cs_main) {
                        return this->InsertBlockIndex(hash);
@@ -2134,6 +2161,29 @@ static auto InitBlocksdirXorKey(const BlockManager::Options& opts)
     return Obfuscation{obfuscation};
 }
 
+#if defined(SUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC) && defined(__APPLE__) && defined(__aarch64__)
+static std::unique_ptr<diagnostics::AppleBlockMapFileBacking> CheckpointBacking(const BlockManager::Options& opts)
+{
+    const char* requested{std::getenv("SUGARCHAIN_PRIVATE_BLOCKMAP_PROFILE")};
+    if (!requested) return {};
+    if (!opts.startup_optimizations || opts.block_tree_db_params.wipe_data || opts.block_tree_db_params.memory_only ||
+        opts.chainparams.GetChainType() != ChainType::MAIN || !opts.chainparams.GetConsensus().fYespowerSugar ||
+        opts.prune_target == 0) {
+        throw std::runtime_error("Mapped block map requires optimized non-wipe Sugarchain Mainnet pruning mode");
+    }
+    const std::filesystem::path profile{requested};
+    const auto& index{opts.block_tree_db_params.path.std_path()};
+    const auto scratch{profile / ".mapped-blockmap-scratch"};
+    if (!profile.is_absolute() || std::filesystem::canonical(profile) != profile ||
+        std::filesystem::canonical(index) != profile / "blocks/index" ||
+        std::filesystem::canonical(opts.blocks_dir.std_path()) != profile / "blocks" ||
+        std::filesystem::canonical(scratch) != scratch || !std::filesystem::is_directory(scratch)) {
+        throw std::runtime_error("Mapped block map requires the explicitly owned checkpoint profile and scratch directory");
+    }
+    return std::make_unique<diagnostics::AppleBlockMapFileBacking>(scratch);
+}
+#endif
+
 BlockManager::BlockManager(const util::SignalInterrupt& interrupt, Options opts)
     : m_prune_mode{opts.prune_target > 0},
       m_obfuscation{InitBlocksdirXorKey(opts)},
@@ -2141,7 +2191,11 @@ BlockManager::BlockManager(const util::SignalInterrupt& interrupt, Options opts)
       m_block_file_seq{FlatFileSeq{m_opts.blocks_dir, "blk", m_opts.fast_prune ? 0x4000 /* 16kB */ : BLOCKFILE_CHUNK_SIZE}},
       m_undo_file_seq{FlatFileSeq{m_opts.blocks_dir, "rev", UNDOFILE_CHUNK_SIZE}},
       m_interrupt{interrupt},
+#if defined(SUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC) && defined(__APPLE__) && defined(__aarch64__)
+      m_block_index{m_opts.startup_optimizations, CheckpointBacking(m_opts)}
+#else
       m_block_index{m_opts.startup_optimizations}
+#endif
 {
     auto db_params{m_opts.block_tree_db_params};
     db_params.reclaim_read_cache = m_opts.startup_optimizations;
