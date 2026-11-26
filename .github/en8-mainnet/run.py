@@ -13,7 +13,7 @@ if platform.system()=='Darwin':
 else:
     assert platform.system()=='Windows' and platform.machine().lower() in ('amd64','x86_64')
     crt=os.environ['CRT'];name=prefix+f'windows-x86_64-{crt}-portable.zip'
-    specs=[('cli',name,'daemon/sugarchaind.exe',Path('bin/sugarchaind.exe')),('gui',name,'gui/sugarchain-qt.exe',Path('bin/sugarchain-qt.exe'))]
+    specs=[('cli',name,'daemon/sugarchaind.exe',Path('bin/sugarchaind.exe')),('gui',name,'sugarchain-qt.exe',Path('bin/sugarchain-qt.exe'))]
 for mode,name,suffix,candidate in specs:
     destination=root/name
     if not destination.exists():

@@ -1,0 +1,94 @@
+name: En.8 native Windows measurement retry
+'on':
+  push:
+    branches:
+    - diagnostics/en8-windows-paired-retry
+    paths:
+    - .github/workflows/en8-windows-retry.yml
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  windows-native-test:
+    name: Windows, ${{ matrix.crt }}, test cross-built
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        crt:
+        - msvcrt
+        - ucrt
+        include:
+        - crt: msvcrt
+          artifact-name: x86_64-w64-mingw32-executables
+        - crt: ucrt
+          artifact-name: x86_64-w64-mingw32ucrt-executables
+    env:
+      PYTHONUTF8: 1
+      TEST_RUNNER_TIMEOUT_FACTOR: 40
+    steps:
+    - name: Wait for the pinned Windows build artifacts
+      env:
+        GH_TOKEN: ${{ github.token }}
+      shell: bash
+      run: "python - <<'PYWAIT'\nimport json, subprocess, time\nfor _ in range(120):\n    rows=json.loads(subprocess.check_output(['gh','run','view','45773435935','-R','Sugarchain-CI/sugarchain-en','--json','jobs'],text=True))['jobs']\n    jobs=[j for j in rows if j['name'].startswith('windows-cross')]\n    if len(jobs)==2 and all(j['status']=='completed' for j in jobs):\n        if not all(j['conclusion']=='success' for j in jobs):raise SystemExit('The pinned Windows build failed')\n        break\n    time.sleep(30)\nelse:raise SystemExit('Timed out waiting for pinned Windows builds')\nPYWAIT\n"
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        ref: b4ab02b5e0b42e1f6badebe5313940002186e890
+        persist-credentials: false
+        repository: decryp2kanon/sugarchain-en
+    - name: Verify pinned source revision
+      shell: bash
+      run: 'set -euo pipefail
+
+        actual=$(git rev-parse HEAD)
+
+        test "$actual" = "b4ab02b5e0b42e1f6badebe5313940002186e890"
+
+        test "$(git rev-parse HEAD^{tree})" = "31fc16015679110800cfebd998a8a45ebae44f65"
+
+        printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"
+
+        '
+    - name: Check out paired benchmark
+      uses: actions/checkout@v6
+      with:
+        repository: ${{ github.repository }}
+        ref: ${{ github.sha }}
+        path: release-tools
+        persist-credentials: false
+    - name: Download retained Windows release inputs
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ matrix.artifact-name }}-release-45773435935
+        run-id: 45773435935
+        github-token: ${{ github.token }}
+    - name: Verify downloaded package provenance
+      shell: bash
+      run: 'set -euo pipefail
+
+        test "$(cat release-source-sha.txt)" = "b4ab02b5e0b42e1f6badebe5313940002186e890"
+
+        test "$(cat release-source-tree.txt)" = "31fc16015679110800cfebd998a8a45ebae44f65"
+
+        sha256sum --check --strict SHA256SUMS.release-inputs
+
+        '
+    - name: Paired Mainnet proof and block validation
+      shell: bash
+      env:
+        CRT: ${{ matrix.crt }}
+      run: py -3 -B release-tools/.github/en8-mainnet/run.py
+    - name: Retain complete paired Mainnet evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: en8-mainnet-${{ matrix.crt }}
+        path: ${{ runner.temp }}/en8-mainnet-paired
+        if-no-files-found: error
+        retention-days: 14
+    timeout-minutes: 90
