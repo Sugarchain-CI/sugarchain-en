@@ -713,6 +713,22 @@ BOOST_AUTO_TEST_CASE(cold_proofs_cache_reuse_and_worker_lifetime)
     }
 }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+BOOST_AUTO_TEST_CASE(network_batches_reject_invalid_work_with_limited_parallelism)
+{
+    for (int parallelism : {1, 3, 8}) {
+        CacheBudget budget{1 << 20};
+        const auto headers{Headers(367, 17)};
+        auto invalid{headers};
+        Invalidate(invalid[4]);
+        HeaderPoWVerifier verifier{8, parallelism};
+        BOOST_CHECK(!verifier.Check(invalid, params));
+        BOOST_REQUIRE(verifier.Check(headers, params));
+        BOOST_CHECK(!verifier.Check(invalid, params));
+    }
+}
+#endif
+
 BOOST_AUTO_TEST_CASE(startup_checks_each_header_with_configured_workers)
 {
     const auto headers{Headers(301, 25)};

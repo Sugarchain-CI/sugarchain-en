@@ -565,10 +565,23 @@ void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Par
 
 struct HeaderPoWVerifier::Impl {
     const int workers;
+#if defined(__APPLE__) && defined(__aarch64__)
+    const int parallelism;
+    const size_t network_batch_size;
+#endif
     std::mutex caller_mutex;
     CCheckQueue<HeaderPoWCheck> queue;
+#if defined(__APPLE__) && defined(__aarch64__)
+    explicit Impl(int count, int max_parallelism = MAX_HEADER_POW_WORKERS)
+        : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)},
+          parallelism{std::clamp(max_parallelism, 1, workers)},
+          // Use whole worker groups without admitting additional cold work.
+          network_batch_size{size_t(workers / parallelism * parallelism)},
+          queue{1, parallelism - 1, "powch"} {}
+#else
     explicit Impl(int count)
         : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)}, queue{1, workers - 1, "powch"} {}
+#endif
 
     // Share queue execution without merging Check() and CheckEach() header/cache
     // policies. Worker exceptions reach the caller; validation failure returns false.
@@ -586,6 +599,10 @@ struct HeaderPoWVerifier::Impl {
 
 HeaderPoWVerifier::HeaderPoWVerifier(int workers)
     : m_impl{workers > 1 ? std::make_unique<Impl>(workers) : nullptr} {}
+#if defined(__APPLE__) && defined(__aarch64__)
+HeaderPoWVerifier::HeaderPoWVerifier(int workers, int parallelism)
+    : m_impl{workers > 1 ? std::make_unique<Impl>(workers, parallelism) : nullptr} {}
+#endif
 HeaderPoWVerifier::~HeaderPoWVerifier() = default;
 
 bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params, bool cache_result)
@@ -639,10 +656,15 @@ bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Conse
         cache.InsertBatch(entry);
         return true;
     }
+#if defined(__APPLE__) && defined(__aarch64__)
+    const size_t network_batch_size{m_impl->network_batch_size};
+#else
+    const size_t network_batch_size{size_t(m_impl->workers)};
+#endif
     while (!headers.empty()) {
         std::vector<HeaderPoWCheck> batch;
-        batch.reserve(m_impl->workers);
-        while (!headers.empty() && batch.size() < size_t(m_impl->workers)) {
+        batch.reserve(network_batch_size);
+        while (!headers.empty() && batch.size() < network_batch_size) {
             const auto& header{headers.front()};
             if (!cache.Contains(cache.Entry(header))) batch.push_back({&header, &params});
             headers = headers.subspan(1);

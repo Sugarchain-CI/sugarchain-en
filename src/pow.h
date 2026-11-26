@@ -77,6 +77,10 @@ class HeaderPoWVerifier {
 
 public:
     explicit HeaderPoWVerifier(int workers);
+#if defined(__APPLE__) && defined(__aarch64__)
+    /** Limit simultaneous work and admit whole groups within the existing bound. */
+    HeaderPoWVerifier(int workers, int parallelism);
+#endif
     ~HeaderPoWVerifier();
     HeaderPoWVerifier(const HeaderPoWVerifier&) = delete;
     HeaderPoWVerifier& operator=(const HeaderPoWVerifier&) = delete;

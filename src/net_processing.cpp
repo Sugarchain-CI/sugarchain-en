@@ -2026,7 +2026,11 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
       m_txdownloadman(node::TxDownloadOptions{pool, m_rng, opts.deterministic_rng}),
       m_warnings{warnings},
       m_opts{opts},
+#if defined(__APPLE__) && defined(__aarch64__)
+      m_header_pow_verifier{m_chainparams.GetConsensus().fYespowerSugar ? opts.header_pow_workers : 1, opts.header_pow_parallelism}
+#else
       m_header_pow_verifier{m_chainparams.GetConsensus().fYespowerSugar ? opts.header_pow_workers : 1}
+#endif
 {
     // While Erlay support is incomplete, it must be enabled explicitly via -txreconciliation.
     // This argument can go away after Erlay support is complete.
