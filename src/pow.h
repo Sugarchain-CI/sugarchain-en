@@ -77,14 +77,14 @@ class HeaderPoWVerifier {
 
 public:
     explicit HeaderPoWVerifier(int workers);
-#if defined(__APPLE__) && defined(__aarch64__)
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
     HeaderPoWVerifier(int workers, bool network);
 #endif
     ~HeaderPoWVerifier();
     HeaderPoWVerifier(const HeaderPoWVerifier&) = delete;
     HeaderPoWVerifier& operator=(const HeaderPoWVerifier&) = delete;
     bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params);
-#if defined(__APPLE__) && defined(__aarch64__)
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
     bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params,
                bool established_presync);
 #endif

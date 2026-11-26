@@ -42,7 +42,7 @@
 #include <vector>
 #include <deque>
 
-#if defined(__APPLE__) && defined(__aarch64__)
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
 #include <util/ordered_check_window.h>
 
 #include <future>
@@ -1363,11 +1363,11 @@ BOOST_AUTO_TEST_CASE(mainnet_batch_evidence_after_individual_cache_pressure)
     BOOST_CHECK(!verifier.Check(std::span{headers}.first(2000), consensus));
 }
 
-#if defined(__APPLE__) && defined(__aarch64__)
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
 using WindowResult = std::optional<std::exception_ptr>;
 using WindowJob = std::function<WindowResult()>;
 
-BOOST_AUTO_TEST_CASE(apple_ordered_checks_bound_unresolved_work)
+BOOST_AUTO_TEST_CASE(ordered_checks_bound_unresolved_work)
 {
     util::OrderedCheckWindow<WindowJob, 8> window{8};
     std::atomic_size_t admitted{0}, later_started{0};
@@ -1397,7 +1397,7 @@ BOOST_AUTO_TEST_CASE(apple_ordered_checks_bound_unresolved_work)
     BOOST_CHECK_EQUAL(admitted.load(), 8U);
 }
 
-BOOST_AUTO_TEST_CASE(apple_ordered_checks_drain_and_reuse_after_failure)
+BOOST_AUTO_TEST_CASE(ordered_checks_drain_and_reuse_after_failure)
 {
     util::OrderedCheckWindow<WindowJob, 8> window{2};
     std::promise<void> release_head, later_entered;
@@ -1443,7 +1443,7 @@ BOOST_AUTO_TEST_CASE(apple_ordered_checks_drain_and_reuse_after_failure)
     BOOST_CHECK_EQUAL(remaining, 0U);
 }
 
-BOOST_AUTO_TEST_CASE(apple_network_presync_validates_cold_and_cached_proofs)
+BOOST_AUTO_TEST_CASE(network_presync_validates_cold_and_cached_proofs)
 {
     CacheBudget budget{1 << 20};
     DataStream stream{test::data::sugarchain_headers};

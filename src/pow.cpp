@@ -20,7 +20,7 @@
 #include <uint256.h>
 #include <util/check.h>
 #include <util/hasher.h>
-#if defined(__APPLE__) && defined(__aarch64__)
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
 #include <util/ordered_check_window.h>
 #include <util/threadnames.h>
 #endif
@@ -570,7 +570,7 @@ void CacheVerifiedBlockIndexProof(const CBlockIndex& index, const Consensus::Par
 struct HeaderPoWVerifier::Impl {
     const int workers;
     std::mutex caller_mutex;
-#if defined(__APPLE__) && defined(__aarch64__)
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
     using NetworkWindow = util::OrderedCheckWindow<HeaderPoWCheck, MAX_HEADER_POW_WORKERS>;
     std::unique_ptr<CCheckQueue<HeaderPoWCheck>> queue;
     std::unique_ptr<NetworkWindow> network_window;
@@ -596,7 +596,7 @@ struct HeaderPoWVerifier::Impl {
     // policies. Worker exceptions reach the caller; validation failure returns false.
     bool RunBatch(std::vector<HeaderPoWCheck>&& batch)
     {
-#if defined(__APPLE__) && defined(__aarch64__)
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
         if (network_window) {
             // Use FIFO checks within the existing finite cohort outside
             // established PRESYNC. Reuse the same worker threads.
@@ -622,7 +622,7 @@ struct HeaderPoWVerifier::Impl {
 
 HeaderPoWVerifier::HeaderPoWVerifier(int workers)
     : m_impl{workers > 1 ? std::make_unique<Impl>(workers) : nullptr} {}
-#if defined(__APPLE__) && defined(__aarch64__)
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
 HeaderPoWVerifier::HeaderPoWVerifier(int workers, bool network)
     : m_impl{workers > 1 ? std::make_unique<Impl>(workers, network) : nullptr} {}
 #endif
@@ -653,7 +653,7 @@ bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const C
     return true;
 }
 
-#if defined(__APPLE__) && defined(__aarch64__)
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
 bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params)
 {
     return Check(headers, params, /*established_presync=*/false);
@@ -689,7 +689,7 @@ bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Conse
         cache.InsertBatch(entry);
         return true;
     }
-#if defined(__APPLE__) && defined(__aarch64__)
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
     if (established_presync && m_impl->network_window) {
         // Enumerate cold work in order, as in the fixed path below. At most
         // eight unresolved proofs are admitted beyond the verified prefix.
