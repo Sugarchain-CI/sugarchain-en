@@ -15,7 +15,6 @@ HEADER_SHA = "dc7a666edf2992bc2c3821a8819b93c7008f057eae04d2da36f66c0ef1b87a02"
 PROOF_SHA = "ccaef882fe8bcf619cd0137f33ae98cef051593f8569984444a22586def913a2"
 WORKERS = (1, 3, 8)
 ARMS = ("generic", "fixed")
-PAIRS = (ARMS, ARMS[::-1])
 METRICS = ("worker_cpu_total_ns", "wall_ns")
 COMPUTE_LIMIT = 140
 PROOF_CPU_WALL_DIVISOR = 16
@@ -90,24 +89,28 @@ def verify_cpu_accounting(row, receipt, workers, *, cpu_bound):
                 "Implausibly little worker CPU for a completed proof workload")
 
 
-def evaluate(trials):
+def evaluate(trials, arms, eight_limit):
     rows = {(row["workers"], row["round"], row["arm"]): row for row in trials}
     require(len(rows) == len(trials) == 12, "Incomplete or duplicated fixed trial matrix")
     comparisons = []
     for workers in WORKERS:
-        maximum = 1.0 if workers == 8 else 0.95
-        for round_number in range(1, len(PAIRS) + 1):
-            generic = rows[workers, round_number, "generic"]
-            fixed = rows[workers, round_number, "fixed"]
+        maximum = eight_limit if workers == 8 else 0.95
+        for round_number in (1, 2):
+            generic = rows[workers, round_number, arms[0]]
+            fixed = rows[workers, round_number, arms[1]]
             for metric in METRICS:
                 comparisons.append({"workers": workers, "round": round_number, "metric": metric,
-                                    "fixed_over_generic": fixed[metric] / generic[metric],
+                                    "candidate_over_generic": fixed[metric] / generic[metric],
                                     "required_maximum": maximum})
-    return {"eligible_for_node_followup": all(row["fixed_over_generic"] <= row["required_maximum"] for row in comparisons),
+    return {"eligible_for_node_followup": all(row["candidate_over_generic"] <= row["required_maximum"] for row in comparisons),
             "comparisons": comparisons}
 
 
 def run(args):
+    arms = ("generic", "split") if args.split_pwx else ARMS
+    pairs = (arms, arms[::-1])
+    eight_limit = 1.01 if args.split_pwx else 1.0
+    compute_limit = 175 if args.split_pwx else COMPUTE_LIMIT
     shape_bytes = args.shape.read_bytes()
     native_shape = json.loads(shape_bytes)
     require(native_shape.get("status") == "verified", "Native mixer specialization is unproven")
@@ -120,14 +123,15 @@ def run(args):
         stream.write(headers[:128 * 80])
     report = {"status": "in_progress", "scope": "native full proof microbenchmark",
               "fixture_sha256": HEADER_SHA, "expected_output_sha256": PROOF_SHA, "fixed_workers": WORKERS,
-              "arms_by_round": PAIRS, "header_count_per_trial": HEADERS, "compute_limit_seconds": COMPUTE_LIMIT,
+              "arms_by_round": pairs, "header_count_per_trial": HEADERS, "compute_limit_seconds": compute_limit,
+              "eight_worker_maximum": eight_limit,
               "native_shape_sha256": hashlib.sha256(shape_bytes).hexdigest(),
               "cpu_metric": "sum of pre-exit worker proof-loop CPU intervals",
               "minimum_cpu_fraction_of_wall": 1 / PROOF_CPU_WALL_DIVISOR, "trials": []}
     start = time.monotonic()
 
     def invoke(stem, arguments, cap):
-        remaining = COMPUTE_LIMIT - (time.monotonic() - start)
+        remaining = compute_limit - (time.monotonic() - start)
         if remaining <= 0:
             raise TimeoutError("The fixed native compute budget expired")
         out = args.output / f"{stem}.stdout"
@@ -150,7 +154,7 @@ def run(args):
         report["differential_check"] = differential_result
         report["differential_exit_accounting"] = check_receipt.name
         for workers in WORKERS:
-            for round_number, modes in enumerate(PAIRS, 1):
+            for round_number, modes in enumerate(pairs, 1):
                 for arm in modes:
                     stem = f"w{workers}-round{round_number}-{arm}"
                     out, receipt, receipt_path = invoke(stem, ["bench", arm, str(args.headers), "1", str(workers)], 30)
@@ -161,7 +165,7 @@ def run(args):
                     verify_cpu_accounting(row, receipt, workers, cpu_bound=True)
                     report["trials"].append({**row, "round": round_number, "stdout": out.name,
                                              "exit_accounting": receipt_path.name})
-        report["decision"] = evaluate(report["trials"])
+        report["decision"] = evaluate(report["trials"], arms, eight_limit)
         report["status"] = "recorded"
     except Exception as error:
         report["status"] = "inconclusive" if isinstance(error, TimeoutError) else "failed"
@@ -179,6 +183,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("binary", "headers", "output", "shape"):
         parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--split-pwx", action="store_true")
     run(parser.parse_args())
 
 

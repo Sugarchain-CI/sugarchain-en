@@ -1,0 +1,44 @@
+name: En8 Apple split PWX proof screen
+on:
+  push:
+    branches: [ci/en8-apple-split-pwx]
+    paths:
+      - .github/workflows/en8-apple-split-pwx.yml
+      - .github/apple-split-pwx/**
+permissions:
+  contents: read
+jobs:
+  native-proof-screen:
+    name: Check full proofs and measure native Apple split multiply throughput
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: source
+          repository: Sugarchain-CI/sugarchain-en
+          ref: 9c502574b652804905d2533d51742ca91f694532
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          path: diagnostic
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Run the pinned native diagnostic once
+        shell: bash
+        run: |
+          bash diagnostic/.github/apple-split-pwx/run-native.sh \
+            "$GITHUB_WORKSPACE/source" "$RUNNER_TEMP/apple-split-pwx"
+      - name: Retain proof, timing and compiler evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-apple-split-pwx
+          path: |
+            ${{ runner.temp }}/apple-split-pwx/*.log
+            ${{ runner.temp }}/apple-split-pwx/*.txt
+            ${{ runner.temp }}/apple-split-pwx/*.sha256
+            ${{ runner.temp }}/apple-split-pwx/build/build.json
+            ${{ runner.temp }}/apple-split-pwx/evidence
+          if-no-files-found: warn
+          retention-days: 14
