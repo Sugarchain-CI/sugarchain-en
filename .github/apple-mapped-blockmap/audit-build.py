@@ -29,6 +29,8 @@ def run(source, build, output):
                 raise ValueError(f"C++ diagnostic flag missing or duplicate in {path.name}")
             if f"-U{apple_mapped.FLAG[2:]}" in args:
                 raise ValueError(f"C++ diagnostic flag undefined in {path.name}")
+            if "-fno-cxx-modules" not in args or not any(arg.startswith("-mmacos-version-min=") for arg in args):
+                raise ValueError(f"Stock Darwin initialization flags missing in {path.name}")
             count += 1
         elif apple_mapped.FLAG in args:
             raise ValueError(f"Unexpected diagnostic flag on {path.name}")
