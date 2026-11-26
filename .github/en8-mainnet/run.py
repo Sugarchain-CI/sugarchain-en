@@ -35,4 +35,6 @@ for mode,name,suffix,candidate in specs:
         assert subprocess.check_output(['lipo','-archs',str(candidate)],text=True).strip()=='arm64'
     command=[sys.executable,'-B',str(here/'mainnet_paired.py'),'--baseline',str(binaries[0].resolve()),'--candidate',str(candidate.resolve()),'--fixture',str(here/'mainnet-blocks.dat.gz'),'--fixture-info',str(here/'fixture.json'),'--output',str(root/mode),'--repeats','3']
     if mode=='gui':command+=['--gui']
+    command[2]=str(here/'mainnet_warm.py')
+    command[command.index('--output')+1]=str(root/('warm-'+mode))
     subprocess.run(command,check=True)
