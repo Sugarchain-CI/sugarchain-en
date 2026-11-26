@@ -703,8 +703,13 @@ static volatile uint64_t Smask2var = Smask2;
 	uint64_t offset = vgetq_lane_u64(vreinterpretq_u64_u32(x), 0) & Smask2; \
 	const uint64_t *p0 = (const uint64_t *)(S0 + (uint32_t)offset); \
 	const uint64_t *p1 = (const uint64_t *)(S1 + (offset >> 32)); \
-	uint32x2_t lo = vget_low_u32(vuzp1q_u32(x, x)); \
-	uint32x2_t hi = vget_low_u32(vuzp2q_u32(x, x)); \
+	uint32x4_t even_words, odd_words; \
+	/* Prevent Clang from lowering the low halves to EXT plus two ZIPs. */ \
+	__asm__("uzp1 %0.4s, %2.4s, %2.4s\n\t" \
+	    "uzp2 %1.4s, %2.4s, %2.4s" \
+	    : "=&w"(even_words), "=w"(odd_words) : "w"(x)); \
+	uint32x2_t lo = vget_low_u32(even_words); \
+	uint32x2_t hi = vget_low_u32(odd_words); \
 	x = vreinterpretq_u32_u64(veorq_u64(vaddq_u64(vmull_u32(lo, hi), \
 	    vld1q_u64(p0)), vld1q_u64(p1))); \
 }
