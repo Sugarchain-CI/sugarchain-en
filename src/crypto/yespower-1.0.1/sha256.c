@@ -38,6 +38,7 @@
 #include "sysendian.h"
 
 #include "sha256.h"
+#include "sha256-dispatch.h"
 
 #ifdef __ICC
 /* Miscompile with icc 14.0.0 (at least), so don't use restrict there */
@@ -151,6 +152,10 @@ SHA256_Transform(uint32_t state[SHA256_ARRAY_MIN(8)],
     const uint8_t block[SHA256_ARRAY_MIN(64)],
     uint32_t W[SHA256_ARRAY_MIN(64)], uint32_t S[SHA256_ARRAY_MIN(8)])
 {
+#ifdef YESPOWER_WINDOWS_SHA_NI
+	if (YespowerSHA256TryCompress(state, block))
+		return;
+#endif
 #ifdef YESPOWER_APPLE_SHA2
 	/* Apple Silicon supplies SHA-256 instructions. Preserve the public state
 	 * layout and big-endian message words used by the scalar implementation. */
