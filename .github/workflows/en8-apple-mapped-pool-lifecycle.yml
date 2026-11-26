@@ -1,0 +1,42 @@
+name: En8 Apple mapped pool allocator lifecycle
+on:
+  push:
+    branches: [ci/en8-apple-mapped-pool-lifecycle]
+    paths:
+      - .github/workflows/en8-apple-mapped-pool-lifecycle.yml
+      - .github/apple-pool-lifecycle/**
+permissions:
+  contents: read
+jobs:
+  native-lifecycle:
+    name: Verify small native Apple allocator lifecycle
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: source
+          repository: Sugarchain-CI/sugarchain-en
+          ref: 9c502574b652804905d2533d51742ca91f694532
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          path: diagnostic
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Run bounded native lifecycle checks
+        shell: bash
+        run: |
+          bash diagnostic/.github/apple-pool-lifecycle/run-native.sh \
+            "$GITHUB_WORKSPACE/source" "$RUNNER_TEMP/apple-pool-lifecycle"
+      - name: Retain available lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-apple-mapped-pool-lifecycle
+          path: |
+            ${{ runner.temp }}/apple-pool-lifecycle/*.log
+            ${{ runner.temp }}/apple-pool-lifecycle/cases/*.log
+            ${{ runner.temp }}/apple-pool-lifecycle/cases/result.json
+          if-no-files-found: warn
+          retention-days: 14
