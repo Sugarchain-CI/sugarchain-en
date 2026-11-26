@@ -27,14 +27,17 @@ def function_starts(encoded, address):
         delta, shift = 0, 0
 
 
-def pair_core_words(data):
+def arm64_macho_text(data):
     magic, cpu, _, _, commands = struct.unpack_from("<5I", data)
     if magic != 0xfeedfacf or cpu != 0x0100000c:
         raise ValueError("Expected a thin ARM64 Mach-O executable")
     text, symbol_table, function_table, text_base = None, None, None, None
+    stubs = []
     offset, section_index = 32, 0
     for _ in range(commands):
         kind, size = struct.unpack_from("<II", data, offset)
+        if size < 8 or offset + size > len(data):
+            raise ValueError("Invalid Mach-O load command")
         if kind == 0x19:  # LC_SEGMENT_64
             segment, address = struct.unpack_from("<16sQ", data, offset + 8)
             if segment.rstrip(b"\0") == b"__TEXT":
@@ -46,6 +49,11 @@ def pair_core_words(data):
                 section_index += 1
                 if (segment.rstrip(b"\0"), name.rstrip(b"\0")) == (b"__TEXT", b"__text"):
                     text = (address, length, location, section_index)
+                section_flags, _, stub_stride = struct.unpack_from("<3I", data, entry + 64)
+                if section_flags & 0xff == 0x8:  # S_SYMBOL_STUBS
+                    if not stub_stride or length % stub_stride:
+                        raise ValueError("Invalid Mach-O symbol stub section")
+                    stubs.append((address, address + length, stub_stride))
         elif kind == 2:  # LC_SYMTAB
             symbol_table = struct.unpack_from("<4I", data, offset + 8)
         elif kind == 0x26:  # LC_FUNCTION_STARTS
@@ -56,6 +64,8 @@ def pair_core_words(data):
 
     text_address, text_length, text_file, text_section = text
     starts_file, starts_size = function_table
+    if text_file + text_length > len(data) or starts_file + starts_size > len(data):
+        raise ValueError("Mach-O text or function-start data lies outside the executable")
     starts = list(function_starts(data[starts_file:starts_file + starts_size], text_base))
     starts.append(text_address + text_length)
     symbols_file, count, strings_file, _ = symbol_table
@@ -65,20 +75,25 @@ def pair_core_words(data):
         if kind & 0xe0 or kind & 0x0e != 0x0e or section != text_section:
             continue
         first = strings_file + name_offset
-        name = data[first:data.index(b"\0", first)].split(b".llvm.", 1)[0]
-        if name in FUNCTIONS:
-            addresses[name] = address
+        name = data[first:data.index(b"\0", first)].decode().split(".llvm.", 1)[0]
+        addresses.setdefault(name, set()).add(address)
+    return text_address, data[text_file:text_file + text_length], starts, addresses, stubs
 
-    for name in FUNCTIONS:
-        if name not in addresses:
-            raise ValueError(f"Missing paired SMix symbol {name.decode()}")
-        start = addresses[name]
+
+def pair_core_words(data):
+    text_address, text, starts, addresses, _ = arm64_macho_text(data)
+    for symbol in FUNCTIONS:
+        name = symbol.decode()
+        slots = addresses.get(name, set())
+        if len(slots) != 1:
+            raise ValueError(f"Missing or ambiguous paired SMix symbol {name}")
+        start, = slots
         index = bisect.bisect_left(starts, start)
         if index >= len(starts) - 1 or starts[index] != start:
-            raise ValueError(f"Missing entry point for {name.decode()}")
+            raise ValueError(f"Missing entry point for {name}")
         end = starts[index + 1]
-        first, last = text_file + start - text_address, text_file + end - text_address
-        yield name.decode(), start, (word for (word,) in struct.iter_unpack("<I", data[first:last]))
+        first, last = start - text_address, end - text_address
+        yield name, start, (word for (word,) in struct.iter_unpack("<I", text[first:last]))
 
 
 def instruction_counts(start, words, assembly):

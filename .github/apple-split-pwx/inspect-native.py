@@ -7,6 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 import re
+import struct
 
 
 REFERENCE = ("blockmix_1_0", "blockmix_xor_1_0", "blockmix_xor_save_1_0")
@@ -33,53 +34,137 @@ def product_pairs(body):
     return pairs
 
 
-def describe(body, tail):
-    starts = {address for address, _, _ in body}
+def describe(body, branches, tail):
+    instructions = {address for address, _, _ in body}
     counts = {name: sum(op == name for _, op, _ in body) for name in ("umlal.2d", "umull.2d", "add.2d", "eor3.16b")}
     calls = []
     vector_stack = []
+    for address, kind, target in branches:
+        if kind != "branch" or (target not in instructions and target != tail):
+            calls.append([hex(address), kind, hex(target) if target is not None else None])
     for address, op, operands in body:
-        if op.startswith("bl") or op.startswith("br") or (op == "b" and operands != tail and
-                (not operands.startswith("0x") or int(operands, 16) not in starts)):
-            calls.append([hex(address), op, operands])
         if op.startswith(("ld", "st")) and STACK.search(operands) and VECTOR.search(operands.split("[", 1)[0]):
             vector_stack.append([hex(address), op, operands])
     return {"counts": counts, "product_to_add": product_pairs(body), "unexpected_calls": calls,
             "vector_stack_accesses": vector_stack, "vector_registers": sorted({int(x) for _, _, s in body for x in VECTOR.findall(s)})}
 
 
-def inspect(text):
-    common = Path(__file__).resolve().parent.parent / "apple-fixed-proof/inspect-native-fixed.py"
-    spec = importlib.util.spec_from_file_location("native_assembly", common)
+def load_tool(path):
+    spec = importlib.util.spec_from_file_location(path.stem, path)
     parser = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(parser)
-    functions = parser.parse(text)
-    graph = parser.calls(functions)
+    return parser
+
+
+def instructions_by_address(text, decoder):
+    instructions = {}
+    for line in text.splitlines():
+        if match := decoder.fullmatch(line):
+            address, opcode, operands = int(match[1], 16), match[2], match[3]
+            if address in instructions:
+                raise ValueError(f"Duplicate disassembly address {hex(address)}")
+            instructions[address] = (address, opcode, operands)
+    return instructions
+
+
+def branch_records(text_address, raw, starts, disassembly, reader):
+    records = {}
+    for start, end in zip(starts, starts[1:]):
+        if not text_address <= start < end <= text_address + len(raw) or (start | end) & 3:
+            raise ValueError("Invalid linked function range")
+        branches = []
+        for index, (word,) in enumerate(struct.iter_unpack("<I", raw[start - text_address:end - text_address])):
+            address = start + index * 4
+            if word & 0xfc000000 == 0x94000000:  # BL
+                branches.append((address, "call", address + reader.signed(word & 0x03ffffff, 26) * 4))
+            elif (target := reader.branch_target(index, word)) is not None:  # B, B.cond, CB*, TB*
+                branches.append((address, "branch", start + target * 4))
+            elif word & 0xfffffc1f in (0xd61f0000, 0xd63f0000) or disassembly.get(address, (None, "", ""))[1] in (
+                    "br", "blr", "braa", "brab", "braaz", "brabz", "blraa", "blrab", "blraaz", "blrabz"):
+                branches.append((address, "indirect", None))
+        records[start] = (end, branches)
+    return records
+
+
+def reachable_from(entry, records, stubs):
+    seen = set()
+    unresolved = []
+    pending = [entry]
+    while pending:
+        start = pending.pop()
+        if start in seen:
+            continue
+        seen.add(start)
+        end, branches = records[start]
+        for address, kind, target in branches:
+            if kind == "branch" and start <= target < end:
+                continue
+            if target in records:
+                pending.append(target)
+            elif target is None or not any(a <= target < b and (target - a) % stride == 0 for a, b, stride in stubs):
+                unresolved.append([hex(address), kind, hex(target) if target is not None else None])
+    return seen, unresolved
+
+
+def inspect(text, binary):
+    common = Path(__file__).resolve().parent.parent
+    parser = load_tool(common / "apple-fixed-proof/inspect-native-fixed.py")
+    reader = load_tool(common / "apple-paired-proof/inspect-native-pair.py")
+    address, raw, starts, symbols, stubs = reader.arm64_macho_text(binary)
+    disassembly = instructions_by_address(text, parser.INSTRUCTION)
+    records = branch_records(address, raw, starts, disassembly, reader)
+
+    def unique(name):
+        addresses = symbols.get(name, set())
+        if len(addresses) != 1 or next(iter(addresses)) not in records:
+            raise ValueError(f"Expected one linked function start for {name}")
+        return next(iter(addresses))
+
+    entries = {prefix: unique(f"_{prefix}yespower") for prefix in ("", "split_")}
+    hot = {prefix: {symbol: unique(f"_{prefix}{symbol}") for symbol in REFERENCE} for prefix in entries}
+    if len(set(entries.values()) | {addr for group in hot.values() for addr in group.values()}) != 8:
+        raise ValueError("Proof entries or hot scopes unexpectedly share an address")
     arms = {}
     for prefix in ("", "split_"):
         name = "split" if prefix else "generic"
-        reachable = parser.reachable(graph, f"_{prefix}yespower")
+        reachable, unresolved = reachable_from(entries[prefix], records, stubs)
+        opposite = "" if prefix else "split_"
+        cross_arm = sorted(hex(addr) for addr in (reachable & (set(hot[opposite].values()) | {entries[opposite]})))
         mixers = {}
         for symbol, count, eor3, tail in zip(REFERENCE, EXPECTED, EOR3, TAILS, strict=True):
             label = f"_{prefix}{symbol}"
-            facts = describe(functions.get(label, []), f"_{prefix}{tail}" if tail else "")
+            start = hot[prefix][symbol]
+            end, branches = records[start]
+            body = [disassembly[pc] for pc in range(start, end, 4) if pc in disassembly]
+            complete = len(body) == (end - start) // 4
+            tail_address = unique(f"_{prefix}{tail}") if tail else None
+            facts = describe(body, branches, tail_address)
             expected = (0, count, count, eor3) if prefix else (count, 0, 0, eor3)
-            facts["verified"] = label in reachable and tuple(facts["counts"].values()) == expected and (
+            facts["start"] = hex(start)
+            facts["tail_address"] = hex(tail_address) if tail_address is not None else None
+            facts["complete_disassembly"] = complete
+            facts["verified"] = start in reachable and complete and tuple(facts["counts"].values()) == expected and (
                 len(facts["product_to_add"]) == count if prefix else not facts["product_to_add"]) and (
                 not facts["unexpected_calls"] and not facts["vector_stack_accesses"])
             mixers[label] = facts
-        arms[name] = mixers
-    verified = all(row["verified"] for mixers in arms.values() for row in mixers.values())
-    return {"status": "verified" if verified else "codegen_only", "mixers": arms}
+        arms[name] = {"entry": hex(entries[prefix]), "unresolved_branches": unresolved, "cross_arm_hot_addresses": cross_arm,
+                      "mixers": mixers, "verified": not unresolved and not cross_arm and all(row["verified"] for row in mixers.values())}
+    return {"status": "verified" if all(arm["verified"] for arm in arms.values()) else "codegen_only", "arms": arms}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("disassembly", type=Path)
+    parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     data = args.disassembly.read_bytes()
-    report = {**inspect(data.decode()), "disassembly_sha256": hashlib.sha256(data).hexdigest()}
+    binary = args.binary.read_bytes()
+    try:
+        report = inspect(data.decode(), binary)
+    except (ValueError, struct.error) as error:
+        report = {"status": "codegen_only", "error": str(error)}
+    report.update(disassembly_sha256=hashlib.sha256(data).hexdigest(), binary_sha256=hashlib.sha256(binary).hexdigest())
     with args.output.open("x", encoding="utf-8") as output:
         json.dump(report, output, indent=2, sort_keys=True)
         output.write("\n")

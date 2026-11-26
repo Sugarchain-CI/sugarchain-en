@@ -39,6 +39,7 @@ jobs:
             ${{ runner.temp }}/apple-split-pwx/*.txt
             ${{ runner.temp }}/apple-split-pwx/*.sha256
             ${{ runner.temp }}/apple-split-pwx/build/build.json
+            ${{ runner.temp }}/apple-split-pwx/build/split_yespower_probe
             ${{ runner.temp }}/apple-split-pwx/evidence
           if-no-files-found: warn
           retention-days: 14

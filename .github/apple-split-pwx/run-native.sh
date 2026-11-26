@@ -49,7 +49,7 @@ test "$(lipo -archs "$binary")" = arm64
 shasum -a 256 "$binary" > "$work/binary.sha256"
 xcrun nm -n "$binary" > "$work/symbols.txt"
 xcrun otool -tvV "$binary" > "$work/disassembly.txt"
-python3 -B "$tools_dir/inspect-native.py" "$work/disassembly.txt" \
+python3 -B "$tools_dir/inspect-native.py" "$work/disassembly.txt" --binary "$binary" \
     --output "$work/native-mixer-evidence.txt"
 shape_status=$(python3 -B -c 'import json, sys; print(json.load(open(sys.argv[1]))["status"])' "$work/native-mixer-evidence.txt")
 if [[ "$shape_status" == codegen_only ]]; then
