@@ -1,0 +1,184 @@
+name: En8 private Apple mapped block-map capacity
+'on':
+  push:
+    branches: [ci/en8-apple-index-cache]
+    paths:
+      - .github/workflows/en8-apple-mapped-blockmap.yml
+      - .github/apple-mapped-blockmap/**
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+env:
+  MAPPED_SOURCE: e4499228a8d3a293ddd3be66549b98bcc7641519
+  MAPPED_TREE: 5c766f5e57ce1746fd4a249822f6c19c591ff67e
+jobs:
+  macos-cross:
+    name: Cross-build the private Apple Silicon daemon and regression tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      FILE_ENV: ./ci/test/00_setup_env_mac_cross.sh
+      DANGER_CI_ON_HOST_FOLDERS: 1
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: Sugarchain-CI/sugarchain-en
+          ref: ${{ env.MAPPED_SOURCE }}
+          persist-credentials: false
+      - name: Check out private diagnostic tooling from this workflow
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+      - name: Verify exact private source revision
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$MAPPED_SOURCE"
+          test "$(git rev-parse HEAD^{tree})" = "$MAPPED_TREE"
+      - uses: ./.github/actions/configure-environment
+      - uses: ./.github/actions/clear-files
+      - uses: ./.github/actions/cache/restore
+        with:
+          provider: gha
+      - name: Restore Apple arm64 branch dependencies
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ${{ env.BASE_CACHE }}
+            ${{ env.SOURCES_PATH }}
+          key: en8-arm64-depends-v1-${{ env.DEPENDS_HASH }}
+      - name: Restore Apple arm64 branch compiler cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: en8-arm64-ccache-v1-${{ env.DEPENDS_HASH }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: en8-arm64-ccache-v1-${{ env.DEPENDS_HASH }}-
+      - uses: ./.github/actions/configure-docker
+        with:
+          provider: gha
+      - name: Build only the private command-line runtime and native regression tests
+        run: |
+          set -euo pipefail
+          source ./ci/test/00_setup_env.sh
+          export GOAL=all
+          export BASE_OUTDIR="$BASE_BUILD_DIR/installed"
+          export BITCOIN_CONFIG="
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_CXX_FLAGS_RELEASE=-O3
+            -DCMAKE_PROJECT_INCLUDE=$BASE_ROOT_DIR/tooling/.github/apple-mapped-blockmap/global-cxx-flag.cmake
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            -DBUILD_SHARED_LIBS=OFF -DREDUCE_EXPORTS=ON -DENABLE_IPC=OFF -DWITH_USDT=OFF
+            -DBUILD_GUI=OFF -DBUILD_GUI_TESTS=OFF -DBUILD_DAEMON=ON -DBUILD_TESTS=ON
+            -DBUILD_BITCOIN_BIN=OFF -DBUILD_CLI=OFF -DBUILD_TX=OFF -DBUILD_UTIL=OFF
+            -DBUILD_WALLET_TOOL=OFF -DBUILD_BENCH=OFF -DBUILD_FUZZ_BINARY=OFF -DINSTALL_MAN=OFF"
+          export BITCOIN_CONFIG="$(echo "$BITCOIN_CONFIG" | xargs)"
+          python3 ./ci/test/02_run_container.py
+          python3 -B tooling/.github/apple-mapped-blockmap/audit-build.py \
+            "$GITHUB_WORKSPACE" "$BASE_BUILD_DIR" "$RUNNER_TEMP/private-runtime"
+      - name: Retain exact private build artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: mapped-blockmap-private-cross
+          path: ${{ runner.temp }}/private-runtime/**
+          if-no-files-found: error
+          retention-days: 14
+
+  mature-apple:
+    name: Qualify the owned Mainnet checkpoint on Apple Silicon
+    needs: macos-cross
+    runs-on: macos-15
+    timeout-minutes: 25
+    env:
+      FIXTURE_TAG: en8-mainnet-tail-fixture-v1
+      MANIFEST_SHA: 234d86232dc76cc86045b0f6cba2988a140562a112ecbbb454e82fa3f20a30f3
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Verify the Apple runner and prepare the existing qualifier
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          test "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" != 1
+          test "$(sysctl -n hw.memsize)" = 7516192768
+          git apply --check .github/apple-mapped-blockmap/qualifier.patch
+          git apply .github/apple-mapped-blockmap/qualifier.patch
+          mkdir "$RUNNER_TEMP/mapped-diagnostics"
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          compiler="$(xcrun --sdk macosx --find clang)"
+          test -d "$sdk"
+          test -x "$compiler"
+          "$compiler" -isysroot "$sdk" -arch arm64 -std=c11 -D_DARWIN_C_SOURCE -O2 -Wall -Wextra -Werror \
+            .github/apple-mapped-blockmap/mapped-resource.c -o "$RUNNER_TEMP/mapped-diagnostics/proc-rusage" \
+            > "$RUNNER_TEMP/mapped-diagnostics/proc-rusage-build.log" 2>&1
+      - uses: actions/download-artifact@v8
+        with:
+          name: mapped-blockmap-private-cross
+          path: ${{ runner.temp }}/mapped-cross
+      - name: Verify, ad-hoc sign, and test the exact private Apple executables
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          python3 -B .github/apple-mapped-blockmap/apple_mapped.py "$RUNNER_TEMP/mapped-cross" "$RUNNER_TEMP/mapped-native"
+          env -u SUGARCHAIN_PRIVATE_BLOCKMAP_PROFILE "$RUNNER_TEMP/mapped-native/test_bitcoin" \
+            --run_test=pool_tests,allocator_tests,blockmanager_tests,header_pow_tests \
+            --catch_system_error=no --log_level=test_suite --report_level=short \
+            > "$RUNNER_TEMP/mapped-diagnostics/native-tests.log" 2>&1
+      - name: Load the pinned manifest and reserve checkpoint space
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "CHECKPOINT_DEADLINE=$(( $(date +%s) + 1120 ))" >> "$GITHUB_ENV"
+          mkdir "$RUNNER_TEMP/checkpoint-input"
+          gh release download --repo Sugarchain-CI/sugarchain-en --pattern manifest.json \
+            --dir "$RUNNER_TEMP/checkpoint-input" -- "$FIXTURE_TAG"
+          python3 -B .github/en8-mainnet/mature-checkpoint/checkpoint_fixture.py \
+            --manifest "$RUNNER_TEMP/checkpoint-input/manifest.json" --manifest-sha256 "$MANIFEST_SHA" \
+            --mapped-arena-bytes 8994160640 --output "$RUNNER_TEMP/checkpoint-preflight"
+      - name: Fetch the approved public checkpoint archive once
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r part; do args+=(--pattern "$part"); done < "$RUNNER_TEMP/checkpoint-preflight/parts.txt"
+          gh release download --repo Sugarchain-CI/sugarchain-en "${args[@]}" \
+            --dir "$RUNNER_TEMP/checkpoint-input" -- "$FIXTURE_TAG"
+      - name: Run one offline candidate capacity trial with two ordered level-4 passes
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          python3 -B .github/en8-mainnet/mature-checkpoint/qualify_mature_checkpoint.py \
+            --runtime "$RUNNER_TEMP/mapped-native" --target apple-arm64 --apple-mapped \
+            --darwin-usage "$RUNNER_TEMP/mapped-diagnostics/proc-rusage" \
+            --fixture "$RUNNER_TEMP/checkpoint-input" --manifest-name manifest.json \
+            --fixture-manifest-sha256 "$MANIFEST_SHA" --deadline-epoch "$CHECKPOINT_DEADLINE" \
+            --output "$RUNNER_TEMP/checkpoint-qualification"
+      - name: Retain the private capacity and verification receipts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mature-checkpoint-private-apple-mapped-blockmap
+          path: |
+            ${{ runner.temp }}/mapped-native/*.txt
+            ${{ runner.temp }}/mapped-native/*.json
+            ${{ runner.temp }}/mapped-native/*.sha256
+            ${{ runner.temp }}/mapped-diagnostics/*.log
+            ${{ runner.temp }}/checkpoint-preflight/preflight.json
+            ${{ runner.temp }}/checkpoint-qualification/result.json
+            ${{ runner.temp }}/checkpoint-qualification/resources.jsonl
+            ${{ runner.temp }}/checkpoint-qualification/vmmap-samples.jsonl
+            ${{ runner.temp }}/checkpoint-qualification/vmmap-*.log
+            ${{ runner.temp }}/checkpoint-qualification/node/debug-restart.log
+            ${{ runner.temp }}/checkpoint-qualification/node/console-restart.log
+          if-no-files-found: warn
+          retention-days: 14

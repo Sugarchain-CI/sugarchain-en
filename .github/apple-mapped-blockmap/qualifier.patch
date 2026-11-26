@@ -1,0 +1,260 @@
+--- a/.github/en8-mainnet/mature-checkpoint/checkpoint_fixture.py
++++ b/.github/en8-mainnet/mature-checkpoint/checkpoint_fixture.py
+@@ -206,18 +206,23 @@
+     parser.add_argument("--manifest", type=Path, required=True)
+     parser.add_argument("--manifest-sha256", required=True)
+     parser.add_argument("--output", type=Path, required=True, help="New directory for the preflight record and part list")
++    parser.add_argument("--mapped-arena-bytes", type=int, default=0)
+     args = parser.parse_args()
++    if args.mapped_arena_bytes not in (0, 8_994_160_640):
++        parser.error("Unexpected mapped checkpoint arena budget")
+     metadata = load_manifest(args.manifest, args.manifest_sha256)
+     args.output.mkdir(parents=True, exist_ok=False)
+     free = shutil.disk_usage(args.output).free
+     compressed = sum(part["bytes"] for part in metadata["archive_parts"])
+-    required = compressed + metadata["unpacked_file_bytes"] + DISK_RESERVE
++    required = compressed + metadata["unpacked_file_bytes"] + DISK_RESERVE + args.mapped_arena_bytes
+     report = {"status": "ready" if free >= required else "disk_capacity_inconclusive", "disk_free_bytes": free,
+               "archive_bytes": compressed, "unpacked_file_bytes": metadata["unpacked_file_bytes"],
+               "reserve_bytes": DISK_RESERVE, "required_free_bytes": required, "manifest_sha256": args.manifest_sha256}
++    if args.mapped_arena_bytes:
++        report["additional_arena_bytes"] = args.mapped_arena_bytes
+     (args.output / "preflight.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+     if free < required:
+-        raise SystemExit("Insufficient disk for compressed parts, extraction and the 8 GiB reserve")
++        raise SystemExit("Insufficient disk for compressed parts, extraction, arena and the 8 GiB reserve")
+     (args.output / "parts.txt").write_text("".join(part["name"] + "\n" for part in metadata["archive_parts"]), encoding="utf-8", newline="\n")
+
+
+--- a/.github/en8-mainnet/mature-checkpoint/qualify_mature_checkpoint.py
++++ b/.github/en8-mainnet/mature-checkpoint/qualify_mature_checkpoint.py
+@@ -21,10 +21,11 @@
+ from urllib.error import HTTPError
+ from urllib.request import ProxyHandler, build_opener, install_opener
+
+-from checkpoint_fixture import CHECKPOINT, QualificationError, extract, load_manifest
++from checkpoint_fixture import CHECKPOINT, DISK_RESERVE, QualificationError, extract, load_manifest
+
+ HELPERS = Path(__file__).resolve().parents[1]
+-sys.path[:0] = [str(HELPERS / "body-reread"), str(HELPERS / "delivery")]
++sys.path[:0] = [str(HELPERS / "body-reread"), str(HELPERS / "delivery"), str(HELPERS.parent / "apple-mapped-blockmap")]
++import apple_mapped
+ import mainnet_apple_body_ab as apple
+ from mainnet_body_reread_ab import release_input
+ from mainnet_delivery import Resources, persist
+@@ -94,7 +95,8 @@
+     result = {"physical_bytes": total}
+     if page_size:
+         for name, field in (("Pages free", "free_page_bytes"), ("Swapins", "swapin_bytes"),
+-                            ("Swapouts", "swapout_bytes"), ("Pages occupied by compressor", "compressor_bytes")):
++                            ("Swapouts", "swapout_bytes"), ("Pages occupied by compressor", "compressor_bytes"),
++                            ("Pageins", "pagein_bytes"), ("Pageouts", "pageout_bytes")):
+             if name in counters:
+                 result[field] = int(counters[name]) * int(page_size[1])
+     return result
+@@ -117,16 +119,22 @@
+         return {"sample": "unavailable"}
+
+
+-def record_resources(proc, profile, resources, timeline, done):
++def record_resources(proc, profile, resources, timeline, done, mapped_usage=None):
+     with timeline.open("w", encoding="utf-8", buffering=1) as out:
+         zero = time.monotonic()
+         while not done.is_set() and proc.poll() is None:
+             row = {"elapsed_seconds": round(time.monotonic() - zero, 3)}
+             try:
+-                cpu, rss = resources.sample(proc)
++                if mapped_usage is None:
++                    cpu, rss = resources.sample(proc)
++                else:
++                    usage = json.loads(subprocess.check_output([str(mapped_usage), str(proc.pid)], text=True, timeout=2))
++                    row["darwin_process"] = usage
++                    cpu = (usage["user_cpu_ns"] + usage["system_cpu_ns"]) / 1e9
++                    rss = usage["resident_bytes"]
+                 row.update(process_cpu_seconds=cpu, working_set_bytes=rss,
+                            disk_free_bytes=shutil.disk_usage(profile).free, memory=memory_state())
+-            except (OSError, RuntimeError, subprocess.SubprocessError) as failure:
++            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as failure:
+                 row["sample_error"] = type(failure).__name__
+             out.write(json.dumps(row) + "\n")
+             done.wait(2)
+@@ -193,6 +201,8 @@
+         guard(platform.system() == "Darwin" and platform.machine() == "arm64", "native_host_inconclusive",
+               "A native Apple Silicon runner is required")
+         check_host()
++        if args.apple_mapped:
++            return apple_mapped.runtime(args.runtime)
+         metadata = apple.check_package(args.runtime, APPLE_RUNTIME_SOURCE, APPLE_RUNTIME_TREE)
+         metadata.update(apple.prepare_binary(args.runtime, output / "runtime", False))
+         return metadata
+@@ -305,6 +315,13 @@
+     working_sets = [row["working_set_bytes"] for row in rows if "working_set_bytes" in row]
+     rss = max(working_sets, default=None)
+     disk = min((row["disk_free_bytes"] for row in rows if "disk_free_bytes" in row), default=None)
++    native_samples = [row["darwin_process"] for row in rows if "darwin_process" in row]
++    if "required_arena_bytes" in report:
++        report["darwin_process_samples"] = {"count": len(native_samples)}
++        if native_samples:
++            report["darwin_process_samples"].update(
++                last=native_samples[-1],
++                peak_sampled_footprint_bytes=max(row["physical_footprint_bytes"] for row in native_samples))
+     before, after = report.get("memory_before", {}), report.get("memory_after", {})
+     pressure = {}
+     for key in ("swapin_bytes", "swapout_bytes"):
+@@ -340,23 +357,47 @@
+         "assumevalid": 0, "networkactive": False, "prune": "manual", "scope": "mature local checkpoint capacity and level-4 qualification",
+     }
+     apple_candidate = args.target == "apple-arm64"
++    mapped = args.apple_mapped
++    if mapped:
++        report["scope"] = "private mapped block-map mature checkpoint capacity and level-4 qualification"
++        report["required_arena_bytes"] = apple_mapped.ARENA_BYTES
+     if apple_candidate:
+         report["comparison"] = "candidate-only capacity trial with no paired timing ratio"
+     persist(result, report)
+     overall = time.monotonic() + max(0, args.deadline_epoch - time.time())
++    if mapped:
++        overall -= 72 - CLEANUP_RESERVE  # Reserve 60 seconds for RPC stop and bounded signal escalation.
+     profile = output / "node"
+     debug = profile / "debug-restart.log"
+     timeline = output / "resources.jsonl"
+     process = None
++    observer = None
++    shutdown_started = None
++    done = threading.Event()
+     try:
+         report["binary"] = runtime_binary(args, output)
+         resources = Resources()
+         metadata = load_manifest(args.fixture / args.manifest_name, args.fixture_manifest_sha256)
+         report["fixture_manifest_sha256"] = args.fixture_manifest_sha256
++        if mapped:
++            report["memory_before"] = memory_state()
++            guard(report["memory_before"]["physical_bytes"] == apple_mapped.MEMORY_BYTES,
++                  "native_host_inconclusive", "Private mapping capacity requires the standard 7 GiB Apple host")
+         report["phase"] = "extract"
+         persist(result, report)
+-        report["extraction"] = extract(args.fixture, metadata, profile, stage_deadline(overall, 300, "extract_timeout"))
++        reserve = DISK_RESERVE + (apple_mapped.ARENA_BYTES if mapped else 0)
++        report["extraction"] = extract(args.fixture, metadata, profile, stage_deadline(overall, 300, "extract_timeout"),
++                                       reserve=reserve)
+         report["memory_before"] = memory_state()
++        extra_env = None
++        if mapped:
++            (profile / ".mapped-blockmap-scratch").mkdir(mode=0o700)
++            extra_env = {"SUGARCHAIN_PRIVATE_BLOCKMAP_PROFILE": str(profile.resolve(strict=True))}
++            report["free_after_extraction_bytes"] = shutil.disk_usage(profile).free
++            guard(report["free_after_extraction_bytes"] >= reserve, "disk_capacity_inconclusive",
++                  "Insufficient current free space for the mapped arena and 8 GiB reserve")
++            guard(overall - CLEANUP_RESERVE - time.monotonic() >= STARTUP_LIMIT, "startup_budget_inconclusive",
++                  "Insufficient remaining time for the full 480-second startup screen")
+         report["windows_page_read_counters_before"] = windows_paging()
+
+         flags = ("-networkactive=0", "-connect=0", "-dnsseed=0", "-fixedseeds=0", "-dns=0", "-proxy=0",
+@@ -364,10 +405,11 @@
+         variant = SimpleNamespace(binary=Path(report["binary"]["binary"]), gui=False)
+         report["phase"] = "startup"
+         persist(result, report)
+-        with node(variant, profile, "mature-checkpoint", restart=True, extra_flags=flags, shutdown_timeout=10) as (proc, port, started):
++        with node(variant, profile, "mature-checkpoint", restart=True, extra_flags=flags, extra_env=extra_env,
++                  shutdown_timeout=60 if mapped else 10) as (proc, port, started):
+             process = proc
+-            done = threading.Event()
+-            observer = threading.Thread(target=record_resources, args=(proc, profile, resources, timeline, done), daemon=True)
++            observer = threading.Thread(target=record_resources,
++                args=(proc, profile, resources, timeline, done, args.darwin_usage if mapped else None), daemon=True)
+             observer.start()
+             vmmap_stop = threading.Event()
+             vmmap_observer = None
+@@ -385,7 +427,11 @@
+                     report["vmmap_observer_stopped_before_qualification"] = not vmmap_observer.is_alive()
+                     guard(report["vmmap_observer_stopped_before_qualification"], "diagnostic_observer_inconclusive",
+                           "Owned-process map diagnostics did not stop before level-4 timing")
+-                if apple_candidate:
++                if mapped:
++                    report["mapped_blockmap"] = apple_mapped.log_receipt(new_log_text(debug, 0))
++                    guard(report["mapped_blockmap"]["exercised"], "candidate_mapping_not_exercised",
++                          "Exact reservation and full mapped geometry were not observed")
++                elif apple_candidate:
+                     report["apple_index_cache_activation_logged"] = apple_cache_logged(debug)
+                     ram = report["memory_before"]["physical_bytes"]
+                     guard(0 < ram <= APPLE_LOW_MEMORY_LIMIT and report["apple_index_cache_activation_logged"],
+@@ -420,8 +466,12 @@
+                 vmmap_stop.set()
+                 if vmmap_observer is not None and vmmap_observer.is_alive():
+                     vmmap_observer.join(timeout=11)
+-                done.set()
+-                observer.join(timeout=5)
++                shutdown_started = time.monotonic()
++                if mapped:
++                    report["shutdown_started_seconds_after_launch"] = shutdown_started - started
++                else:
++                    done.set()
++                    observer.join(timeout=5)
+         log = new_log_text(debug, 0)
+         guard(proc.returncode == 0 and "Shutdown done" in log, "shutdown_inconclusive", "Fixture node did not stop cleanly")
+         report["shutdown_lazy_pow"] = lazy_pow(log)
+@@ -439,14 +489,29 @@
+             exit_code = (process.returncode or 0) & 0xFFFFFFFF
+             if OOM_LOG.search(log) or exit_code in (0xC0000017, 0xC000012D):
+                 status = "memory_exhaustion_inconclusive"
++            elif mapped and "Mapped block map backing refused at " in log:
++                status = "mapping_reservation_inconclusive"
++            elif mapped and "Mapped block map " in log and any(
++                    marker in log for marker in ("geometry or checkpoint growth", "count or activation mismatch",
++                                                 "arena exhausted", "incomplete checkpoint geometry")):
++                status = "candidate_mapping_geometry_failure"
+             elif process.returncode == -9 and status == "process_exit_inconclusive":
+                 status = "process_killed_reason_unconfirmed"
+         report.update(status=status, error=f"{type(error).__name__}: {error}")
+         raise
+     finally:
++        if mapped and observer is not None:
++            if shutdown_started is not None:
++                report["shutdown_seconds"] = time.monotonic() - shutdown_started
++            done.set()
++            observer.join(timeout=7)
++            report["resource_observer_stopped"] = not observer.is_alive()
+         if apple_candidate:
+             try:
+-                report["apple_index_cache_activation_logged"] = apple_cache_logged(debug)
++                if mapped:
++                    report["mapped_blockmap"] = apple_mapped.log_receipt(new_log_text(debug, 0) if debug.exists() else "")
++                else:
++                    report["apple_index_cache_activation_logged"] = apple_cache_logged(debug)
+                 maps = output / "vmmap-samples.jsonl"
+                 if maps.exists():
+                     report["vmmap_samples"] = [json.loads(row) for row in maps.read_text().splitlines()]
+@@ -473,7 +538,12 @@
+     parser.add_argument("--fixture-manifest-sha256", required=True)
+     parser.add_argument("--manifest-name", required=True)
+     parser.add_argument("--deadline-epoch", type=float, required=True)
+-    run(parser.parse_args())
++    parser.add_argument("--apple-mapped", action="store_true")
++    parser.add_argument("--darwin-usage", type=Path)
++    args = parser.parse_args()
++    if args.apple_mapped and (args.target != "apple-arm64" or args.darwin_usage is None or not args.darwin_usage.is_file()):
++        parser.error("Private Apple mapping requires an Apple target and the native resource helper")
++    run(args)
+
+
+ if __name__ == "__main__":
+--- a/.github/en8-mainnet/delivery/mainnet_probe.py
++++ b/.github/en8-mainnet/delivery/mainnet_probe.py
+@@ -73,7 +73,7 @@
+
+
+ @contextmanager
+-def node(args, location, mode, fixture=None, *, extra_flags=(), restart=False, shutdown_timeout=8):
++def node(args, location, mode, fixture=None, *, extra_flags=(), restart=False, shutdown_timeout=8, extra_env=None):
+     if restart:
+         if not location.is_dir():
+             raise ValueError("Expected an existing, owned test data directory")
+@@ -100,6 +100,8 @@
+     env["XDG_CONFIG_HOME"] = str(location / "gui-config")
+     env["XDG_DATA_HOME"] = str(location / "gui-data")
+     env["CFFIXED_USER_HOME"] = str(location)
++    if extra_env is not None:
++        env.update(extra_env)
+     if args.gui and platform.system() == "Linux" and "QT_QPA_PLATFORM" not in env:
+         env["QT_QPA_PLATFORM"] = "xcb"
+     started = time.monotonic()
