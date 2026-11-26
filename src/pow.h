@@ -77,10 +77,17 @@ class HeaderPoWVerifier {
 
 public:
     explicit HeaderPoWVerifier(int workers);
+#if defined(__APPLE__) && defined(__aarch64__)
+    HeaderPoWVerifier(int workers, bool network);
+#endif
     ~HeaderPoWVerifier();
     HeaderPoWVerifier(const HeaderPoWVerifier&) = delete;
     HeaderPoWVerifier& operator=(const HeaderPoWVerifier&) = delete;
     bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params);
+#if defined(__APPLE__) && defined(__aarch64__)
+    bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params,
+               bool established_presync);
+#endif
     /** Check every header once, including on warm-cache hits; used for startup block-index validation. */
     // Background historical scans persist evidence on disk instead of filling the RAM cache.
     bool CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params, bool cache_result = true);

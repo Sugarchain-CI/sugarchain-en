@@ -2026,7 +2026,12 @@ PeerManagerImpl::PeerManagerImpl(CConnman& connman, AddrMan& addrman,
       m_txdownloadman(node::TxDownloadOptions{pool, m_rng, opts.deterministic_rng}),
       m_warnings{warnings},
       m_opts{opts},
+#if defined(__APPLE__) && defined(__aarch64__)
+      m_header_pow_verifier{m_chainparams.GetConsensus().fYespowerSugar ? opts.header_pow_workers : 1,
+                            /*network=*/m_chainparams.GetChainType() == ChainType::MAIN}
+#else
       m_header_pow_verifier{m_chainparams.GetConsensus().fYespowerSugar ? opts.header_pow_workers : 1}
+#endif
 {
     // While Erlay support is incomplete, it must be enabled explicitly via -txreconciliation.
     // This argument can go away after Erlay support is complete.
@@ -2640,7 +2645,13 @@ bool PeerManagerImpl::CheckHeadersPoW(const std::vector<CBlockHeader>& headers, 
         }
     }
     // Do these headers have proof-of-work matching what's claimed?
+#if defined(__APPLE__) && defined(__aarch64__)
+    const bool established_presync = WITH_LOCK(peer.m_headers_sync_mutex, return peer.m_headers_sync &&
+        peer.m_headers_sync->GetState() == HeadersSyncState::State::PRESYNC);
+    if (!m_header_pow_verifier.Check(headers, m_chainparams.GetConsensus(), established_presync)) {
+#else
     if (!m_header_pow_verifier.Check(headers, m_chainparams.GetConsensus())) {
+#endif
         Misbehaving(peer, "header with invalid proof of work");
         return false;
     }

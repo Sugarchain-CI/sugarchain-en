@@ -42,6 +42,12 @@
 #include <vector>
 #include <deque>
 
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <util/ordered_check_window.h>
+
+#include <future>
+#endif
+
 namespace {
 class StartupUINotifications final : public kernel::Notifications {
 public:
@@ -1356,6 +1362,113 @@ BOOST_AUTO_TEST_CASE(mainnet_batch_evidence_after_individual_cache_pressure)
     do { ++changed.nNonce; } while (CheckProofOfWorkImpl(changed.GetPoWHash(), changed.nBits, consensus));
     BOOST_CHECK(!verifier.Check(std::span{headers}.first(2000), consensus));
 }
+
+#if defined(__APPLE__) && defined(__aarch64__)
+using WindowResult = std::optional<std::exception_ptr>;
+using WindowJob = std::function<WindowResult()>;
+
+BOOST_AUTO_TEST_CASE(apple_ordered_checks_bound_unresolved_work)
+{
+    util::OrderedCheckWindow<WindowJob, 8> window{8};
+    std::atomic_size_t admitted{0}, later_started{0};
+    std::promise<void> release_head, later_started_all;
+    auto head{release_head.get_future()};
+    auto later{later_started_all.get_future()};
+    auto check{std::async(std::launch::async, [&] {
+        return window.Run([&]() -> std::optional<WindowJob> {
+            const size_t index{admitted++};
+            if (index == 25) return std::nullopt;
+            return WindowJob{[&, index]() -> WindowResult {
+                if (index == 0) {
+                    head.wait();
+                    return std::exception_ptr{};
+                }
+                if (++later_started == 7) later_started_all.set_value();
+                return std::nullopt;
+            }};
+        });
+    })};
+    const bool filled{later.wait_for(std::chrono::seconds{5}) == std::future_status::ready};
+    const size_t while_blocked{admitted.load()};
+    release_head.set_value();
+    BOOST_CHECK(!check.get());
+    BOOST_CHECK(filled);
+    BOOST_CHECK_EQUAL(while_blocked, 8U);
+    BOOST_CHECK_EQUAL(admitted.load(), 8U);
+}
+
+BOOST_AUTO_TEST_CASE(apple_ordered_checks_drain_and_reuse_after_failure)
+{
+    util::OrderedCheckWindow<WindowJob, 8> window{2};
+    std::promise<void> release_head, later_entered;
+    auto head{release_head.get_future()};
+    auto later{later_entered.get_future()};
+    std::atomic_bool head_finished{false};
+    size_t admitted{0};
+    auto check{std::async(std::launch::async, [&] {
+        return window.Run([&]() -> std::optional<WindowJob> {
+            if (admitted++ == 0) {
+                return WindowJob{[&]() -> WindowResult {
+                    head.wait();
+                    head_finished = true;
+                    throw std::runtime_error{"proof worker failure"};
+                }};
+            }
+            return WindowJob{[&]() -> WindowResult {
+                later_entered.set_value();
+                return std::exception_ptr{};
+            }};
+        });
+    })};
+    const bool overlapped{later.wait_for(std::chrono::seconds{5}) == std::future_status::ready};
+    const bool still_running{check.wait_for(std::chrono::seconds{0}) != std::future_status::ready};
+    release_head.set_value();
+    BOOST_CHECK_EXCEPTION(check.get(), std::runtime_error, [](const std::runtime_error& error) {
+        return std::string{error.what()} == "proof worker failure";
+    });
+    BOOST_CHECK(overlapped);
+    BOOST_CHECK(still_running);
+    BOOST_CHECK(head_finished.load());
+    BOOST_CHECK_EQUAL(admitted, 2U);
+
+    BOOST_CHECK_THROW(window.Run([]() -> std::optional<WindowJob> {
+        throw std::runtime_error{"refill failure"};
+    }), std::runtime_error);
+    size_t remaining{5};
+    BOOST_CHECK(window.Run([&]() -> std::optional<WindowJob> {
+        if (remaining == 0) return std::nullopt;
+        --remaining;
+        return WindowJob{[]() -> WindowResult { return std::nullopt; }};
+    }));
+    BOOST_CHECK_EQUAL(remaining, 0U);
+}
+
+BOOST_AUTO_TEST_CASE(apple_network_presync_validates_cold_and_cached_proofs)
+{
+    CacheBudget budget{1 << 20};
+    DataStream stream{test::data::sugarchain_headers};
+    std::vector<CBlockHeader> headers(25);
+    for (auto& header : headers) stream >> header;
+    const auto& consensus{main->GetConsensus()};
+    auto invalid{headers};
+    auto& changed{invalid[9]};
+    do {
+        ++changed.nNonce;
+    } while (CheckProofOfWorkImpl(changed.GetPoWHash(), changed.nBits, consensus));
+
+    HeaderPoWVerifier verifier{8, /*network=*/true};
+    // Exercise a fixed cohort before the peer enters PRESYNC.
+    BOOST_REQUIRE(verifier.Check(std::span{headers}.first(3), consensus,
+                                 /*established_presync=*/false));
+    // Mix noncontiguous warm cache entries with cold checks in the window.
+    BOOST_REQUIRE(verifier.Check(std::span{headers}.subspan(4, 1), consensus,
+                                 /*established_presync=*/false));
+    BOOST_REQUIRE(!verifier.Check(invalid, consensus, /*established_presync=*/true));
+    BOOST_REQUIRE(verifier.Check(headers, consensus, /*established_presync=*/true));
+    BOOST_CHECK(verifier.Check(headers, consensus, /*established_presync=*/false));
+    BOOST_CHECK(!verifier.Check(invalid, consensus, /*established_presync=*/false));
+}
+#endif
 
 #ifdef ENABLE_YESPOWER_TEST_WRAP
 BOOST_AUTO_TEST_CASE(local_worker_failure_reaches_caller_without_poisoning_queue)
