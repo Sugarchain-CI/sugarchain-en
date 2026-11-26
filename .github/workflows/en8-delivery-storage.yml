@@ -1,0 +1,112 @@
+name: Native Mainnet delivery and storage investigation
+'on':
+  push:
+    branches:
+    - diagnostics/en8-delivery-storage
+    paths:
+    - .github/workflows/en8-delivery-storage.yml
+permissions:
+  contents: read
+jobs:
+  delivery:
+    name: ${{ matrix.target }} real Mainnet delivery
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - target: ucrt
+          runner: windows-2025
+          python: py -3
+        - target: msvcrt
+          runner: windows-2025
+          python: py -3
+        - target: macos-arm64
+          runner: macos-15
+          python: python3
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Test the same En.7 binary and Mainnet fixture under mirrored IBD ceilings
+      shell: bash
+      env:
+        TARGET: ${{ matrix.target }}
+      run: ${{ matrix.python }} -B .github/mainnet-delivery/run-mainnet-delivery.py --target "$TARGET" --fixture .github/mainnet-delivery/mainnet-blocks.dat.gz --fixture-info .github/mainnet-delivery/fixture.json --output "$RUNNER_TEMP/en8-mainnet-delivery"
+    - name: Retain results and owned-node logs
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: mainnet-delivery-${{ matrix.target }}
+        path: '${{ runner.temp }}/en8-mainnet-delivery/delivery/result.json
+
+          ${{ runner.temp }}/en8-mainnet-delivery/delivery/*/debug.log
+
+          ${{ runner.temp }}/en8-mainnet-delivery/delivery/*/console.log
+
+          '
+        if-no-files-found: error
+        retention-days: 14
+  apple-mainnet-profile:
+    name: Apple Silicon released-node stack profile
+    runs-on: macos-15
+    timeout-minutes: 8
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Sample isolated cold Mainnet verification
+      shell: bash
+      run: bash .github/mainnet-audit/apple-mainnet-profile/run-native-profile.sh "$RUNNER_TEMP/apple-mainnet-profile"
+    - name: Retain native profile and host topology
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: apple-mainnet-released-profile
+        path: '${{ runner.temp }}/apple-mainnet-profile/host/
+
+          ${{ runner.temp }}/apple-mainnet-profile/results/
+
+          '
+        if-no-files-found: warn
+        retention-days: 14
+  leveldb-native:
+    name: Native synthetic block-index storage on ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - name: Windows-x86-64
+          runner: windows-2025
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Check out exact production LevelDB
+      uses: actions/checkout@v6
+      with:
+        repository: decryp2kanon/sugarchain-en
+        ref: 496f41971274712a98f45d1f0d49c796788aaf49
+        path: audited-source
+        persist-credentials: false
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+    - name: Run all six native storage cases
+      shell: bash
+      run: python -B .github/leveldb-probe/run_native.py --source audited-source --output "$RUNNER_TEMP/leveldb-native"
+    - name: Retain measurements without synthetic database files
+      uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: block-index-storage-${{ matrix.name }}
+        path: '${{ runner.temp }}/leveldb-native/evidence/**
+
+          !${{ runner.temp }}/leveldb-native/evidence/**/synthetic-index/**
+
+          '
+        retention-days: 14
+        if-no-files-found: error

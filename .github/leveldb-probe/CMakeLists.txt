@@ -1,0 +1,33 @@
+cmake_minimum_required(VERSION 3.22)
+project(sugarchain_index_storage_probe LANGUAGES CXX)
+set(SUGARCHAIN_SOURCE "" CACHE PATH "Exact Sugarchain source checkout")
+if(NOT EXISTS "${SUGARCHAIN_SOURCE}/cmake/leveldb.cmake")
+  message(FATAL_ERROR "Set SUGARCHAIN_SOURCE to the checked-out release source")
+endif()
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+list(APPEND CMAKE_MODULE_PATH "${SUGARCHAIN_SOURCE}/cmake/module")
+include(TryAppendCXXFlags)
+include(CheckCXXSymbolExists)
+check_cxx_symbol_exists(fdatasync "unistd.h" HAVE_FDATASYNC)
+check_cxx_symbol_exists(O_CLOEXEC "fcntl.h" HAVE_O_CLOEXEC)
+
+# Reuse the actual vendored objects and source configuration. This standalone
+# diagnostic substitutes only the rest of the application's build interface.
+add_library(core_interface INTERFACE)
+set(benchmark_project_source "${PROJECT_SOURCE_DIR}")
+set(PROJECT_SOURCE_DIR "${SUGARCHAIN_SOURCE}")
+include("${SUGARCHAIN_SOURCE}/cmake/crc32c.cmake")
+include("${SUGARCHAIN_SOURCE}/cmake/leveldb.cmake")
+set(PROJECT_SOURCE_DIR "${benchmark_project_source}")
+find_package(Threads REQUIRED)
+target_link_libraries(core_interface INTERFACE Threads::Threads)
+
+add_executable(block-index-db-probe block-index-db-probe.cpp)
+target_link_libraries(block-index-db-probe PRIVATE leveldb)
+if(WIN32)
+  target_compile_definitions(block-index-db-probe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_link_libraries(block-index-db-probe PRIVATE Psapi)
+endif()
