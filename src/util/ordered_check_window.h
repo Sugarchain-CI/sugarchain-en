@@ -40,7 +40,7 @@ class OrderedCheckWindow
     using Result = std::optional<std::exception_ptr>;
     using Lock = std::unique_lock<std::mutex>;
 
-    const size_t m_limit;
+    const size_t m_pending_limit;
     std::mutex m_call_mutex;
     std::mutex m_mutex;
     std::condition_variable m_changed;
@@ -80,8 +80,8 @@ class OrderedCheckWindow
     void Refill()
     {
         // Only the contiguous successful prefix frees capacity. An unresolved
-        // check at k leaves at most m_limit - 1 later jobs admitted.
-        while (!m_exhausted && !m_failure && m_admitted - m_retired < m_limit) {
+        // check at k leaves at most m_pending_limit - 1 later jobs admitted.
+        while (!m_exhausted && !m_failure && m_admitted - m_retired < m_pending_limit) {
             try {
                 auto job{m_next()};
                 if (!job) {
@@ -148,12 +148,14 @@ class OrderedCheckWindow
     }
 
 public:
-    explicit OrderedCheckWindow(size_t participants, const std::function<void(size_t)>& name_worker = {})
-        : m_limit{std::clamp(participants, size_t{1}, Capacity)}
+    /** The pending limit counts every check outside the verified prefix. */
+    OrderedCheckWindow(size_t participants, size_t pending_limit, const std::function<void(size_t)>& name_worker = {})
+        : m_pending_limit{std::clamp(pending_limit, size_t{1}, Capacity)}
     {
-        m_workers.reserve(m_limit - 1);
+        const size_t worker_count{std::clamp(participants, size_t{1}, m_pending_limit) - 1};
+        m_workers.reserve(worker_count);
         try {
-            for (size_t i{0}; i < m_limit - 1; ++i) {
+            for (size_t i{0}; i < worker_count; ++i) {
                 m_workers.emplace_back([this, name_worker, i] {
                     try {
                         if (name_worker) name_worker(i);

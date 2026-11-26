@@ -579,9 +579,9 @@ struct HeaderPoWVerifier::Impl {
         : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)}
     {
         if (network) {
-            network_window = std::make_unique<NetworkWindow>(size_t(workers), [](size_t i) {
-                util::ThreadRename(strprintf("powch.%u", i));
-            });
+            network_window = std::make_unique<NetworkWindow>(
+                size_t(workers), MAX_HEADER_POW_WORKERS,
+                [](size_t i) { util::ThreadRename(strprintf("powch.%u", i)); });
         } else {
             queue = std::make_unique<CCheckQueue<HeaderPoWCheck>>(1, workers - 1, "powch");
         }
