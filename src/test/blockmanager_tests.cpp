@@ -101,6 +101,10 @@ struct BlockManagerTestAccess {
     {
         return manager.FlushBlockFile(file_num, /*fFinalize=*/true, /*finalize_undo=*/false);
     }
+    static BlockManager::ReadRawBlockResult Reopen(const BlockManager& manager, const FlatFilePos& pos)
+    {
+        return manager.ReadRawBlockImpl(pos, std::nullopt);
+    }
 };
 } // namespace node
 
@@ -591,7 +595,11 @@ BOOST_FIXTURE_TEST_CASE(windows_mainnet_block_reader_append_seeks_and_short_read
     DataStream second_expected;
     second_expected << TX_WITH_WITNESS(block);
     const auto appended{blockman.ReadRawBlock(second)};
-    BOOST_REQUIRE(appended);
+    if (!appended) {
+        const auto reopened{Access::Reopen(blockman, second)};
+        BOOST_REQUIRE_MESSAGE(appended, "Cached append read failed. Reopened file matched appended bytes: "
+                                           << (reopened && std::ranges::equal(*reopened, second_expected)));
+    }
     BOOST_CHECK(std::ranges::equal(*appended, second_expected));
     BOOST_CHECK_EQUAL(Access::ReadFile(blockman), second.nFile);
 
