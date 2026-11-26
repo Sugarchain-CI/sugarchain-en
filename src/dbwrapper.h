@@ -45,7 +45,7 @@ struct DBParams {
     bool obfuscate = false;
     //! Passed-through options.
     DBOptions options{};
-    //! Release inactive read-table mappings and clean file cache (Linux only).
+    //! Bound inactive read-table mappings. On Linux, also advise reclaiming clean file cache.
     bool reclaim_read_cache = false;
 };
 
