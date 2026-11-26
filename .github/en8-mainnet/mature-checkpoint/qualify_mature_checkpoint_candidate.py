@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from types import SimpleNamespace
+from typing import NamedTuple
 from urllib.error import HTTPError
 from urllib.request import ProxyHandler, build_opener, install_opener
 
@@ -32,6 +33,8 @@ from mainnet_probe import node, rpc
 from mainnet_warm import make_rpc_request, read_rpc_response
 
 CACHE_MARKER = "LevelDB bounded block index table cache enabled on Windows x64 (table_cache=0)."
+WINDOWS_CACHE_PREFIX = "LevelDB bounded block index table cache enabled on Windows x64"
+HISTORY_SECONDS = 60
 MAX_ACTIVE_RAM = 16 << 30
 RUNTIME_SOURCE = "85383ffc382a7984c42467f6fa3c545db7ee392d"
 RUNTIME_TREE = "23893fa2c7126699f9c33bf35716159656da9447"
@@ -147,10 +150,21 @@ def verify_windows_pe(path):
               status, "Selected Windows daemon is not AMD64 PE32+")
 
 
-def runtime_binary(args, output):
+class CacheRuntime(NamedTuple):
+    source: str
+    tree: str
+    binary_sha256: str | None
+    marker: str | None
+    choice: str
+
+
+def runtime_binary(args, output, runtime=None):
     guard(platform.system() == "Windows" and platform.machine().lower() in {"amd64", "x86_64"},
           "native_host_inconclusive", "Native Windows x86-64 is required")
-    metadata = release_input(args.runtime, RUNTIME_SOURCE, RUNTIME_TREE)
+    if runtime is None:
+        metadata = release_input(args.runtime, RUNTIME_SOURCE, RUNTIME_TREE)
+    else:
+        metadata = release_input(args.runtime, runtime.source, runtime.tree, runtime.binary_sha256)
     verify_windows_pe(Path(metadata["binary"]))
     return metadata
 
@@ -187,6 +201,49 @@ def long_rpc(profile, port, method, params, deadline, timeout_status):
     guard(result.get("error") is None and result.get("id") == "checkpoint-qualification",
           "rpc_failure_inconclusive", f"{method} did not return a verified result")
     return result["result"]
+
+
+def history_counters(profile, port, deadline, *, wait_for_start=False):
+    while True:
+        result = long_rpc(profile, port, "getblockchaininfo", [], deadline, "history_rpc_timeout")
+        guard(result["chain"] == "main" and result["blocks"] == CHECKPOINT["height"]
+              and result["bestblockhash"] == CHECKPOINT["hash"], "history_tip_mismatch", "Historical scan changed the checkpoint tip")
+        counters = result["historicalpow"]
+        if not wait_for_start or counters["state"] != "disabled":
+            break
+        # AppInit releases RPC warmup immediately before starting the scanner.
+        time.sleep(0.05)
+    guard(counters["state"] in {"running", "complete"} and all(
+        type(counters[key]) is int and counters[key] >= 0 for key in ("checked", "reused", "verified", "total")
+    ), "history_counters_unavailable", "Invalid or inactive historical proof statistics")
+    return {key: counters[key] for key in ("state", "checked", "reused", "verified", "total", "historical_trust")}
+
+
+def history_window(profile, port, proc, resources, overall):
+    deadline = stage_deadline(overall, HISTORY_SECONDS + 10, "history_window_timeout")
+    before = history_counters(profile, port, min(deadline, time.monotonic() + 4), wait_for_start=True)
+    cpu_before, rss_before = resources.sample(proc)
+    begin = time.monotonic()
+    guard(begin + HISTORY_SECONDS < deadline, "history_window_timeout", "Insufficient budget for the complete historical scan interval")
+    try:
+        proc.wait(timeout=HISTORY_SECONDS)
+    except subprocess.TimeoutExpired:
+        pass
+    else:
+        raise QualificationError("history_process_exit", "Checkpoint process stopped during the historical scan interval")
+    after = history_counters(profile, port, deadline)
+    cpu_after, rss_after = resources.sample(proc)
+    elapsed = time.monotonic() - begin
+    delta = {key: after[key] - before[key] for key in ("checked", "reused", "verified")}
+    guard(HISTORY_SECONDS <= elapsed and time.monotonic() < deadline and cpu_after >= cpu_before
+          and all(value >= 0 for value in delta.values()), "history_interval_inconclusive",
+          "Incomplete historical scan interval or counters moved backwards")
+    return {
+        "planned_seconds": HISTORY_SECONDS, "elapsed_seconds": elapsed,
+        "before": before, "after": after, "committed_delta": delta,
+        "process_cpu_seconds": cpu_after - cpu_before, "rss_start_bytes": rss_before, "rss_end_bytes": rss_after,
+        "checked_rows_per_second": delta["checked"] / elapsed,
+    }
 
 
 def new_log_text(path, begin, end=None):
@@ -279,7 +336,7 @@ def summarize_resources(report, timeline):
     }
 
 
-def run(args):
+def run(args, *, runtime=None, profile=None):
     install_opener(build_opener(ProxyHandler({})))
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
@@ -290,14 +347,19 @@ def run(args):
         "passes": [], "first_pass_os_cache": "not reset after extraction and startup", "fast_startup": 1,
         "assumevalid": 0, "networkactive": False, "prune": "manual", "scope": "candidate-only Windows mature checkpoint capacity and level-4 qualification",
     }
+    if runtime is not None:
+        report.update(cache_choice=runtime.choice, scope="same-host Windows mature checkpoint and historical scan comparison",
+                      first_pass_os_cache="follows the fixed historical scan interval after extraction and startup",
+                      foreground_pow_workers=8, background_pow_workers=8, background_pow_pause_ms=0)
     persist(result, report)
     overall = time.monotonic() + max(0, args.deadline_epoch - time.time())
-    profile = output / "node"
+    if profile is None:
+        profile = output / "node"
     debug = profile / "debug-restart.log"
     timeline = output / "resources.jsonl"
     process = None
     try:
-        report["binary"] = runtime_binary(args, output)
+        report["binary"] = runtime_binary(args, output, runtime)
         resources = Resources()
         ram = memory_state()["physical_bytes"]
         report["detected_physical_ram_bytes"] = ram
@@ -313,6 +375,8 @@ def run(args):
 
         flags = ("-networkactive=0", "-connect=0", "-dnsseed=0", "-fixedseeds=0", "-dns=0", "-proxy=0",
                  "-assumevalid=0", "-fast-startup=1", "-prune=1", "-debug=bench")
+        if runtime is not None:
+            flags += ("-parpow=8", "-background-pow-workers=8", "-background-pow-pause=0")
         variant = SimpleNamespace(binary=Path(report["binary"]["binary"]), gui=False)
         report["phase"] = "startup"
         persist(result, report)
@@ -335,14 +399,19 @@ def run(args):
                 guard(network and network["networkactive"] is False and rpc(profile, port, "getpeerinfo") == [],
                       "isolation_failure", "Fixture process is not isolated")
                 startup_log = new_log_text(debug, 0)
-                activations = startup_log.count(CACHE_MARKER)
+                expected = CACHE_MARKER if runtime is None else runtime.marker
+                activations = startup_log.count(WINDOWS_CACHE_PREFIX)
                 report["block_index_table_cache_activation"] = {
-                    "expected_log": CACHE_MARKER, "observed_count": activations, "detected_ram_bytes": ram,
+                    "expected_log": expected, "observed_count": activations, "detected_ram_bytes": ram,
                 }
-                guard(activations == 1, "windows_low_ram_cache_activation_failure",
-                      "Expected exactly one low-memory Mainnet block-index table-cache activation")
+                guard((activations == 0 if expected is None else activations == startup_log.count(expected) == 1),
+                      "windows_low_ram_cache_activation_failure", "Unexpected Mainnet block-index table-cache mode")
                 report["startup_lazy_pow"] = lazy_pow(startup_log)
                 report["fixture_pid"] = proc.pid
+                if runtime is not None:
+                    report["phase"] = "fixed_historical_scan"
+                    persist(result, report)
+                    report["historical_scan"] = history_window(profile, port, proc, resources, overall)
                 for label in ("first_after_start", "immediate_same_process_warm"):
                     report["phase"] = label
                     persist(result, report)

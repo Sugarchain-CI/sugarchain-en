@@ -1,4 +1,4 @@
-name: En8 Windows low-memory block-index table cache native qualification
+name: En8 Windows block-index table-cache comparison
 'on':
   push:
     branches:
@@ -13,6 +13,150 @@ defaults:
   run:
     shell: bash
 jobs:
+  windows-cross:
+    name: Windows-cross to x86_64, ${{ matrix.crt }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crt:
+        - msvcrt
+        - ucrt
+        include:
+        - crt: msvcrt
+          file-env: ./ci/test/00_setup_env_win64_msvcrt.sh
+          artifact-name: x86_64-w64-mingw32-executables
+        - crt: ucrt
+          file-env: ./ci/test/00_setup_env_win64.sh
+          artifact-name: x86_64-w64-mingw32ucrt-executables
+    env:
+      FILE_ENV: ${{ matrix.file-env }}
+      DANGER_CI_ON_HOST_FOLDERS: 1
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v6
+      with:
+        ref: 1ee8a457660ba1917e9ff7074fcbac900eacd242
+        persist-credentials: false
+        repository: Sugarchain-CI/sugarchain-en
+    - name: Verify pinned source revision
+      shell: bash
+      run: |
+        set -euo pipefail
+        actual=$(git rev-parse HEAD)
+        test "$actual" = "1ee8a457660ba1917e9ff7074fcbac900eacd242"
+        test "$(git rev-parse HEAD^{tree})" = "1c2425aa5dd7245a6317d887d83d4ea84c6f4c92"
+        printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"
+    - name: Check out pinned verification tools
+      uses: actions/checkout@v6
+      with:
+        repository: ${{ github.repository }}
+        ref: ${{ github.sha }}
+        path: release-tools
+        persist-credentials: false
+    - name: Configure environment
+      uses: ./.github/actions/configure-environment
+    - name: Restore caches
+      id: restore-cache
+      uses: ./.github/actions/cache/restore
+      with:
+        provider: gha
+    - name: Restore branch depends cache
+      id: branch-depends
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ env.BASE_CACHE }}
+        key: en8-win-${{ matrix.crt }}-depends-${{ env.DEPENDS_HASH }}
+    - name: Restore branch compiler cache
+      id: branch-compiler
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: en8-win-${{ matrix.crt }}-compiler-${{ env.DEPENDS_HASH }}-${{ github.run_id }}
+        restore-keys: en8-win-${{ matrix.crt }}-compiler-${{ env.DEPENDS_HASH }}-
+    - name: Configure Docker
+      uses: ./.github/actions/configure-docker
+      with:
+        provider: gha
+    - name: CI script
+      run: |
+        set -euo pipefail
+        source ./ci/test/00_setup_env.sh
+        export BITCOIN_CONFIG="$BITCOIN_CONFIG -DBUILD_BENCH=OFF -DBUILD_FUZZ_BINARY=OFF -DBUILD_GUI_TESTS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+        python3 ./ci/test/02_run_container.py
+    - name: Verify Windows release code generation
+      shell: bash
+      run: python3 release-tools/.github/en8-mainnet/check-windows-codegen.py "$BASE_BUILD_DIR/compile_commands.json" "$BASE_BUILD_DIR/codegen.json" ${{
+        matrix.crt }}
+    - name: Record package inputs
+      run: |
+        set -euo pipefail
+        git rev-parse HEAD > "$BASE_BUILD_DIR/release-source-sha.txt"
+        git rev-parse "HEAD^{tree}" > "$BASE_BUILD_DIR/release-source-tree.txt"
+        cd "$BASE_BUILD_DIR"
+        test "$(basename "$(cat windows-installer-path.txt)")" = "Sugarchain-En-31.1.2-win64-setup.exe"
+        sha256sum -- bin/sugarchain.exe bin/sugarchain-qt.exe bin/sugarchaind.exe bin/sugarchain-cli.exe bin/sugarchain-wallet.exe bin/sugarchain-tx.exe bin/sugarchain-util.exe Sugarchain-En-31.1.2-win64-setup.exe windows-installer-path.txt release-source-sha.txt release-source-tree.txt > SHA256SUMS.release-inputs
+    - name: Retain Windows release inputs
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ matrix.artifact-name }}-release-${{ github.run_id }}
+        path: |-
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchain.exe
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchain-qt.exe
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchaind.exe
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchain-cli.exe
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchain-wallet.exe
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchain-tx.exe
+          ${{ env.BASE_BUILD_DIR }}/bin/sugarchain-util.exe
+          ${{ env.BASE_BUILD_DIR }}/Sugarchain-En-31.1.2-win64-setup.exe
+          ${{ env.BASE_BUILD_DIR }}/windows-installer-path.txt
+          ${{ env.BASE_BUILD_DIR }}/release-source-sha.txt
+          ${{ env.BASE_BUILD_DIR }}/release-source-tree.txt
+          ${{ env.BASE_BUILD_DIR }}/SHA256SUMS.release-inputs
+        if-no-files-found: error
+        retention-days: 14
+    - name: Retain Windows test inputs
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ matrix.artifact-name }}-test-${{ github.run_id }}
+        path: |-
+          ${{ env.BASE_BUILD_DIR }}/bin/*.dll
+          ${{ env.BASE_BUILD_DIR }}/bin/*.exe
+          ${{ env.BASE_BUILD_DIR }}/src/secp256k1/bin/*.exe
+          ${{ env.BASE_BUILD_DIR }}/src/univalue/*.exe
+          ${{ env.BASE_BUILD_DIR }}/test/config.ini
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchain.exe
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchain-qt.exe
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchaind.exe
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchain-cli.exe
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchain-wallet.exe
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchain-tx.exe
+          !${{ env.BASE_BUILD_DIR }}/bin/sugarchain-util.exe
+        if-no-files-found: error
+        retention-days: 7
+    - name: Save caches
+      uses: ./.github/actions/cache/save
+      with:
+        provider: gha
+    - name: Save branch depends cache
+      if: ${{ !cancelled() && steps.branch-depends.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ env.BASE_CACHE }}
+        key: en8-win-${{ matrix.crt }}-depends-${{ env.DEPENDS_HASH }}
+    - name: Save branch compiler cache
+      if: ${{ !cancelled() && steps.branch-compiler.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: en8-win-${{ matrix.crt }}-compiler-${{ env.DEPENDS_HASH }}-${{ github.run_id }}
+    - name: Retain Windows code generation evidence
+      uses: actions/upload-artifact@v7
+      with:
+        name: en8-codegen-${{ matrix.crt }}
+        path: ${{ env.BASE_BUILD_DIR }}/codegen.json
+        if-no-files-found: error
+    timeout-minutes: 90
   windows-native-test:
     name: Windows, ${{ matrix.crt }}, test cross-built
     runs-on: windows-2022
@@ -25,10 +169,8 @@ jobs:
         include:
         - crt: msvcrt
           artifact-name: x86_64-w64-mingw32-executables
-          release-manifest-sha256: 02b99dc64efc16dfa741101a4e83f9dd04c6f57b8b5328a6266789248c8f5736
         - crt: ucrt
           artifact-name: x86_64-w64-mingw32ucrt-executables
-          release-manifest-sha256: 1d00603b2ecceceae8209f5c973a4837571fb93a7b524310adadd62656983e70
     env:
       PYTHONUTF8: 1
       TEST_RUNNER_TIMEOUT_FACTOR: 40
@@ -36,7 +178,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v6
       with:
-        ref: 85383ffc382a7984c42467f6fa3c545db7ee392d
+        ref: 1ee8a457660ba1917e9ff7074fcbac900eacd242
         persist-credentials: false
         repository: Sugarchain-CI/sugarchain-en
     - name: Verify pinned source revision
@@ -44,8 +186,8 @@ jobs:
       run: |
         set -euo pipefail
         actual=$(git rev-parse HEAD)
-        test "$actual" = "85383ffc382a7984c42467f6fa3c545db7ee392d"
-        test "$(git rev-parse HEAD^{tree})" = "23893fa2c7126699f9c33bf35716159656da9447"
+        test "$actual" = "1ee8a457660ba1917e9ff7074fcbac900eacd242"
+        test "$(git rev-parse HEAD^{tree})" = "1c2425aa5dd7245a6317d887d83d4ea84c6f4c92"
         printf "Source SHA: %s\n" "$actual" >> "$GITHUB_STEP_SUMMARY"
     - name: Check out paired benchmark
       uses: actions/checkout@v6
@@ -60,19 +202,13 @@ jobs:
     - name: Download retained Windows release inputs
       uses: actions/download-artifact@v8
       with:
-        name: ${{ matrix.artifact-name }}-release-45896080962
-        run-id: '45896080962'
-        repository: Sugarchain-CI/sugarchain-en
-        github-token: ${{ github.token }}
+        name: ${{ matrix.artifact-name }}-release-${{ github.run_id }}
     - name: Verify downloaded package provenance
       shell: bash
-      env:
-        CANDIDATE_MANIFEST_SHA256: ${{ matrix.release-manifest-sha256 }}
       run: |
         set -euo pipefail
-        test "$(cat release-source-sha.txt)" = "85383ffc382a7984c42467f6fa3c545db7ee392d"
-        test "$(cat release-source-tree.txt)" = "23893fa2c7126699f9c33bf35716159656da9447"
-        printf '%s  %s\n' "$CANDIDATE_MANIFEST_SHA256" SHA256SUMS.release-inputs | sha256sum --check --strict
+        test "$(cat release-source-sha.txt)" = "1ee8a457660ba1917e9ff7074fcbac900eacd242"
+        test "$(cat release-source-tree.txt)" = "1c2425aa5dd7245a6317d887d83d4ea84c6f4c92"
         sha256sum --check --strict SHA256SUMS.release-inputs
       id: verified_candidate
     - name: Verify native AMD64 daemon, CLI and GUI package members
@@ -89,13 +225,9 @@ jobs:
     - name: Download retained Windows test inputs
       uses: actions/download-artifact@v8
       with:
-        name: ${{ matrix.artifact-name }}-test-45896080962
-        run-id: '45896080962'
-        repository: Sugarchain-CI/sugarchain-en
-        github-token: ${{ github.token }}
+        name: ${{ matrix.artifact-name }}-test-${{ github.run_id }}
     - name: Verify shared Windows GUI and daemon data paths
-      run: py -3 .github/ci-native-datadir.py --daemon bin/sugarchaind.exe --gui bin/sugarchain-qt.exe --cli bin/sugarchain-cli.exe
-        --workdir "$RUNNER_TEMP/en-native-datadir"
+      run: py -3 .github/ci-native-datadir.py --daemon bin/sugarchaind.exe --gui bin/sugarchain-qt.exe --cli bin/sugarchain-cli.exe --workdir "$RUNNER_TEMP/en-native-datadir"
     - name: Run sugarchaind.exe
       run: py -3 .github/ci-windows-cross.py print_version
     - name: Import Visual Studio env vars
@@ -107,8 +239,7 @@ jobs:
     - name: Run native network, GUI and wallet smoke checks
       run: py -3 .github/ci-windows-smoke.py --bindir bin --work-dir "${RUNNER_TEMP}/en-cross-smoke-${{ matrix.crt }}"
     - name: Reopen a saved wallet in the native GUI
-      run: py -3 .github/ci-windows-smoke.py --verify-wallet-restart --bindir bin --work-dir "${RUNNER_TEMP}/en-cross-wallet-restart-${{
-        matrix.crt }}"
+      run: py -3 .github/ci-windows-smoke.py --verify-wallet-restart --bindir bin --work-dir "${RUNNER_TEMP}/en-cross-wallet-restart-${{ matrix.crt }}"
     - name: Verify installed applications and installer lifecycle
       run: |
         py -3 .github/ci-windows-installer.py --with-wallet-restart \
@@ -118,8 +249,8 @@ jobs:
       run: bin/test_bitcoin.exe --run_test=blockmanager_tests,dbwrapper_tests,wallet_tests,scheduler_tests,validationinterface_tests,crypto_tests,pow_tests,header_pow_tests,policyestimator_tests,peerman_tests,caches_tests,chainstate_write_tests,headers_sync_chainwork_tests
         --log_level=test_suite
     - name: Run Windows block storage functional tests
-      run: py -3 test/functional/test_runner.py -j 2 --timeout-factor=8 --tmpdirprefix="$RUNNER_TEMP" feature_blocksdir.py
-        feature_blocksxor.py feature_fastprune.py feature_reindex_readonly.py mining_sugarchain_regtest.py
+      run: py -3 test/functional/test_runner.py -j 2 --timeout-factor=8 --tmpdirprefix="$RUNNER_TEMP" feature_blocksdir.py feature_blocksxor.py feature_fastprune.py
+        feature_reindex_readonly.py mining_sugarchain_regtest.py
     - name: Run native Mainnet presync protocol cases
       timeout-minutes: 8
       shell: bash
@@ -219,8 +350,6 @@ jobs:
           ${{ runner.temp }}/en8-low-ram-body/**/console.log
         if-no-files-found: warn
         retention-days: 14
-    - name: Set shared run deadline
-      run: echo "CHECKPOINT_DEADLINE=$(( $(date +%s) + 810 ))" >> "$GITHUB_ENV"
     - name: Load pinned public checkpoint manifest
       timeout-minutes: 2
       env:
@@ -235,6 +364,7 @@ jobs:
         python -B release-tools/.github/en8-mainnet/mature-checkpoint/checkpoint_fixture.py \
           --manifest "$RUNNER_TEMP/checkpoint-input/manifest.json" \
           --manifest-sha256 "$MANIFEST_SHA" --output "$RUNNER_TEMP/checkpoint-preflight"
+      if: ${{ matrix.crt == 'ucrt' }}
     - name: Download approved public checkpoint parts once
       timeout-minutes: 6
       env:
@@ -248,29 +378,46 @@ jobs:
         done < "$RUNNER_TEMP/checkpoint-preflight/parts.txt"
         gh release download --repo Sugarchain-CI/sugarchain-en "${args[@]}" \
           --dir "$RUNNER_TEMP/checkpoint-input" -- "$FIXTURE_TAG"
-    - name: Qualify candidate-only mature Mainnet capacity and Windows startup memory
-      timeout-minutes: 14
-      env:
-        MANIFEST_SHA: 234d86232dc76cc86045b0f6cba2988a140562a112ecbbb454e82fa3f20a30f3
-        TARGET: windows-${{ matrix.crt }}
+      if: ${{ matrix.crt == 'ucrt' }}
+    - name: Download exact zero-table UCRT package
+      if: ${{ matrix.crt == 'ucrt' }}
+      uses: actions/download-artifact@v8
+      with:
+        name: x86_64-w64-mingw32ucrt-executables-release-45896080962
+        run-id: '45896080962'
+        repository: Sugarchain-CI/sugarchain-en
+        github-token: ${{ github.token }}
+        path: cache-zero
+    - name: Verify exact zero-table UCRT package manifest
+      if: ${{ matrix.crt == 'ucrt' }}
       run: |
         set -euo pipefail
-        python -B release-tools/.github/en8-mainnet/mature-checkpoint/qualify_mature_checkpoint_candidate.py \
-          --runtime . --target "$TARGET" --fixture "$RUNNER_TEMP/checkpoint-input" \
-          --manifest-name manifest.json --fixture-manifest-sha256 "$MANIFEST_SHA" \
-          --deadline-epoch "$CHECKPOINT_DEADLINE" --output "$RUNNER_TEMP/checkpoint-qualification"
-    - name: Retain bounded qualification evidence
-      if: always()
+        cd cache-zero
+        printf '%s  %s\n' 1d00603b2ecceceae8209f5c973a4837571fb93a7b524310adadd62656983e70 SHA256SUMS.release-inputs | sha256sum --check --strict
+        sha256sum --check --strict SHA256SUMS.release-inputs
+    - name: Run the six scheduled UCRT cache comparisons
+      if: ${{ matrix.crt == 'ucrt' }}
+      timeout-minutes: 50
+      run: |
+        set -euo pipefail
+        python -B release-tools/.github/en8-mainnet/mature-checkpoint/qualify_windows_table_cache.py \
+          --default-runtime baseline-9c --zero-runtime cache-zero --bounded32-runtime . \
+          --fixture "$RUNNER_TEMP/checkpoint-input" --scratch "$RUNNER_TEMP" --output "$RUNNER_TEMP/cache-comparison"
+    - name: Retain UCRT cache comparison evidence
+      if: ${{ !cancelled() && matrix.crt == 'ucrt' }}
       uses: actions/upload-artifact@v7
       with:
-        name: en8-win-cache-mature-capacity-${{ matrix.crt }}
+        name: en8-win-table-cache-comparison-ucrt
         path: |
           ${{ runner.temp }}/checkpoint-preflight/preflight.json
-          ${{ runner.temp }}/checkpoint-qualification/result.json
-          ${{ runner.temp }}/checkpoint-qualification/resources.jsonl
-          ${{ runner.temp }}/checkpoint-qualification/windows-startup-memory.json
-          ${{ runner.temp }}/checkpoint-qualification/node/debug-restart.log
-          ${{ runner.temp }}/checkpoint-qualification/node/console-restart.log
-        if-no-files-found: warn
+          ${{ runner.temp }}/cache-comparison/sequence.json
+          ${{ runner.temp }}/cache-comparison/*/result.json
+          ${{ runner.temp }}/cache-comparison/*/resources.jsonl
+          ${{ runner.temp }}/cache-comparison/*/windows-startup-memory.json
+          ${{ runner.temp }}/cache-comparison/*/logs.json
+          ${{ runner.temp }}/cache-comparison/*/debug-restart.log.gz
+          ${{ runner.temp }}/cache-comparison/*/console-restart.log.gz
         retention-days: 14
+        if-no-files-found: warn
     timeout-minutes: 90
+    needs: windows-cross
