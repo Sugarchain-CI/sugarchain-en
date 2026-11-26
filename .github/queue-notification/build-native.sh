@@ -16,7 +16,7 @@ case "$platform" in
         cc=(xcrun clang)
         cxx=(xcrun clang++)
         flags=(-arch arm64 -mcpu=apple-m1 -O3 -flto=thin -DNDEBUG -mmacosx-version-min=14.0)
-        link=()
+        link=(-pthread)
         executable="$work/queue-proofs"
         ;;
     windows-x64)
@@ -26,7 +26,7 @@ case "$platform" in
         cc=(gcc)
         cxx=(g++)
         flags=(-O2 -DNDEBUG)
-        link=(-static)
+        link=(-pthread -static)
         executable="$work/queue-proofs.exe"
         ;;
     *) exit 2 ;;
@@ -37,7 +37,7 @@ mkdir -p "$work"
     uname -a
     "${cc[@]}" --version
     "${cxx[@]}" --version
-    git -C "$source_dir" rev-parse HEAD HEAD^{tree}
+    cat "$work/inputs.json"
     printf 'Compiler flags: %s\n' "${flags[*]}"
 } > "$work/compiler.txt"
 
@@ -45,7 +45,7 @@ if ! (
     set -x
     "${cc[@]}" "${flags[@]}" -std=gnu11 -I"$crypto" -c "$crypto/yespower-opt.c" -o "$work/yespower.o" &&
     "${cc[@]}" "${flags[@]}" -std=gnu11 -I"$crypto" -c "$crypto/sha256.c" -o "$work/sha256.o" &&
-    "${cxx[@]}" "${flags[@]}" -std=c++20 -pthread -I"$crypto" -I"$work" "$probe_dir/queue-proofs.cpp" \
+    "${cxx[@]}" "${flags[@]}" -std=c++20 -I"$crypto" -I"$work" "$probe_dir/queue-proofs.cpp" \
         "$work/yespower.o" "$work/sha256.o" "${link[@]}" -o "$executable"
 ) > "$work/build.log" 2>&1; then
     tail -n 55 "$work/build.log"
