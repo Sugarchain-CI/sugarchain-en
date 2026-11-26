@@ -2694,7 +2694,7 @@ bool PeerManagerImpl::CheckHeadersPoW(const std::vector<CBlockHeader>& headers, 
     auto lead_elapsed{0us};
     std::function<void()> after_first_proof;
     if (can_lead && established_presync) {
-        after_first_proof = [&] {
+        after_first_proof = [&]() EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) {
             const auto start{SteadyClock::now()};
             MaybeSendPresyncLead(pfrom, peer, headers, lead);
             lead_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(SteadyClock::now() - start);
