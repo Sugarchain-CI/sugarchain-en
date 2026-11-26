@@ -275,14 +275,18 @@ CDBWrapper::CDBWrapper(const DBParams& params)
     DBContext().syncoptions.sync = true;
     DBContext().options = GetOptions(params.cache_bytes);
     DBContext().options.create_if_missing = true;
-#ifdef __linux__
+#if defined(__linux__) || (defined(__APPLE__) && defined(__aarch64__))
     if (params.reclaim_read_cache && !params.memory_only) {
         // Bound retained table mappings; keep the caller's block/write cache budgets.
         DBContext().options.small_table_cache = true;
         DBContext().options.max_open_files = std::min(DBContext().options.max_open_files, 10);
+#ifdef __linux__
         DBContext().penv = new ReclaimingReadEnv;
         DBContext().options.env = DBContext().penv;
         LogDebug(BCLog::LEVELDB, "LevelDB inactive read-cache reclamation enabled (table_cache=0).\n");
+#else
+        LogInfo("LevelDB bounded block index table cache enabled on Apple Silicon (table_cache=0).");
+#endif
     }
 #endif
     if (params.memory_only) {

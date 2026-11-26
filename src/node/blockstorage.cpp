@@ -2144,7 +2144,9 @@ BlockManager::BlockManager(const util::SignalInterrupt& interrupt, Options opts)
       m_block_index{m_opts.startup_optimizations}
 {
     auto db_params{m_opts.block_tree_db_params};
+#if !defined(__APPLE__) || !defined(__aarch64__)
     db_params.reclaim_read_cache = m_opts.startup_optimizations;
+#endif
     m_block_tree_db = std::make_unique<BlockTreeDB>(db_params);
 
     if (m_opts.block_tree_db_params.wipe_data) {
