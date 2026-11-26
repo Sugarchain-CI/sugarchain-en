@@ -1,0 +1,109 @@
+name: En8 ordered proof queue notification experiment
+on:
+  push:
+    branches: [ci/en8-ordered-notification-micro]
+permissions:
+  contents: read
+concurrency:
+  group: en8-ordered-notification-micro-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  windows-x64:
+    name: Native UCRT x64 proof queue comparison
+    runs-on: windows-2025
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: decryp2kanon/sugarchain-en
+          ref: 81934405da9cdfeca55c2a07997b881c22993bc6
+          path: source
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: diagnostic
+          persist-credentials: false
+      - name: Stage verified sources and fixture
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_ARCH -ne 'X64') { throw 'A native x64 runner is required' }
+          $tool = Join-Path $env:GITHUB_WORKSPACE 'diagnostic/.github/queue-notification'
+          $source = Join-Path $env:GITHUB_WORKSPACE 'source'
+          $work = Join-Path $env:RUNNER_TEMP 'queue-notification'
+          python (Join-Path $tool 'probe.py') prepare --source $source --probe $tool --work $work
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-CimInstance Win32_Processor | Select-Object Name,NumberOfCores,NumberOfLogicalProcessors |
+            ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $work 'windows-cpu.json')
+      - uses: msys2/setup-msys2@3c51bf698df1e37b2261f53cb67797b97761185c # v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc
+      - name: Compile the native paired executable
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          workspace=$(cygpath -u "$GITHUB_WORKSPACE")
+          work=$(cygpath -u "$RUNNER_TEMP")/queue-notification
+          tool="$workspace/diagnostic/.github/queue-notification"
+          bash "$tool/build-native.sh" windows-x64 "$workspace/source" "$tool" "$work"
+      - name: Measure the fixed sequence and verify all proofs
+        shell: pwsh
+        run: |
+          $tool = Join-Path $env:GITHUB_WORKSPACE 'diagnostic/.github/queue-notification'
+          python (Join-Path $tool 'probe.py') run --platform windows-x64 --work (Join-Path $env:RUNNER_TEMP 'queue-notification')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Retain native Windows evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-queue-notification-windows-x64
+          path: |
+            ${{ runner.temp }}/queue-notification/*.json
+            ${{ runner.temp }}/queue-notification/*.log
+            ${{ runner.temp }}/queue-notification/*.txt
+            ${{ runner.temp }}/queue-notification/*.stderr
+            ${{ runner.temp }}/queue-notification/*.proofs
+          if-no-files-found: error
+          retention-days: 7
+  apple-arm64:
+    name: Native Apple ARM64 proof queue comparison
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: decryp2kanon/sugarchain-en
+          ref: 81934405da9cdfeca55c2a07997b881c22993bc6
+          path: source
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: diagnostic
+          persist-credentials: false
+      - name: Compile and measure native Apple ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ARCH" = ARM64
+          tool="$GITHUB_WORKSPACE/diagnostic/.github/queue-notification"
+          source_dir="$GITHUB_WORKSPACE/source"
+          work="$RUNNER_TEMP/queue-notification"
+          python3 "$tool/probe.py" prepare --source "$source_dir" --probe "$tool" --work "$work"
+          bash "$tool/build-native.sh" apple-arm64 "$source_dir" "$tool" "$work"
+          python3 "$tool/probe.py" run --platform apple-arm64 --work "$work"
+      - name: Retain native Apple evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-queue-notification-apple-arm64
+          path: |
+            ${{ runner.temp }}/queue-notification/*.json
+            ${{ runner.temp }}/queue-notification/*.log
+            ${{ runner.temp }}/queue-notification/*.txt
+            ${{ runner.temp }}/queue-notification/*.stderr
+            ${{ runner.temp }}/queue-notification/*.proofs
+          if-no-files-found: error
+          retention-days: 7
