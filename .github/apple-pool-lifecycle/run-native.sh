@@ -31,9 +31,7 @@ common=(-std=c++20 -arch arm64 -isysroot "$sdk" -mmacosx-version-min=14.0 -Wall 
 {
     "$clang" "${common[@]}" -E -P -x c++ "$stage/pool-baseline.h" > "$stage/baseline.ii"
     "$clang" "${common[@]}" -E -P -x c++ "$stage/src/support/allocators/pool.h" > "$stage/macro-off.ii"
-    cmp "$stage/baseline.ii" "$stage/macro-off.ii"
-    shasum -a 256 "$stage/baseline.ii" "$stage/macro-off.ii"
-    printf '%s\n' 'Assertions enabled; macro-off output byte-identical.'
+    python3 -B "$tools_dir/compare-macro-off.py" "$stage" "$work"
 } > "$work/macro-off.log" 2>&1
 "$clang" "${common[@]}" -O1 -g -DSUGARCHAIN_FILE_BACKED_POOL_DIAGNOSTIC \
     "$stage/pool-lifecycle.cpp" -o "$stage/pool-lifecycle" > "$work/build.log" 2>&1

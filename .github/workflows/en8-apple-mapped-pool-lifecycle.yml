@@ -36,6 +36,7 @@ jobs:
           name: en8-apple-mapped-pool-lifecycle
           path: |
             ${{ runner.temp }}/apple-pool-lifecycle/*.log
+            ${{ runner.temp }}/apple-pool-lifecycle/*.pool.ii
             ${{ runner.temp }}/apple-pool-lifecycle/cases/*.log
             ${{ runner.temp }}/apple-pool-lifecycle/cases/result.json
           if-no-files-found: warn
