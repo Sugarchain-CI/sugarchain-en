@@ -218,7 +218,7 @@ def main():
     (args.output / "preflight.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if free < required:
         raise SystemExit("Insufficient disk for compressed parts, extraction and the 8 GiB reserve")
-    (args.output / "parts.txt").write_text("".join(part["name"] + "\n" for part in metadata["archive_parts"]), encoding="utf-8")
+    (args.output / "parts.txt").write_text("".join(part["name"] + "\n" for part in metadata["archive_parts"]), encoding="utf-8", newline="\n")
 
 
 if __name__ == "__main__":

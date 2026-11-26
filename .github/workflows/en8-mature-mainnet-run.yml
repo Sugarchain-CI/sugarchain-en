@@ -1,7 +1,7 @@
 name: En8 mature Mainnet qualification dispatch
 on:
   push:
-    branches: [ci/en8-mature-mainnet-qualification]
+    branches: [ci/en8-mature-windows-fixed]
 permissions:
   contents: read
   actions: read

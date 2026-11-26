@@ -23,9 +23,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: apple-arm64
-            runner: macos-15
-            artifact: release-mac-arm64
           - target: windows-msvcrt
             runner: windows-2022
             artifact: x86_64-w64-mingw32-executables-release-45872110419
