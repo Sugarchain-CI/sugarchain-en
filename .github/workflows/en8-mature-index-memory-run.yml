@@ -1,0 +1,19 @@
+name: En8 UCRT startup memory diagnostics
+on:
+  push:
+    branches:
+      - ci/en8-mature-index-memory-profile
+    paths:
+      - .github/workflows/en8-mature-index-memory-run.yml
+      - .github/workflows/en8-mature-index-memory-profile.yml
+      - .github/en8-mainnet/mature-checkpoint/windows_startup_memory.py
+      - .github/en8-mainnet/mature-checkpoint/qualify_mature_checkpoint_windows_memory.py
+permissions:
+  contents: read
+  actions: read
+jobs:
+  diagnose:
+    uses: ./.github/workflows/en8-mature-index-memory-profile.yml
+    with:
+      fixture_release_tag: en8-mainnet-tail-fixture-v1
+      fixture_manifest_sha256: 234d86232dc76cc86045b0f6cba2988a140562a112ecbbb454e82fa3f20a30f3

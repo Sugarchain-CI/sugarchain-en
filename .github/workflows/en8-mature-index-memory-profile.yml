@@ -1,0 +1,93 @@
+name: En8 Windows mature block-index memory metadata
+on:
+  workflow_call:
+    inputs:
+      fixture_release_tag:
+        type: string
+        required: true
+      fixture_manifest_sha256:
+        type: string
+        required: true
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  qualify:
+    name: Windows UCRT mature block-index memory metadata
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - name: Set shared run deadline
+        run: echo "CHECKPOINT_DEADLINE=$(( $(date +%s) + 810 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Load pinned public checkpoint manifest
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FIXTURE_TAG: ${{ inputs.fixture_release_tag }}
+          MANIFEST_SHA: ${{ inputs.fixture_manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/checkpoint-input"
+          gh release download --repo Sugarchain-CI/sugarchain-en --pattern manifest.json \
+            --dir "$RUNNER_TEMP/checkpoint-input" -- "$FIXTURE_TAG"
+          python -B .github/en8-mainnet/mature-checkpoint/checkpoint_fixture.py \
+            --manifest "$RUNNER_TEMP/checkpoint-input/manifest.json" \
+            --manifest-sha256 "$MANIFEST_SHA" --output "$RUNNER_TEMP/checkpoint-preflight"
+      - name: Download exact 9c runtime package
+        uses: actions/download-artifact@v8
+        with:
+          repository: Sugarchain-CI/sugarchain-en
+          github-token: ${{ github.token }}
+          run-id: '45872110419'
+          name: x86_64-w64-mingw32ucrt-executables-release-45872110419
+          path: runtime
+      - name: Verify original Windows package inputs
+        run: |
+          set -euo pipefail
+          (cd runtime && sha256sum --check --strict SHA256SUMS.release-inputs)
+      - name: Download approved public checkpoint parts once
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FIXTURE_TAG: ${{ inputs.fixture_release_tag }}
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r part; do
+            args+=(--pattern "$part")
+          done < "$RUNNER_TEMP/checkpoint-preflight/parts.txt"
+          gh release download --repo Sugarchain-CI/sugarchain-en "${args[@]}" \
+            --dir "$RUNNER_TEMP/checkpoint-input" -- "$FIXTURE_TAG"
+      - name: Record bounded startup memory metadata and qualify the exact native process
+        timeout-minutes: 12
+        env:
+          MANIFEST_SHA: ${{ inputs.fixture_manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          python -B .github/en8-mainnet/mature-checkpoint/qualify_mature_checkpoint_windows_memory.py \
+            --runtime runtime --fixture "$RUNNER_TEMP/checkpoint-input" \
+            --manifest-name manifest.json --fixture-manifest-sha256 "$MANIFEST_SHA" \
+            --deadline-epoch "$CHECKPOINT_DEADLINE" --output "$RUNNER_TEMP/checkpoint-qualification"
+      - name: Retain bounded qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mature-windows-ucrt-startup-memory
+          path: |
+            ${{ runner.temp }}/checkpoint-preflight/preflight.json
+            ${{ runner.temp }}/checkpoint-qualification/result.json
+            ${{ runner.temp }}/checkpoint-qualification/resources.jsonl
+            ${{ runner.temp }}/checkpoint-qualification/windows-startup-memory.json
+            ${{ runner.temp }}/checkpoint-qualification/node/debug-restart.log
+            ${{ runner.temp }}/checkpoint-qualification/node/console-restart.log
+          if-no-files-found: warn
+          retention-days: 14
