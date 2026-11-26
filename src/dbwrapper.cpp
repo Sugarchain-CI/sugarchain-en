@@ -279,13 +279,16 @@ CDBWrapper::CDBWrapper(const DBParams& params)
     if (params.reclaim_read_cache && !params.memory_only) {
         // Bound retained table mappings; keep the caller's block/write cache budgets.
         DBContext().options.small_table_cache = true;
-        DBContext().options.max_open_files = std::min(DBContext().options.max_open_files, 10);
 #ifdef __linux__
+        DBContext().options.max_open_files = std::min(DBContext().options.max_open_files, 10);
         DBContext().penv = new ReclaimingReadEnv;
         DBContext().options.env = DBContext().penv;
         LogDebug(BCLog::LEVELDB, "LevelDB inactive read-cache reclamation enabled (table_cache=0).\n");
 #else
-        LogInfo("LevelDB bounded block index table cache enabled on Windows x64 (table_cache=0).");
+        constexpr int TABLE_CACHE_TARGET{32};
+        // LevelDB reserves ten of the configured files for non-table use.
+        DBContext().options.max_open_files = std::min(DBContext().options.max_open_files, TABLE_CACHE_TARGET + 10);
+        LogInfo("LevelDB bounded block index table cache enabled on Windows x64 (table_cache_target=%d).", TABLE_CACHE_TARGET);
 #endif
     }
 #endif
