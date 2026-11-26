@@ -567,8 +567,14 @@ struct HeaderPoWVerifier::Impl {
     const int workers;
     std::mutex caller_mutex;
     CCheckQueue<HeaderPoWCheck> queue;
+#if defined(__APPLE__) && defined(__aarch64__)
+    explicit Impl(int count, int parallelism = MAX_HEADER_POW_WORKERS)
+        : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)},
+          queue{1, std::clamp(parallelism, 1, workers) - 1, "powch"} {}
+#else
     explicit Impl(int count)
         : workers{std::clamp(count, 1, MAX_HEADER_POW_WORKERS)}, queue{1, workers - 1, "powch"} {}
+#endif
 
     // Share queue execution without merging Check() and CheckEach() header/cache
     // policies. Worker exceptions reach the caller; validation failure returns false.
@@ -586,6 +592,10 @@ struct HeaderPoWVerifier::Impl {
 
 HeaderPoWVerifier::HeaderPoWVerifier(int workers)
     : m_impl{workers > 1 ? std::make_unique<Impl>(workers) : nullptr} {}
+#if defined(__APPLE__) && defined(__aarch64__)
+HeaderPoWVerifier::HeaderPoWVerifier(int workers, int parallelism)
+    : m_impl{workers > 1 ? std::make_unique<Impl>(workers, parallelism) : nullptr} {}
+#endif
 HeaderPoWVerifier::~HeaderPoWVerifier() = default;
 
 bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params, bool cache_result)

@@ -4,6 +4,9 @@
 
 #include <chainparams.h>
 #include <common/args.h>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <common/system.h>
+#endif
 #include <node/miner.h>
 #include <node/ibd_download.h>
 #include <node/peerman_args.h>
@@ -13,6 +16,7 @@
 #include <validation.h>
 
 #include <boost/test/unit_test.hpp>
+#include <algorithm>
 #include <limits>
 
 BOOST_FIXTURE_TEST_SUITE(peerman_tests, RegTestingSetup)
@@ -24,12 +28,19 @@ BOOST_AUTO_TEST_CASE(header_pow_default_and_explicit_override)
     node::ApplyArgsManOptions(args, options);
     BOOST_CHECK_EQUAL(options.header_pow_workers, 8);
     BOOST_CHECK_EQUAL(MAX_HEADER_POW_WORKERS, 8);
+#if defined(__APPLE__) && defined(__aarch64__)
+    const int cores{GetNumCores()};
+    BOOST_CHECK_EQUAL(options.header_pow_parallelism, cores > 0 ? std::min(cores, MAX_HEADER_POW_WORKERS) : MAX_HEADER_POW_WORKERS);
+#endif
     // Configuration bounds only: this test does not launch worker threads.
     for (const auto& [value, expected] : std::vector<std::pair<const char*, int>>{
              {"1", 1}, {"2", 2}, {"4", 4}, {"8", 8}, {"0", 1}, {"16", 8}}) {
         args.ForceSetArg("-parpow", value);
         node::ApplyArgsManOptions(args, options);
         BOOST_CHECK_EQUAL(options.header_pow_workers, expected);
+#if defined(__APPLE__) && defined(__aarch64__)
+        BOOST_CHECK_EQUAL(options.header_pow_parallelism, MAX_HEADER_POW_WORKERS);
+#endif
     }
 }
 

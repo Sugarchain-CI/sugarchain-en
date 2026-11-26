@@ -5,6 +5,9 @@
 #include <node/peerman_args.h>
 
 #include <common/args.h>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <common/system.h>
+#endif
 #include <net_processing.h>
 
 #include <algorithm>
@@ -29,6 +32,14 @@ void ApplyArgsManOptions(const ArgsManager& argsman, PeerManager::Options& optio
     if (auto value{argsman.GetIntArg("-parpow")}) {
         options.header_pow_workers = std::clamp<int64_t>(*value, 1, MAX_HEADER_POW_WORKERS);
     }
+#if defined(__APPLE__) && defined(__aarch64__)
+    // Network verification waits after each bounded group. Avoid waking more
+    // default workers than hardware threads on small Apple Silicon hosts and
+    // VMs, while preserving the group size and any explicit -parpow override.
+    const int cores{GetNumCores()};
+    options.header_pow_parallelism = !argsman.IsArgSet("-parpow") && cores > 0
+        ? std::min(cores, MAX_HEADER_POW_WORKERS) : MAX_HEADER_POW_WORKERS;
+#endif
     if (auto value{argsman.GetIntArg("-maxibdblocksinflight")}) {
         options.ibd_block_request_limit = std::clamp<int64_t>(*value, DEFAULT_IBD_BLOCK_REQUEST_LIMIT, MAX_IBD_BLOCK_REQUEST_LIMIT);
     }
