@@ -994,6 +994,59 @@ BOOST_AUTO_TEST_CASE(invalid_first_and_later_proofs_have_bounded_speculation)
     BOOST_CHECK(verifier.Check(Headers(50, 25), params));
 }
 
+BOOST_AUTO_TEST_CASE(presync_lead_waits_for_first_proof_and_target_checks)
+{
+    CacheBudget budget{1 << 20};
+    HeaderPoWVerifier verifier{8};
+    const auto headers{Headers(212, 25)};
+    unsigned callbacks{0};
+    const auto lead = [&] {
+        ++callbacks;
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U);
+        BOOST_CHECK_EQUAL(active.load(), 0U);
+#endif
+    };
+    auto invalid_first{headers};
+    Invalidate(invalid_first.front());
+    {
+        Observation observation;
+        BOOST_CHECK(!verifier.Check(invalid_first, params, /*established_presync=*/true, lead));
+        BOOST_CHECK_EQUAL(callbacks, 0U);
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U);
+#endif
+    }
+    auto invalid_target{Headers(213, 9)};
+    invalid_target.back().nBits = 0;
+    {
+        Observation observation;
+        BOOST_CHECK(!verifier.Check(invalid_target, params, /*established_presync=*/true, lead));
+        BOOST_CHECK_EQUAL(callbacks, 0U);
+    }
+    auto invalid_later{headers};
+    Invalidate(invalid_later[1]);
+    {
+        Observation observation;
+        BOOST_CHECK(!verifier.Check(invalid_later, params, /*established_presync=*/true, lead));
+        BOOST_CHECK_EQUAL(callbacks, 1U);
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_LE(calls.load(), 1U + MAX_HEADER_POW_WORKERS);
+#endif
+    }
+    auto cold{Headers(214, 9)};
+    {
+        Observation observation;
+        BOOST_CHECK(verifier.Check(cold, params, /*established_presync=*/true, lead));
+        BOOST_CHECK_EQUAL(callbacks, 2U);
+    }
+    {
+        Observation observation;
+        BOOST_CHECK(verifier.Check(cold, params, /*established_presync=*/true, lead));
+        BOOST_CHECK_EQUAL(callbacks, 2U);
+    }
+}
+
 BOOST_AUTO_TEST_CASE(concurrent_callers_share_one_bounded_pool)
 {
     const auto first{Headers(60, 33)}, second{Headers(61, 33)};

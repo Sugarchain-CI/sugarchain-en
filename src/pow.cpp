@@ -653,17 +653,13 @@ bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const C
     return true;
 }
 
-#if defined(__APPLE__) && defined(__aarch64__)
 bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params)
 {
     return Check(headers, params, /*established_presync=*/false);
 }
 
 bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params,
-                              bool established_presync)
-#else
-bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params)
-#endif
+                              [[maybe_unused]] bool established_presync, const std::function<void()>& after_first_proof)
 {
     if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
         return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
@@ -683,6 +679,7 @@ bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Conse
     if (all_cached) return true; // Preserve the ordinary warm-cache fast path.
     const auto entry{cache.BatchEntry(headers)};
     if (cache.RestoreBatch(entry, headers)) return true;
+    if (after_first_proof) after_first_proof();
     headers = headers.subspan(1);
     if (!m_impl) {
         if (!std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); })) return false;

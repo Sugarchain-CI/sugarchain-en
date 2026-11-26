@@ -251,6 +251,44 @@ BOOST_AUTO_TEST_CASE(advancing_presync_preserves_network_wait_allowance)
     BOOST_CHECK(now() > deadline);
 }
 
+BOOST_AUTO_TEST_CASE(presync_lead_preview_preserves_state_and_work_floor)
+{
+    auto state{CreateState()};
+    const std::span chain{FirstChain()};
+    constexpr size_t group{MAX_HEADERS_RESULTS};
+    BOOST_REQUIRE(state.ProcessNextHeaders(chain.first(group), /*full_headers_message=*/true).request_more);
+    const auto before_work{state.GetPresyncWork()};
+    const auto before_height{state.GetPresyncHeight()};
+    const auto before_locator{state.NextHeadersRequestLocator()};
+    const auto next{chain.subspan(group, group)};
+
+    BOOST_CHECK(!state.PreviewPresyncLead({}, /*full_headers_message=*/true));
+    BOOST_CHECK(!state.PreviewPresyncLead(next, /*full_headers_message=*/false));
+    BOOST_CHECK(!state.PreviewPresyncLead(chain.subspan(group + 1, group), /*full_headers_message=*/true));
+    auto corrupt{std::vector<CBlockHeader>{next.begin(), next.end()}};
+    corrupt.back().hashPrevBlock.SetNull();
+    BOOST_CHECK(!state.PreviewPresyncLead(corrupt, /*full_headers_message=*/true));
+    corrupt.back() = next.back();
+    corrupt.back().nBits = 0;
+    BOOST_CHECK(!state.PreviewPresyncLead(corrupt, /*full_headers_message=*/true));
+
+    const auto preview{state.PreviewPresyncLead(next, /*full_headers_message=*/true)};
+    BOOST_REQUIRE(preview);
+    BOOST_CHECK_EQUAL(preview->vHave.front(), next.back().GetHash());
+    BOOST_CHECK_EQUAL(state.GetPresyncHeight(), before_height);
+    BOOST_CHECK_EQUAL(state.GetPresyncWork().GetHex(), before_work.GetHex());
+    BOOST_CHECK(state.NextHeadersRequestLocator().vHave == before_locator.vHave);
+    BOOST_REQUIRE(state.ProcessNextHeaders(next, /*full_headers_message=*/true).request_more);
+    BOOST_CHECK(state.NextHeadersRequestLocator().vHave == preview->vHave);
+
+    const auto remainder{chain.subspan(2 * group)};
+    BOOST_CHECK(!state.PreviewPresyncLead(remainder, /*full_headers_message=*/true));
+    BOOST_REQUIRE(state.ProcessNextHeaders(remainder, /*full_headers_message=*/true).request_more);
+    BOOST_CHECK(state.GetState() == State::REDOWNLOAD);
+    BOOST_CHECK_EQUAL(state.NextHeadersRequestLocator().vHave.front(), chain_start.GetBlockHash());
+    BOOST_CHECK(!state.PreviewPresyncLead(next, /*full_headers_message=*/true));
+}
+
 BOOST_AUTO_TEST_CASE(presync_proof_credit_requires_live_advancement)
 {
     auto state{CreateState()};
