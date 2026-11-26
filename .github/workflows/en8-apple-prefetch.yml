@@ -1,0 +1,42 @@
+name: En8 Apple proof prefetch experiment
+on:
+  push:
+    branches: [ci/en8-apple-prefetch]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: en8-apple-prefetch-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native-prefetch:
+    name: Native Apple proof equivalence and paired timing
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: source
+          repository: decryp2kanon/sugarchain-en
+          ref: 81934405da9cdfeca55c2a07997b881c22993bc6
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          path: diagnostic
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check exact proof outputs and paired native throughput
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash diagnostic/.github/apple-prefetch/run-native-prefetch.sh \
+            "$GITHUB_WORKSPACE/source" \
+            "$GITHUB_WORKSPACE/diagnostic/.github/apple-prefetch/mainnet-headers-100k.bin.gz" \
+            "$RUNNER_TEMP/apple-prefetch"
+      - name: Preserve all samples and compiler evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-apple-prefetch
+          path: ${{ runner.temp }}/apple-prefetch
+          if-no-files-found: error
