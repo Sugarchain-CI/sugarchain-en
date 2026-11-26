@@ -1,0 +1,19 @@
+{
+  "sugarchain-en-31.1.2-aarch64-linux-gnu.tar.gz": "03daa74e0d6baae4d6b6b8f3df2b7b0e3a348448fe6778af9816c183d6609f22",
+  "sugarchain-en-31.1.2-arm-linux-gnueabihf.tar.gz": "ff756cf340c7a2f5f6aaf8ce6fc7e009169277e58a67d38878bbe1a395ae673a",
+  "sugarchain-en-31.1.2-dependency-sources.zip": "5ccc9ab99b10c1962a1fee26b80bdc53ce09fca94b0018ace190e9bf45b246c0",
+  "sugarchain-en-31.1.2-macos-arm64-cli.tar.gz": "00433459749009dc5bc8f537c025797e690d3caf6cfcec4e1a7b5dbc54abed02",
+  "sugarchain-en-31.1.2-macos-arm64.zip": "ffc7e054449a56a0229dc6f8222475f7c9d3c584b19c130c60d6e38ca98eb1ca",
+  "sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz": "46bdeeb31a82e9b0e9005dbea7a5bef1bfcf580c8b1b627579debf57b1222145",
+  "sugarchain-en-31.1.2-macos-x86_64.zip": "4207d6c60255498a4aea7f4dce6e1279ce2954d3ee9c8ad1ec4ff2a00f28408c",
+  "sugarchain-en-31.1.2-powerpc64-linux-gnu.tar.gz": "b202e787cc5ff6155ad98dd8a7e774f77298fd8552971127a2397362224dcb80",
+  "sugarchain-en-31.1.2-riscv64-linux-gnu.tar.gz": "64e9de163201a0fb5dbaa9b3db22c524969ab055007aa9d481dc3d9ccc45aa6e",
+  "sugarchain-en-31.1.2-source.tar.gz": "c260a93dc1da7dd1fe72bb807db182dc23e23788900c29cd030a26515f424190",
+  "sugarchain-en-31.1.2-third-party-notices.zip": "c8a3423ff43bff96f7c60543dec51e5d751a609fb18f921189b8cb756e9495e0",
+  "sugarchain-en-31.1.2-windows-third-party-notices.zip": "5b3d1cd0a0efe0c0ea883457b0f6663afc8e1d8123853df364672d40b7454fc5",
+  "sugarchain-en-31.1.2-windows-x86_64-msvcrt-portable.zip": "03fd8d51520b5548bb079b2ef763177dea44b873292955971b76ada393b4f7ba",
+  "sugarchain-en-31.1.2-windows-x86_64-msvcrt-setup.exe": "f3aef947c3d0e4950092ae5b919593d9ac88b16b9888d8516a590756e7794eff",
+  "sugarchain-en-31.1.2-windows-x86_64-ucrt-portable.zip": "acc8926e6ff11d6a5c230c86b27c7c953ea612afa236b259dfb70b47f29193b6",
+  "sugarchain-en-31.1.2-windows-x86_64-ucrt-setup.exe": "9356ef69d42891b8d580223eaf8daa743b3e08d592d68905dd870feb88b81e83",
+  "sugarchain-en-31.1.2-x86_64-linux-gnu.tar.gz": "607a37de6c2567fe0b8da96393419e001ef68f88acb363d840701b97b6bdf83c"
+}
