@@ -3443,10 +3443,7 @@ static void LimitValidationInterfaceQueue(ValidationSignals& signals) LOCKS_EXCL
     AssertLockNotHeld(cs_main);
 
     if (signals.CallbacksPending() > 10) {
-#if defined(__APPLE__) && defined(__x86_64__)
-        // Drain the pending burst before the producer resumes filling the bounded queue.
-        signals.WaitForPendingCallbacks(0);
-#elif defined(__APPLE__)
+#ifdef __APPLE__
         // Leave room for another block's notifications before applying backpressure again.
         signals.WaitForPendingCallbacks(8);
 #else

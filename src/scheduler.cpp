@@ -331,7 +331,7 @@ bool SerialTaskRunner::waitForPendingAtMost(size_t limit)
 }
 #endif
 
-#if defined(__APPLE__) && defined(__aarch64__)
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__x86_64__))
 ValidationTaskRunner::ValidationTaskRunner() : m_worker{[this] { Run(/*drain=*/false); }} {}
 
 ValidationTaskRunner::~ValidationTaskRunner()

@@ -178,7 +178,7 @@ public:
     /** Call any remaining callbacks on the calling thread */
     void FlushBackgroundCallbacks();
 
-#if defined(__APPLE__) && defined(__aarch64__)
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__x86_64__))
     /** Stop the background dispatcher before tearing down validation subscribers. */
     void StopBackgroundCallbacks();
 #endif
