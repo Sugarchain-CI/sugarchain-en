@@ -1,0 +1,229 @@
+name: En.8 Windows release packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ci/en8-final-release]
+    paths:
+      - .github/workflows/en8-release-windows.yml
+      - .github/en8-release/windows/**
+
+permissions:
+  contents: read
+
+env:
+  PRODUCT_SOURCE: ba6ba77698f9a0759063604c4f87ce3eab93c107
+  PRODUCT_TREE: 585f08d47bc953b7863d2fc3ba51f3ea762bc36f
+  PYTHONUTF8: 1
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  windows-cross:
+    name: Build Windows x64 ${{ matrix.crt }} release inputs
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-final-release'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crt: ucrt
+            file-env: ./ci/test/00_setup_env_win64.sh
+          - crt: msvcrt
+            file-env: ./ci/test/00_setup_env_win64_msvcrt.sh
+    env:
+      FILE_ENV: ${{ matrix.file-env }}
+      DANGER_CI_ON_HOST_FOLDERS: 1
+      MAKEJOBS: -j4
+    steps:
+      - name: Check out release helpers
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check out exact merged product source
+        uses: actions/checkout@v6
+        with:
+          repository: decryp2kanon/sugarchain-en
+          ref: ${{ env.PRODUCT_SOURCE }}
+          path: product
+          persist-credentials: false
+      - name: Configure Windows cross-build environment
+        working-directory: product
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PRODUCT_SOURCE"
+          test "$(git rev-parse HEAD^{tree})" = "$PRODUCT_TREE"
+          source "$FILE_ENV"
+          {
+            echo "BASE_ROOT_DIR=$RUNNER_TEMP"
+            echo "BASE_BUILD_DIR=$RUNNER_TEMP/build"
+            echo "CCACHE_DIR=$RUNNER_TEMP/ccache_dir"
+            echo "DEPENDS_DIR=$RUNNER_TEMP/depends"
+            echo "BASE_CACHE=$RUNNER_TEMP/depends/built"
+            echo "SOURCES_PATH=$RUNNER_TEMP/depends/sources"
+            echo "PREVIOUS_RELEASES_DIR=$RUNNER_TEMP/previous_releases"
+            echo "DEPENDS_HASH=$(git ls-tree HEAD depends "$FILE_ENV" | sha256sum | cut -d' ' -f1)"
+            echo "PREVIOUS_RELEASES_HASH=$(git ls-tree HEAD test/get_previous_releases.py | sha256sum | cut -d' ' -f1)"
+            echo "CONTAINER_NAME=$CONTAINER_NAME"
+          } >> "$GITHUB_ENV"
+      - name: Restore stock build caches
+        uses: ./.github/actions/cache/restore
+        with:
+          provider: gha
+      - name: Restore previously built Windows dependencies
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.BASE_CACHE }}
+          key: en8-win-${{ matrix.crt }}-depends-${{ env.DEPENDS_HASH }}
+      - name: Restore Windows compiler objects
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: en8-win-${{ matrix.crt }}-compiler-${{ env.DEPENDS_HASH }}-${{ github.run_id }}
+          restore-keys: en8-win-${{ matrix.crt }}-compiler-${{ env.DEPENDS_HASH }}-
+      - name: Configure the standard Docker build
+        uses: ./.github/actions/configure-docker
+        with:
+          provider: gha
+      - name: Build exact product daemon, GUI, installer and test executable
+        working-directory: product
+        run: |
+          set -eo pipefail
+          source ./ci/test/00_setup_env.sh
+          export BITCOIN_CONFIG="$BITCOIN_CONFIG -DBUILD_BENCH=OFF -DBUILD_FUZZ_BINARY=OFF -DBUILD_GUI_TESTS=OFF -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+          python3 ./ci/test/02_run_container.py
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Verify Windows release code generation
+        run: |
+          set -euo pipefail
+          python -B .github/en8-release/windows/check-windows-codegen.py \
+            "$BASE_BUILD_DIR/compile_commands.json" "$RUNNER_TEMP/en8-codegen.json" "${{ matrix.crt }}"
+      - name: Package the exact installer programs and release notices
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          if ! command -v 7zz >/dev/null && ! command -v 7z >/dev/null; then
+            sudo apt-get -qq update
+            sudo apt-get -qq install --no-install-recommends -y 7zip
+          fi
+          seven_zip=$(command -v 7zz || command -v 7z)
+          curl --fail --location --silent --show-error --max-time 120 --retry 2 \
+            'https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.7/sugarchain-en-31.1.2-windows-third-party-notices.zip' \
+            --output "$RUNNER_TEMP/en7-notices.zip"
+          python -B .github/en8-release/windows/package_windows.py stage --source product \
+            --build "$BASE_BUILD_DIR" --out "$RUNNER_TEMP/en8-windows-staged" --crt "${{ matrix.crt }}" \
+            --notices "$RUNNER_TEMP/en7-notices.zip" --codegen "$RUNNER_TEMP/en8-codegen.json" --seven-zip "$seven_zip"
+      - name: Upload Windows native verification inputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-release-windows-staged-${{ matrix.crt }}
+          path: ${{ runner.temp }}/en8-windows-staged/
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-native:
+    name: Verify native Windows x64 ${{ matrix.crt }} release
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-final-release'
+    needs: windows-cross
+    runs-on: windows-2022
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        crt: [ucrt, msvcrt]
+    steps:
+      - name: Check out release helpers
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Check out exact merged product tests
+        uses: actions/checkout@v6
+        with:
+          repository: decryp2kanon/sugarchain-en
+          ref: ${{ env.PRODUCT_SOURCE }}
+          path: product
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Download exact current Windows package and test inputs
+        uses: actions/download-artifact@v8
+        with:
+          name: en8-release-windows-staged-${{ matrix.crt }}
+          path: ${{ runner.temp }}/en8-windows-staged
+      - name: Verify package provenance and prepare the exact native executables
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/en8-windows-logs"
+          python -B .github/en8-release/windows/package_windows.py prepare --source product --crt "${{ matrix.crt }}" \
+            --staged "$RUNNER_TEMP/en8-windows-staged"
+      - name: Run affected native unit groups
+        working-directory: product
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          bin/test_bitcoin.exe --run_test=net_tests,header_pow_tests,headers_sync_chainwork_tests,caches_tests,blockmanager_tests,peerman_tests \
+            --color_output=no --report_level=short --log_level=test_suite 2>&1 | tee "$RUNNER_TEMP/en8-windows-logs/unit-tests.log"
+          bin/test_bitcoin.exe --run_test=crypto_tests/yespower_golden_vectors --color_output=no --report_level=short \
+            2>&1 | tee "$RUNNER_TEMP/en8-windows-logs/yespower-golden-vectors.log"
+          bin/test_bitcoin.exe --run_test=crypto_tests/sha256_testvectors --color_output=no --report_level=short \
+            2>&1 | tee "$RUNNER_TEMP/en8-windows-logs/sha256-testvectors.log"
+      - name: Run the Sugarchain header proof protocol test
+        working-directory: product
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          python -B test/functional/p2p_sugarchain_header_pow.py --configfile test/config.ini \
+            --tmpdir "$RUNNER_TEMP/en8-header-protocol" --timeout-factor=8 --v1transport \
+            2>&1 | tee "$RUNNER_TEMP/en8-windows-logs/header-protocol.log"
+      - name: Run packaged daemon, CLI and GUI smoke checks
+        working-directory: product
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          bin/sugarchaind.exe -version | tee "$RUNNER_TEMP/en8-windows-logs/binary-version.log"
+          python -B .github/ci-windows-smoke.py --bindir bin --work-dir "$RUNNER_TEMP/en8-portable-smoke" \
+            2>&1 | tee "$RUNNER_TEMP/en8-windows-logs/portable-smoke.log"
+      - name: Verify the installer lifecycle and installed applications
+        working-directory: product
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          python -B .github/ci-windows-installer.py --with-wallet-restart \
+            --installer "$RUNNER_TEMP/en8-windows-staged/sugarchain-en-31.1.2-windows-x86_64-${{ matrix.crt }}-setup.exe" \
+            --work-dir "$RUNNER_TEMP/en8-installer-smoke" 2>&1 | tee "$RUNNER_TEMP/en8-windows-logs/installer-smoke.log"
+      - name: Record exact package and successful native evidence
+        run: |
+          set -euo pipefail
+          python -B .github/en8-release/windows/package_windows.py conclude --source product --crt "${{ matrix.crt }}" \
+            --staged "$RUNNER_TEMP/en8-windows-staged" --logs "$RUNNER_TEMP/en8-windows-logs" --run-id "$GITHUB_RUN_ID"
+          cp "$RUNNER_TEMP/en8-windows-logs/"*.log "$RUNNER_TEMP/en8-windows-staged/"
+      - name: Upload verified Windows release assets
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-release-windows-${{ matrix.crt }}
+          path: |
+            ${{ runner.temp }}/en8-windows-staged/*.zip
+            ${{ runner.temp }}/en8-windows-staged/*.exe
+            ${{ runner.temp }}/en8-windows-staged/*.json
+            ${{ runner.temp }}/en8-windows-staged/*.log
+            ${{ runner.temp }}/en8-windows-staged/RELEASE_SOURCE_SHA
+            ${{ runner.temp }}/en8-windows-staged/RELEASE_SOURCE_TREE
+            ${{ runner.temp }}/en8-windows-staged/SHA256SUMS*
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain failed native evidence
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-release-windows-failure-${{ matrix.crt }}
+          path: ${{ runner.temp }}/en8-windows-logs/
+          if-no-files-found: warn
+          retention-days: 14

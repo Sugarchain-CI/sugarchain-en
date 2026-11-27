@@ -1,0 +1,119 @@
+name: En.8 release packages for Linux
+
+on:
+  push:
+    branches: [ci/en8-final-release]
+    paths:
+      - .github/workflows/en8-release-linux.yml
+      - .github/en8-release/linux/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  linux:
+    name: Linux / ${{ matrix.host }}
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-final-release'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host: x86_64-linux-gnu
+            runner: ubuntu-24.04
+            mode: native
+          - host: aarch64-linux-gnu
+            runner: ubuntu-24.04-arm
+            mode: native
+          - host: arm-linux-gnueabihf
+            runner: ubuntu-24.04
+            mode: cross
+          - host: powerpc64-linux-gnu
+            runner: ubuntu-24.04
+            mode: cross
+          - host: riscv64-linux-gnu
+            runner: ubuntu-24.04
+            mode: cross
+    env:
+      RELEASE_HOST: ${{ matrix.host }}
+      RELEASE_MODE: ${{ matrix.mode }}
+      RELEASE_TAG: v31.1.2-en.8
+      SOURCE_REVISION: ba6ba77698f9a0759063604c4f87ce3eab93c107
+      SOURCE_TREE: 585f08d47bc953b7863d2fc3ba51f3ea762bc36f
+    steps:
+      - name: Check out merged product source
+        uses: actions/checkout@v6
+        with:
+          repository: decryp2kanon/sugarchain-en
+          ref: ba6ba77698f9a0759063604c4f87ce3eab93c107
+          path: source
+          persist-credentials: false
+      - name: Verify product source and tree
+        working-directory: source
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          git diff --exit-code HEAD --
+      - name: Check out release tools
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: build-tools
+          sparse-checkout: .github/en8-release/linux
+          persist-credentials: false
+      - name: Verify release tools revision
+        working-directory: build-tools
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - name: Install target toolchain and native smoke dependencies
+        run: |
+          set -euo pipefail
+          packages=(bison build-essential curl file gperf ninja-build patch pkgconf python3 xz-utils)
+          if [[ "$RELEASE_MODE" == cross ]]; then
+            packages+=("g++-$RELEASE_HOST" "binutils-$RELEASE_HOST")
+          else
+            packages+=(xauth xvfb fonts-dejavu-core)
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends "${packages[@]}"
+      - name: Restore dependency cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            source/depends/built
+            source/depends/sources
+          key: sugarchain-en-linux-depends-v1-${{ matrix.host }}-${{ hashFiles('source/depends/**') }}
+      - name: Package and verify the pinned Linux binaries
+        working-directory: source
+        run: |
+          set -euo pipefail
+          package_tool=../build-tools/.github/en8-release/linux/package-linux.sh
+          if [[ "$RELEASE_MODE" == native ]]; then
+            xvfb-run -a bash "$package_tool"
+          else
+            bash "$package_tool"
+          fi
+      - name: Retain the verified Linux package and provenance
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-release-linux-${{ matrix.host }}
+          path: source/out/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Retain available check logs after a failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-release-linux-${{ matrix.host }}-failure-logs
+          path: source/out/checks/
+          if-no-files-found: warn
+          retention-days: 14
