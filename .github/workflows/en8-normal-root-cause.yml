@@ -1,0 +1,127 @@
+name: En.8 normal-log native measurements and scoped profiles
+on:
+  push:
+    branches: [ci/en8-normal-root-cause]
+    paths:
+      - .github/workflows/en8-normal-root-cause.yml
+      - .github/en8-normal-root-cause/**
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: en8-normal-root-cause-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  normal:
+    name: Normal native / ${{ matrix.target }}
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-normal-root-cause'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            platform: linux
+            arch: x86_64
+            runner: ubuntu-24.04
+            python: python3
+            asset: sugarchain-en-31.1.2-x86_64-linux-gnu.tar.gz
+          - target: linux-arm64
+            platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            python: python3
+            asset: sugarchain-en-31.1.2-aarch64-linux-gnu.tar.gz
+          - target: linux-armhf
+            platform: linux
+            arch: armhf
+            runner: ubuntu-24.04-arm
+            python: python3
+            asset: sugarchain-en-31.1.2-arm-linux-gnueabihf.tar.gz
+          - target: macos-arm64
+            platform: macos
+            arch: arm64
+            runner: macos-15
+            python: python3
+            asset: sugarchain-en-31.1.2-macos-arm64-cli.tar.gz
+          - target: macos-x86_64
+            platform: macos
+            arch: x86_64
+            runner: macos-15-intel
+            python: python3
+            asset: sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz
+          - target: windows-same-host
+            platform: windows
+            arch: x86_64
+            runner: windows-2025
+            python: python
+            asset: windows-both
+    env:
+      TOOLS: .github/en8-normal-root-cause
+      PYTHONUTF8: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+      DOTNET_NOLOGO: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/en8-normal-root-cause
+      - uses: actions/setup-python@v6
+        if: matrix.platform == 'windows'
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Native AArch32 prerequisites
+        if: matrix.arch == 'armhf'
+        run: |
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libc6:armhf
+          mkdir -p "$RUNNER_TEMP/normal-native"
+          python3 -B "$TOOLS/check-native-armhf.py" "$RUNNER_TEMP/normal-native/armhf-native.json"
+      - name: Verify frozen source and common fixture
+        run: |
+          ${{ matrix.python }} -c 'import hashlib,pathlib; p=pathlib.Path(".github/en8-normal-root-cause/en8-regtest-presync.py"); assert hashlib.sha256(p.read_bytes()).hexdigest()=="d712a428c7bf29cab49827daf60e85f5d7196b5bf82c56c888ab5b73c7c5d714"'
+          ${{ matrix.python }} -B "$TOOLS/prepare.py" --output "$RUNNER_TEMP/normal-fixture"
+      - name: Three normal debug-disabled measurements per build
+        run: |
+          ${{ matrix.python }} -B "$TOOLS/run-normal.py" --mode baseline \
+            --platform '${{ matrix.platform }}' --arch '${{ matrix.arch }}' --asset '${{ matrix.asset }}' \
+            --fixture "$RUNNER_TEMP/normal-fixture/regtest-100000.dat" --fixture-info "$RUNNER_TEMP/normal-fixture/fixture-info.json" \
+            --output "$RUNNER_TEMP/normal-result"
+      - name: Prepare optional native Windows ETW analysis tool
+        if: success() && matrix.platform == 'windows'
+        id: etw
+        continue-on-error: true
+        run: |
+          dotnet build "$TOOLS/etw-reader/SugarchainEtwReader.csproj" -c Release -o "$RUNNER_TEMP/etw-reader" > "$RUNNER_TEMP/normal-result/profile-setup.log" 2>&1
+          echo 'ready=true' >> "$GITHUB_OUTPUT"
+      - name: One separate scoped native profile per build
+        if: success() && (matrix.platform == 'macos' || (matrix.platform == 'windows' && steps.etw.outputs.ready == 'true'))
+        continue-on-error: true
+        env:
+          SUGARCHAIN_ETW_READER: ${{ runner.temp }}/etw-reader/SugarchainEtwReader.dll
+        run: |
+          ${{ matrix.python }} -B "$TOOLS/run-normal.py" --mode profile \
+            --platform '${{ matrix.platform }}' --arch '${{ matrix.arch }}' --asset '${{ matrix.asset }}' \
+            --fixture "$RUNNER_TEMP/normal-fixture/regtest-100000.dat" --fixture-info "$RUNNER_TEMP/normal-fixture/fixture-info.json" \
+            --output "$RUNNER_TEMP/normal-result"
+      - name: Collect normal measurements and owned-process profile summaries
+        if: always()
+        run: |
+          ${{ matrix.python }} -B "$TOOLS/collect.py" --input "$RUNNER_TEMP/normal-result" --output "$RUNNER_TEMP/normal-evidence"
+          if [[ -f "$RUNNER_TEMP/normal-native/armhf-native.json" ]]; then
+            cp "$RUNNER_TEMP/normal-native/armhf-native.json" "$RUNNER_TEMP/normal-evidence/"
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: en8-normal-cause-${{ matrix.target }}
+          path: ${{ runner.temp }}/normal-evidence/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
