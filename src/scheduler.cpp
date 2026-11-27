@@ -212,36 +212,21 @@ void SerialTaskRunner::ScheduleProcessQueue()
 #endif
 
 #ifdef __APPLE__
-#ifdef __x86_64__
-void SerialTaskRunner::PopCallback(std::list<std::function<void()>>& ready)
-#else
 std::function<void()> SerialTaskRunner::PopCallback()
-#endif
 {
     AssertLockHeld(m_callbacks_mutex);
-#ifdef __x86_64__
-    ready.splice(ready.end(), m_callbacks_pending, m_callbacks_pending.begin());
-    m_pending_count.store(m_callbacks_pending.size(), std::memory_order_relaxed);
-#else
     auto callback{std::move(m_callbacks_pending.front())};
     m_callbacks_pending.pop_front();
-#endif
     if (m_capacity_waiters && m_callbacks_pending.size() <= m_capacity_wait_limit) {
         m_capacity.notify_all();
     }
-#ifndef __x86_64__
     return callback;
-#endif
 }
 #endif
 
 void SerialTaskRunner::ProcessQueue()
 {
-#if defined(__APPLE__) && defined(__x86_64__)
-    std::list<std::function<void()>> ready;
-#else
     std::function<void()> callback;
-#endif
     {
         LOCK(m_callbacks_mutex);
 #ifdef __APPLE__
@@ -251,9 +236,7 @@ void SerialTaskRunner::ProcessQueue()
         if (m_callbacks_pending.empty()) return;
         m_are_callbacks_running = true;
 
-#if defined(__APPLE__) && defined(__x86_64__)
-        PopCallback(ready);
-#elif defined(__APPLE__)
+#ifdef __APPLE__
         callback = PopCallback();
 #else
         callback = std::move(m_callbacks_pending.front());
@@ -278,42 +261,34 @@ void SerialTaskRunner::ProcessQueue()
 
 #if defined(__APPLE__) && defined(__x86_64__)
     const auto deadline{std::chrono::steady_clock::now() + 1ms};
-    ready.front()();
-    ready.pop_front();
+#endif
+    callback();
+#if defined(__APPLE__) && defined(__x86_64__)
+    callback = {};
     // Share each scheduler turn among ready callbacks without starving other tasks.
     for (size_t processed{1}; processed < 8; ++processed) {
         if (std::chrono::steady_clock::now() >= deadline || m_scheduler.StopRequested()) break;
-        std::list<std::function<void()>> next;
+        std::function<void()> next;
         {
             LOCK(m_callbacks_mutex);
             if (m_callbacks_pending.empty()) break;
-            PopCallback(next);
+            next = PopCallback();
         }
-        next.front()();
+        next();
     }
-#else
-    callback();
 #endif
 }
 
 void SerialTaskRunner::insert(std::function<void()> func)
 {
-#if defined(__APPLE__) && defined(__x86_64__)
-    // Allocate the callback node before taking the queue lock.
-    std::list<std::function<void()>> ready;
-    ready.emplace_back(std::move(func));
-#endif
     {
         LOCK(m_callbacks_mutex);
+        m_callbacks_pending.emplace_back(std::move(func));
 #if defined(__APPLE__) && defined(__x86_64__)
-        m_callbacks_pending.splice(m_callbacks_pending.end(), ready);
-        m_pending_count.store(m_callbacks_pending.size(), std::memory_order_relaxed);
         // Enqueue and reserve the scheduler turn in one critical section.
         // The running consumer or the reserved turn will observe this callback.
         if (m_are_callbacks_running || m_process_queue_scheduled) return;
         m_process_queue_scheduled = true;
-#else
-        m_callbacks_pending.emplace_back(std::move(func));
 #endif
     }
 #if defined(__APPLE__) && defined(__x86_64__)
@@ -336,12 +311,8 @@ void SerialTaskRunner::flush()
 
 size_t SerialTaskRunner::size()
 {
-#if defined(__APPLE__) && defined(__x86_64__)
-    return m_pending_count.load(std::memory_order_relaxed);
-#else
     LOCK(m_callbacks_mutex);
     return m_callbacks_pending.size();
-#endif
 }
 
 #ifdef __APPLE__
