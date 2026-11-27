@@ -19,50 +19,7 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target: linux-x86_64
-            platform: linux
-            arch: x86_64
-            runner: ubuntu-24.04
-            python: python3
-            asset: sugarchain-en-31.1.2-x86_64-linux-gnu.tar.gz
-          - target: linux-arm64
-            platform: linux
-            arch: arm64
-            runner: ubuntu-24.04-arm
-            python: python3
-            asset: sugarchain-en-31.1.2-aarch64-linux-gnu.tar.gz
-          - target: linux-armhf
-            platform: linux
-            arch: armhf
-            runner: ubuntu-24.04-arm
-            python: python3
-            asset: sugarchain-en-31.1.2-arm-linux-gnueabihf.tar.gz
-          - target: windows-ucrt
-            platform: windows
-            arch: x86_64
-            runner: windows-2025
-            python: python
-            asset: sugarchain-en-31.1.2-windows-x86_64-ucrt-portable.zip
-          - target: windows-msvcrt
-            platform: windows
-            arch: x86_64
-            runner: windows-2025
-            python: python
-            asset: sugarchain-en-31.1.2-windows-x86_64-msvcrt-portable.zip
-          - target: macos-arm64
-            platform: macos
-            arch: arm64
-            runner: macos-15
-            python: python3
-            asset: sugarchain-en-31.1.2-macos-arm64-cli.tar.gz
-          - target: macos-x86_64
-            platform: macos
-            arch: x86_64
-            runner: macos-15-intel
-            python: python3
-            asset: sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz
+      matrix: ${{ fromJSON(contains(github.event.head_commit.message, '[windows-only]') && '{"include":[{"target":"windows-ucrt","platform":"windows","arch":"x86_64","runner":"windows-2025","python":"python","asset":"sugarchain-en-31.1.2-windows-x86_64-ucrt-portable.zip"},{"target":"windows-msvcrt","platform":"windows","arch":"x86_64","runner":"windows-2025","python":"python","asset":"sugarchain-en-31.1.2-windows-x86_64-msvcrt-portable.zip"}]}' || '{"include":[{"target":"linux-x86_64","platform":"linux","arch":"x86_64","runner":"ubuntu-24.04","python":"python3","asset":"sugarchain-en-31.1.2-x86_64-linux-gnu.tar.gz"},{"target":"linux-arm64","platform":"linux","arch":"arm64","runner":"ubuntu-24.04-arm","python":"python3","asset":"sugarchain-en-31.1.2-aarch64-linux-gnu.tar.gz"},{"target":"linux-armhf","platform":"linux","arch":"armhf","runner":"ubuntu-24.04-arm","python":"python3","asset":"sugarchain-en-31.1.2-arm-linux-gnueabihf.tar.gz"},{"target":"windows-ucrt","platform":"windows","arch":"x86_64","runner":"windows-2025","python":"python","asset":"sugarchain-en-31.1.2-windows-x86_64-ucrt-portable.zip"},{"target":"windows-msvcrt","platform":"windows","arch":"x86_64","runner":"windows-2025","python":"python","asset":"sugarchain-en-31.1.2-windows-x86_64-msvcrt-portable.zip"},{"target":"macos-arm64","platform":"macos","arch":"arm64","runner":"macos-15","python":"python3","asset":"sugarchain-en-31.1.2-macos-arm64-cli.tar.gz"},{"target":"macos-x86_64","platform":"macos","arch":"x86_64","runner":"macos-15-intel","python":"python3","asset":"sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz"}]}') }}
     env:
       TOOLS: .github/en8-regtest-diagnosis
       PYTHONUTF8: '1'
@@ -89,6 +46,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends libc6:armhf
           mkdir -p "$RUNNER_TEMP/diagnostic-native"
           python3 -B "$TOOLS/check-native-armhf.py" "$RUNNER_TEMP/diagnostic-native/armhf-native.json"
+      - name: Verify frozen common harness bytes
+        run: |
+          ${{ matrix.python }} -c 'import hashlib,pathlib; p=pathlib.Path(".github/en8-regtest-diagnosis/en8-regtest-presync.py"); assert hashlib.sha256(p.read_bytes()).hexdigest()=="d712a428c7bf29cab49827daf60e85f5d7196b5bf82c56c888ab5b73c7c5d714"; print("Frozen LF source bytes verified")'
       - name: Verify identical frozen fixture
         run: ${{ matrix.python }} -B "$TOOLS/prepare.py" --output "$RUNNER_TEMP/diagnostic-fixture"
       - name: Run fixed ABBA block-phase logging diagnostic
