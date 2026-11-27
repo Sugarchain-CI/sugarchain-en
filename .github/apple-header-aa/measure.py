@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure adjacent ordinary-header noise between two copies of one native daemon."""
+"""Measure adjacent ordinary-header noise in a separately gated score window."""
 
 import argparse
 from contextlib import ExitStack, contextmanager
@@ -34,6 +34,9 @@ SCORED = ("AB", "BA", "BA", "AB", "BA", "AB", "AB", "BA", "AB", "BA", "BA", "AB"
 FINAL = FLOOR + BATCH * (len(WARMUP) + len(SCORED))
 FOOTPRINT_LIMIT = 3 << 30
 RUNTIME_LIMIT = 480
+DESIGN_VERSION = "apple-ordinary-header-aa-score-window-v2"
+QUIET_SECONDS = 5
+QUIET_IDLE_CPU_LIMIT_NS = QUIET_SECONDS * 10_000_000
 LIMITS = {"wall_ns": {"near": 0.025, "hard": 0.05}, "cpu_ns": {"near": 0.005, "hard": 0.01}}
 
 
@@ -89,10 +92,37 @@ def cpu_delta(before, after, timebase, pid):
     return sum(values)
 
 
-def validate_pressure(baseline, current, snapshots):
-    require(current == baseline, "Host paging or swap-out occurred during the A/A experiment")
-    require(all(s["footprint_bytes"] > 0 for s in snapshots) and
-            sum(s["footprint_bytes"] for s in snapshots) <= FOOTPRINT_LIMIT, "The two resident daemons exceed the footprint budget")
+def memory_sample(targets, usage):
+    return {"host": memory_counters(),
+            "nodes": {name: snapshot(usage, target[0]) for name, target in targets.items()}}
+
+
+def validate_footprints(snapshots):
+    require(all(s["footprint_bytes"] > 0 for s in snapshots.values()) and
+            sum(s["footprint_bytes"] for s in snapshots.values()) <= FOOTPRINT_LIMIT,
+            "The two resident daemons exceed the footprint budget")
+
+
+def quiet_window(targets, usage, receipt, deadline):
+    receipt["status"] = "in_progress"
+    require(time.monotonic() + QUIET_SECONDS < deadline, "A/A runtime budget cannot fit the fixed quiet interval")
+    before = receipt["before"] = memory_sample(targets, usage)
+    started = time.monotonic_ns()
+    time.sleep(QUIET_SECONDS)
+    receipt["elapsed_ns"] = time.monotonic_ns() - started
+    after = receipt["after"] = memory_sample(targets, usage)
+    idle_cpu = receipt["idle_cpu_ns"] = {
+        name: cpu_delta(before["nodes"][name], after["nodes"][name], usage.timebase, target[0].pid)
+        for name, target in targets.items()
+    }
+    require(receipt["elapsed_ns"] >= QUIET_SECONDS * 1_000_000_000, "The fixed quiet wait ended early")
+    require(before["host"] == after["host"], "Host paging or swap-out occurred during the fixed quiet interval")
+    validate_footprints(before["nodes"])
+    validate_footprints(after["nodes"])
+    require(all(cpu <= QUIET_IDLE_CPU_LIMIT_NS for cpu in idle_cpu.values()),
+            "A daemon was not idle during the fixed quiet interval")
+    receipt["status"] = "passed"
+    return after["host"]
 
 
 def require_quiet_history(node):
@@ -231,12 +261,14 @@ def run(args):
     usage = native.DarwinUsage()
     cap = os.cpu_count()
     require(cap and cap > 0, "Could not determine runner CPU count")
-    result = {"schema": 1, "status": "in_progress", "scope": "isolated genuine early Mainnet, private height-32000 work floor",
+    quiet = {"status": "unstarted", "sleep_seconds": QUIET_SECONDS, "idle_cpu_limit_ns": QUIET_IDLE_CPU_LIMIT_NS}
+    result = {"schema": 2, "design_version": DESIGN_VERSION, "status": "in_progress",
+              "scope": "isolated genuine early Mainnet, private height-32000 work floor",
               "calibration": {}, "mach_timebase": [usage.timebase.numer, usage.timebase.denom], "cpu_count": cap,
               "retention": "all scheduled arms retained, including unstarted and incomplete arms",
               "limits": {"ratios": LIMITS, "near_pairs": 11, "hard_pairs": 12, "footprint_bytes": FOOTPRINT_LIMIT,
                          "idle_cpu": "max(10 ms, 1 percent of measured wall time)", "runtime_seconds": RUNTIME_LIMIT},
-              "nodes": {name: {} for name in "AB"}, "memory": []}
+              "nodes": {name: {} for name in "AB"}, "memory": [], "quiet": quiet, "score_baseline": None}
     deadline = time.monotonic() + RUNTIME_LIMIT
 
     def save():
@@ -250,8 +282,7 @@ def run(args):
         pairs = result["pairs"] = schedule(locators, frames, work)
         save()
         native.calibrate(usage, result["calibration"])
-        initial_memory = memory_counters()
-        result["memory"].append({"after": "pre_setup", **initial_memory})
+        result["memory"].append({"after": "pre_setup", "phase": "setup", **memory_sample({}, usage)})
         with ExitStack() as exits:
             targets = {}
             for name in "AB":
@@ -259,13 +290,17 @@ def run(args):
                 targets[name] = exits.enter_context(endpoint(binary, cases / name, work[FLOOR], row))
                 row["floor"] = reach_floor(targets[name], locators, frames, work, deadline)
                 row["historicalpow"] = require_quiet_history(targets[name][0])
+                sample = memory_sample(targets, usage)
+                result["memory"].append({"after": f"setup_{name}", "phase": "setup", **sample})
                 save()
-            current = memory_counters()
-            footprints = [snapshot(usage, target[0]) for target in targets.values()]
-            result["memory"].append({"after": "setup", "nodes": footprints, **current})
-            validate_pressure(initial_memory, current, footprints)
+            validate_footprints(sample["nodes"])
             previous_end = 0
+            score_baseline = None
             for pair in pairs:
+                if pair["number"] == len(WARMUP) + 1:
+                    score_baseline = quiet_window(targets, usage, quiet, deadline)
+                    result["score_baseline"] = score_baseline
+                    save()
                 require(time.monotonic() < deadline, "A/A runtime budget expired")
                 for name in pair["order"]:
                     arm = pair["arms"][name]
@@ -280,10 +315,13 @@ def run(args):
                         raise
                     finally:
                         save()
-                current = memory_counters()
-                footprints = [snapshot(usage, target[0]) for target in targets.values()]
-                result["memory"].append({"after": pair["number"], "nodes": footprints, **current})
-                validate_pressure(initial_memory, current, footprints)
+                sample = memory_sample(targets, usage)
+                phase = "warmup" if pair["warmup"] else "score"
+                result["memory"].append({"after": pair["number"], "phase": phase, **sample})
+                if not pair["warmup"]:
+                    require(sample["host"] == score_baseline, "Host paging or swap-out occurred during the scored interval")
+                validate_footprints(sample["nodes"])
+                save()
             for name, target in targets.items():
                 result["nodes"][name]["final_historicalpow"] = require_quiet_history(target[0])
         verify_shutdowns(pairs, result["nodes"], cases)
@@ -291,7 +329,10 @@ def run(args):
         result["status"] = result["decision"]["status"]
         print(f"A/A noise gate {result['status']}")
     except Exception as error:
-        result.update(status="INCONCLUSIVE", error=f"{type(error).__name__}: {error}")
+        reason = f"{type(error).__name__}: {error}"
+        if quiet["status"] == "in_progress":
+            quiet.update(status="failed", error=reason)
+        result.update(status="INCONCLUSIVE", error=reason)
         raise
     finally:
         save()

@@ -1,4 +1,4 @@
-name: Apple ARM64 ordinary header A/A calibration
+name: Apple ARM64 ordinary header A/A score window v2
 on:
   push:
     branches: [ci/en8-apple-index-cache]
@@ -10,7 +10,7 @@ permissions:
   contents: read
 jobs:
   native:
-    name: Measure same-binary Apple ARM64 order noise
+    name: Measure same-binary Apple ARM64 order noise after warmup
     runs-on: macos-15
     timeout-minutes: 12
     defaults:
@@ -28,7 +28,7 @@ jobs:
           run-id: 45929559984
           name: apple-ordinary-cross-control
           path: ${{ runner.temp }}/retained-aa-control
-      - name: Verify native runner and complete the single A/A experiment
+      - name: Verify native runner and complete the single A/A v2 experiment
         timeout-minutes: 10
         run: |
           set -euo pipefail
@@ -51,7 +51,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: en8-apple-header-aa-evidence
+          name: en8-apple-header-aa-v2-evidence
           path: ${{ runner.temp }}/aa-evidence
           if-no-files-found: warn
           retention-days: 14
