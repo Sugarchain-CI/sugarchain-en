@@ -21,9 +21,9 @@ jobs:
       matrix:
         include:
           - role: candidate
-            source: a497c9abf5e5247d8cdc9448073310f55ea25216
+            source: 4eb6f18692ffd4910738a3c8822edc317c939e07
           - role: control
-            source: 1b3029359223d7cee5da852762c04f2aac700a88
+            source: 9df416b209ac399a2fbd23b63973b5609c2acbf9
     env:
       FILE_ENV: ./ci/test/00_setup_env_mac_cross.sh
       DANGER_CI_ON_HOST_FOLDERS: 1
@@ -98,7 +98,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: Sugarchain-CI/sugarchain-en
-          ref: a497c9abf5e5247d8cdc9448073310f55ea25216
+          ref: 4eb6f18692ffd4910738a3c8822edc317c939e07
           path: candidate-source
           persist-credentials: false
       - uses: actions/download-artifact@v8
@@ -111,8 +111,8 @@ jobs:
           test "$(uname -s)" = Darwin
           test "$(uname -m)" = arm64
           test "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" != 1
-          test "$(git -C candidate-source rev-parse HEAD)" = a497c9abf5e5247d8cdc9448073310f55ea25216
-          test "$(git -C candidate-source rev-parse 'HEAD^{tree}')" = ae2b3387d424a0d257e5584f5f7d76ce3f434898
+          test "$(git -C candidate-source rev-parse HEAD)" = 4eb6f18692ffd4910738a3c8822edc317c939e07
+          test "$(git -C candidate-source rev-parse 'HEAD^{tree}')" = f470eab39b3f7bf6960d44c6ced2b5b5ed2560b8
           mkdir "$RUNNER_TEMP/ordinary-evidence"
           {
             sw_vers

@@ -12,8 +12,8 @@ import subprocess
 
 
 SOURCES = {
-    "control": ("1b3029359223d7cee5da852762c04f2aac700a88", "8c9e821fa61317b218d437f7f211b5b5336e3a44"),
-    "candidate": ("a497c9abf5e5247d8cdc9448073310f55ea25216", "ae2b3387d424a0d257e5584f5f7d76ce3f434898"),
+    "control": ("9df416b209ac399a2fbd23b63973b5609c2acbf9", "585f08d47bc953b7863d2fc3ba51f3ea762bc36f"),
+    "candidate": ("4eb6f18692ffd4910738a3c8822edc317c939e07", "f470eab39b3f7bf6960d44c6ced2b5b5ed2560b8"),
 }
 ARM64_MAGIC = bytes.fromhex("cffaedfe0c000001")
 
