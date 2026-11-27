@@ -2,8 +2,8 @@ name: En.9 Intel macOS release and controlled synchronization
 permissions:
   contents: read
 env:
-  RELEASE_SOURCE: 409ea3ee5f1cdb03790ec2adf5e191031a28737f
-  RELEASE_TREE: 578110fc4d33962ed429171addc1d09cf5d5906f
+  RELEASE_SOURCE: a6bf941dadbeea6a64af5650194f5b59a2f7a16d
+  RELEASE_TREE: a28d70b468e42b05de55d5c6d44ae0a2ed603b0d
 jobs:
   macos-cross:
     if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en9-final-release'
