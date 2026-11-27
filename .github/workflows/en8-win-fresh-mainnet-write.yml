@@ -118,5 +118,6 @@ jobs:
             ${{ runner.temp }}/en8-fresh-report/*/sample/wire.jsonl
             ${{ runner.temp }}/en8-fresh-report/*/sample/*-node.log
             ${{ runner.temp }}/en8-fresh-report/*/sample/*-console.log
+            ${{ runner.temp }}/en8-fresh-report/*/sample/*-cleanup.json
           if-no-files-found: warn
           retention-days: 14

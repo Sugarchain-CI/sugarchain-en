@@ -82,6 +82,7 @@ class Resources:
         checked(self.io(handle, ctypes.byref(io)))
         cpu = sum((value.dwHighDateTime << 32) | value.dwLowDateTime for value in times[2:])
         return {
+            "pid": process.pid,
             "cpu_seconds": cpu / 10_000_000, "working_set_bytes": memory.working_set,
             "peak_working_set_bytes": memory.peak_working_set, "private_usage_bytes": memory.private_usage,
             "io_read_bytes": io.read_bytes, "io_write_bytes": io.write_bytes, "io_other_bytes": io.other_bytes,

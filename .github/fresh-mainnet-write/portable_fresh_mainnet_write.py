@@ -131,10 +131,10 @@ class ReplayPeer:
             writer.close()
             return
         self.writer = writer
-        writer.get_extra_info("socket").setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         version_seen = verack_seen = False
         self.inbound_bytes = 0
         try:
+            writer.get_extra_info("socket").setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             for _ in range(MAX_MESSAGES):
                 command, payload = await read_frame(reader)
                 self.inbound_bytes += len(payload) + 24
@@ -237,6 +237,77 @@ def executable(path, digest):
         require(hashlib.file_digest(source, "sha256").hexdigest() == digest, "Daemon SHA-256 mismatch")
 
 
+def finish_cleanup(receipt, fields, errors, primary):
+    fields["primary_exception"] = type(primary).__name__ if primary is not None else None
+    fields["cleanup_errors"] = [{"stage": stage, "exception": type(error).__name__} for stage, error in errors]
+    try:
+        with receipt.open("x", encoding="utf-8") as output:
+            json.dump(fields, output, sort_keys=True, indent=2)
+            output.write("\n")
+    except BaseException as error:
+        errors.append(("write_cleanup_receipt", error))
+        if primary is not None:
+            primary.add_note(f"Could not write {receipt.name} ({type(error).__name__})")
+    if primary is None and errors:
+        raise errors[0][1]
+
+
+async def finish_node(process, rpc, shutdown_timeout, log, receipt, primary):
+    errors = []
+    forced = clean = acknowledged = False
+    try:
+        if rpc is not None and process.poll() is None:
+            await rpc("stop", timeout=10 if primary is None else 3)
+            acknowledged = True
+            await asyncio.to_thread(process.wait, shutdown_timeout)
+        if acknowledged or primary is None:
+            with log.open("rb") as stream:
+                require(acknowledged and process.returncode == 0 and any(b"Shutdown done" in line for line in stream),
+                        "Owned node lacked a clean shutdown")
+            clean = True
+    except BaseException as error:
+        errors.append(("graceful_shutdown", error))
+    finally:
+        if process.returncode is None:
+            # There are no awaits on the escalation path, so cancellation cannot abandon the child.
+            forced = True
+            for stage, action in (("terminate", process.terminate), ("kill", process.kill)):
+                try:
+                    action()
+                except BaseException as error:
+                    errors.append((stage, error))
+                try:
+                    process.wait(timeout=10)
+                    break
+                except BaseException as error:
+                    errors.append((f"wait_after_{stage}", error))
+    finish_cleanup(receipt, {"pid": process.pid, "returncode": process.returncode,
+                             "reaped": process.returncode is not None, "forced": forced,
+                             "rpc_acknowledged": acknowledged, "clean_shutdown": clean and not forced}, errors, primary)
+
+
+async def finish_peer(server, peer, receipt, primary):
+    errors = []
+    deadline = time.monotonic() + 10
+    try:
+        server.close()
+        # Python 3.14 waits for client transports in Server.wait_closed.
+        await asyncio.wait_for(peer.close(), timeout=5)
+    except BaseException as error:
+        errors.append(("peer_close", error))
+    try:
+        if errors:
+            server.abort_clients()
+        await asyncio.wait_for(server.wait_closed(), timeout=max(0, deadline - time.monotonic()))
+    except BaseException as error:
+        errors.append(("server_wait_closed", error))
+        try:
+            server.abort_clients()
+        except BaseException as abort_error:
+            errors.append(("abort_clients", abort_error))
+    finish_cleanup(receipt, {"clean_shutdown": not errors}, errors, primary)
+
+
 @asynccontextmanager
 async def node(args, phase, port):
     rpc_port = free_port()
@@ -258,8 +329,10 @@ async def node(args, phase, port):
     log.touch(exist_ok=False)
     with (args.output / f"{phase}-console.log").open("xb") as console:
         process = subprocess.Popen(options, stdin=subprocess.DEVNULL, stdout=console, stderr=subprocess.STDOUT)
-        rpc = RPC(args.datadir, rpc_port)
+        rpc = None
+        primary = None
         try:
+            rpc = RPC(args.datadir, rpc_port)
             start = time.monotonic()
             while time.monotonic() < start + args.startup_timeout:
                 require(process.poll() is None, f"Owned node exited during startup: {process.returncode}")
@@ -274,23 +347,11 @@ async def node(args, phase, port):
                 raise TimeoutError("Owned node startup deadline expired")
             require_stock_startup_check(log)
             yield process, rpc, log, state, time.monotonic() - start
-            await rpc("stop", timeout=10)
-            await asyncio.to_thread(process.wait, args.shutdown_timeout)
-            with log.open("rb") as stream:
-                require(process.returncode == 0 and any(b"Shutdown done" in line for line in stream),
-                        "Owned node lacked a clean shutdown")
+        except BaseException as error:
+            primary = error
+            raise
         finally:
-            if process.poll() is None:
-                try:
-                    await rpc("stop", timeout=3)
-                    await asyncio.to_thread(process.wait, args.shutdown_timeout)
-                except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired):
-                    process.terminate()
-                    try:
-                        await asyncio.to_thread(process.wait, 10)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        await asyncio.to_thread(process.wait, 10)
+            await finish_node(process, rpc, args.shutdown_timeout, log, args.output / f"{phase}-cleanup.json", primary)
 
 
 def state_check(state, height, block, work):
@@ -454,6 +515,7 @@ async def run(args):
             port = free_port()
             peer = ReplayPeer(bodies, anchor, transcript, port)
             server = await asyncio.start_server(peer.accept, "127.0.0.1", port)
+            primary = None
             try:
                 async with node(args, "fresh", port) as (process, rpc, log, state, startup):
                     result["startup_seconds"] = startup
@@ -518,10 +580,11 @@ async def run(args):
                     result["flush_and_utxo_rpc_cpu_seconds"] = result["flush_and_utxo_counters"]["cpu_seconds"]
                     require(result["post_replay_utxo"] == POST_UTXO, "Wrong final replay UTXO state")
                     result["forced_flush"] = sync_evidence(read_segment(log, flush_offset))
+            except BaseException as error:
+                primary = error
+                raise
             finally:
-                server.close()
-                await server.wait_closed()
-                await peer.close()
+                await finish_peer(server, peer, args.output / "fresh-peer-cleanup.json", primary)
         async with node(args, "reopen", 0) as (process, rpc, log, state, startup):
             state_check(state, END_HEIGHT, TIP, TIP_WORK)
             require(cache_allocation(log, bounded) == result["cache_allocation"], "Reopen cache allocation differs")
