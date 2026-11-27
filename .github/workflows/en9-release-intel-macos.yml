@@ -1,0 +1,144 @@
+name: En.9 Intel macOS release and controlled synchronization
+permissions:
+  contents: read
+env:
+  RELEASE_SOURCE: 409ea3ee5f1cdb03790ec2adf5e191031a28737f
+  RELEASE_TREE: 578110fc4d33962ed429171addc1d09cf5d5906f
+jobs:
+  macos-cross:
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en9-final-release'
+    name: Cross-build macOS ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: x86_64
+          profile: ./ci/test/00_setup_env_mac_cross_intel.sh
+    env:
+      FILE_ENV: ${{ matrix.profile }}
+      DANGER_CI_ON_HOST_FOLDERS: '1'
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        repository: decryp2kanon/sugarchain-en
+        ref: ${{ env.RELEASE_SOURCE }}
+        persist-credentials: false
+    - name: Verify release source and tree
+      run: 'test "$(git rev-parse HEAD)" = "$RELEASE_SOURCE"
+
+        test "$(git rev-parse ''HEAD^{tree}'')" = "$RELEASE_TREE"
+
+        git diff-index --quiet HEAD --
+
+        '
+    - uses: ./.github/actions/configure-environment
+    - uses: ./.github/actions/clear-files
+    - uses: ./.github/actions/cache/restore
+      with:
+        provider: gha
+    - uses: actions/cache/restore@v5
+      with:
+        path: '${{ env.BASE_CACHE }}
+
+          ${{ env.SOURCES_PATH }}
+
+          '
+        key: en9-${{ matrix.arch }}-depends-v1-${{ env.DEPENDS_HASH }}
+    - uses: actions/cache/restore@v5
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: en9-${{ matrix.arch }}-ccache-v1-${{ env.DEPENDS_HASH }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: en9-${{ matrix.arch }}-ccache-v1-${{ env.DEPENDS_HASH }}-
+    - uses: ./.github/actions/configure-docker
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.sha }}
+        path: ci-tools
+        sparse-checkout: '.github/en9-release/macos
+
+          .github/en9-release/measure'
+        persist-credentials: false
+    - name: Build static Qt, CLI and focused test executable
+      run: bash ci-tools/.github/en9-release/macos/build-cross.sh "${{ matrix.arch }}"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: en9-cross-macos-${{ matrix.arch }}
+        path: ${{ runner.temp }}/en9-macos-transfer/
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+  macos-package:
+    name: Verify and package macOS ${{ matrix.arch }}
+    needs: macos-cross
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: x86_64
+          runner: macos-15-intel
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        repository: decryp2kanon/sugarchain-en
+        ref: ${{ env.RELEASE_SOURCE }}
+        persist-credentials: false
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.sha }}
+        path: ci-tools
+        sparse-checkout: '.github/en9-release/macos
+
+          .github/en9-release/measure'
+        persist-credentials: false
+    - uses: actions/download-artifact@v8
+      with:
+        name: en9-cross-macos-${{ matrix.arch }}
+        path: ${{ runner.temp }}/en9-macos-incoming
+    - name: Sign and check the exact final archives on native hardware
+      timeout-minutes: 25
+      run: bash ci-tools/.github/en9-release/macos/package-native.sh "${{ matrix.arch }}"
+    - name: Compare baseline and candidate with detailed debug disabled
+      run: python3 -B ci-tools/.github/en9-release/measure/run-paired-ci.py --platform macos --candidate-dir "$RUNNER_TEMP/en9-macos-release" --output "$RUNNER_TEMP/en9-paired"
+    - name: Retain the verified release payloads and receipt
+      uses: actions/upload-artifact@v7
+      with:
+        name: en9-release-macos-${{ matrix.arch }}
+        path: ${{ runner.temp }}/en9-macos-release/
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 14
+    - name: Retain native validation logs
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: en9-macos-validation-${{ matrix.arch }}
+        path: '${{ runner.temp }}/en9-macos-work/*.log
+
+          ${{ runner.temp }}/en9-macos-work/protocol/functional.log
+
+          '
+        if-no-files-found: ignore
+        retention-days: 14
+    - name: Retain paired native synchronization evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: en9-paired-macos-x86_64
+        path: '${{ runner.temp }}/en9-paired/evidence.tar.gz
+
+          ${{ runner.temp }}/en9-paired/comparison-summary.json'
+        if-no-files-found: warn
+        retention-days: 7
+'on':
+  push:
+    branches:
+    - ci/en9-final-release
+    paths:
+    - .github/workflows/en9-release-intel-macos.yml
+    - .github/en9-release/macos/**
+    - .github/en9-release/measure/**
+  workflow_dispatch: null
