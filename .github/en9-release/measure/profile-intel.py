@@ -11,7 +11,7 @@ import sys
 import time
 
 PAIRED_SHA = "4910cb3b9f5940132f9767ee9dad8aefea17133aaaca36ade4521839ae22b15c"
-PROFILE_SHA = "40701e733699b5853619ee7c10e1b2272086f84c3d7018304c28991a9a23d638"
+PROFILE_SHA = "71e7a133084ba844d3a038c8a5d3f22262d13715b01886be3ced0fb9e4e49a1f"
 SEQUENCE = ("baseline", "candidate", "candidate", "baseline")
 
 
@@ -59,6 +59,8 @@ def profile_case(paired, spec):
                        and all(row["status"] == "passed" for row in profile["roles"].values()),
                        "Missing qualified three-second owned-process sample")
         receipt["profile"] = profile
+        paired.require(profile["owned_task_counters"]["status"] == "measured",
+                       "Missing qualified task counter window for the owned daemons")
         receipt["verification"] = {
             "tip": case["tip_proof"]["hash"], "utxo": case["utxo"]["hash_serialized_3"],
             "verified_blocks": case["verifychain"]["blocks"],

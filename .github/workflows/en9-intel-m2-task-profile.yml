@@ -1,0 +1,66 @@
+name: En.9 Intel M2 owned-process task counter profiles
+'on':
+  push:
+    branches:
+    - ci/en9-intel-m2-task-profile
+    paths:
+    - .github/workflows/en9-intel-m2-task-profile.yml
+    - .github/en9-release/measure/**
+permissions:
+  contents: read
+  actions: read
+env:
+  RELEASE_SOURCE: a6bf941dadbeea6a64af5650194f5b59a2f7a16d
+  RELEASE_TREE: a28d70b468e42b05de55d5c6d44ae0a2ed603b0d
+jobs:
+  native-profile:
+    if: github.repository == 'Sugarchain-CI/sugarchain-en'
+    runs-on: macos-15-intel
+    timeout-minutes: 25
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Download and verify the already-built candidate
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "python3 - <<'PY_FETCH'\nimport os,pathlib,subprocess,hashlib,zipfile,stat\nout=pathlib.Path(os.environ['RUNNER_TEMP'])/'profile-candidate';out.mkdir()\n\
+        p=out/'artifact.zip'\nwith p.open('wb') as f:subprocess.run(['gh','api','repos/Sugarchain-CI/sugarchain-en/actions/artifacts/15213789796/zip'],stdout=f,check=True,timeout=180)\n\
+        with p.open('rb') as f:assert hashlib.file_digest(f,'sha256').hexdigest()=='5b28325b9c7ad7b1264a0d3c5454511367ab10a5b3d7632cd11ffc23eedde807'\n\
+        with zipfile.ZipFile(p) as z:\n for row in z.infolist():\n  name=pathlib.PurePosixPath(row.filename);assert not name.is_absolute() and\
+        \ '..' not in name.parts and '\\\\' not in row.filename and not stat.S_ISLNK(row.external_attr>>16)\n z.extractall(out)\nprint('Exact\
+        \ candidate producer artifact verified')\nPY_FETCH"
+    - name: Prepare exact baseline and candidate inputs
+      run: 'python3 -B .github/en9-release/measure/prepare.py --output "$RUNNER_TEMP/profile-fixture"
+
+        python3 -B .github/en9-release/measure/prepare-paired-inputs.py --platform macos --candidate-dir "$RUNNER_TEMP/profile-candidate" --baseline-pins
+        .github/en9-release/measure/assets.json --candidate-source "$RELEASE_SOURCE" --candidate-tree "$RELEASE_TREE" --output "$RUNNER_TEMP/profile-inputs"'
+    - name: Compile and self-check the native SDK task counter helper
+      env: &id001
+        EN9_TASKINFO_PROBE: ${{ runner.temp }}/liben9-proc-taskinfo.dylib
+      run: "test \"$(uname -m)\" = x86_64\nprobe=.github/en9-release/measure/proc_taskinfo_snapshot.c\necho '601e8fed09d616881340479a09317c18547000b6173aa31981a36d25d86cd328\
+        \  '\"$probe\" | shasum -a 256 -c -\nxcrun clang -std=c17 -O2 -Wall -Wextra -Werror -arch x86_64 -dynamiclib \"$probe\" -o \"$EN9_TASKINFO_PROBE\"\
+        \ -lproc\npython3 -B - <<'PY_CHECK'\nimport pathlib, sys, subprocess\nsys.path.insert(0, str(pathlib.Path('.github/en9-release/measure').resolve()))\n\
+        from profile_macos import _TaskProbe\nprobe = _TaskProbe()\nwith subprocess.Popen(['/bin/sleep', '1'], stdin=subprocess.DEVNULL) as owned:\n\
+        \    row = probe.snapshot(owned)\n    assert row['pid'] == owned.pid and row['task']['pti_csw'] >= 0\nprint('Native SDK task counters\
+        \ verified on an owned child')\nPY_CHECK\n"
+    - name: Collect fixed-sender ABBA receiver profiles
+      run: python3 -B .github/en9-release/measure/profile-intel.py --manifest "$RUNNER_TEMP/profile-inputs/cli.json" --common "$GITHUB_WORKSPACE/.github/en9-release/measure/en8-regtest-presync.py"
+        --normal "$GITHUB_WORKSPACE/.github/en9-release/measure/regtest-normal.py" --resources "$GITHUB_WORKSPACE/.github/en9-release/measure/resource_metrics.py"
+        --paired "$GITHUB_WORKSPACE/.github/en9-release/measure/regtest-release-paired.py" --profile-module "$GITHUB_WORKSPACE/.github/en9-release/measure/profile_macos.py"
+        --fixture "$RUNNER_TEMP/profile-fixture/regtest-100000.dat" --fixture-info "$RUNNER_TEMP/profile-fixture/fixture-info.json" --work-dir
+        "$RUNNER_TEMP/profile-output" --candidate-source "$RELEASE_SOURCE" --candidate-tree "$RELEASE_TREE" --fixed-candidate-sender
+      env: *id001
+    - name: Retain only owned profile evidence
+      if: always()
+      run: "python3 - <<'PY_COLLECT'\nimport os,pathlib,tarfile\nroot=pathlib.Path(os.environ['RUNNER_TEMP'])/'profile-output'\nallowed={'result.json','profile-input.json','profile-receipt.json','worker.log','debug.log','console.log'}\n\
+        with tarfile.open(root.parent/'en9-intel-profile-evidence.tar.gz','w:gz') as archive:\n if root.exists():\n  for p in sorted(root.rglob('*')):\n\
+        \   if p.is_file() and (p.name in allowed or (p.suffix in ['.txt','.log','.json'] and 'profile-evidence' in p.parts)):\n    archive.add(p,arcname=str(p.relative_to(root)),recursive=False)\n\
+        PY_COLLECT"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: en9-intel-m2-task-profile
+        path: ${{ runner.temp }}/en9-intel-profile-evidence.tar.gz
+        if-no-files-found: error
+        retention-days: 7
