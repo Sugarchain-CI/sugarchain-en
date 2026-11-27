@@ -32,6 +32,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.14'
+      - name: Verify asynchronous RPC dispatch before fixture downloads
+        run: python -B -m unittest discover -s .github/fresh-mainnet-write -p 'test_*.py' -v
       - name: Download exact reference UCRT runtime
         uses: actions/download-artifact@v8
         with:

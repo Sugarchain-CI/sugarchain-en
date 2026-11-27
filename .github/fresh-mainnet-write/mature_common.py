@@ -1,5 +1,6 @@
 """Shared fixture, wire, and RPC helpers from the mature Mainnet qualification."""
 
+import asyncio
 import base64
 import calendar
 from datetime import datetime
