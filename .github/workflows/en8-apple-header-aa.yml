@@ -1,0 +1,57 @@
+name: Apple ARM64 ordinary header A/A calibration
+on:
+  push:
+    branches: [ci/en8-apple-index-cache]
+    paths:
+      - .github/workflows/en8-apple-header-aa.yml
+      - .github/apple-header-aa/**
+permissions:
+  actions: read
+  contents: read
+jobs:
+  native:
+    name: Measure same-binary Apple ARM64 order noise
+    runs-on: macos-15
+    timeout-minutes: 12
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          repository: Sugarchain-CI/sugarchain-en
+          run-id: 45929559984
+          name: apple-ordinary-cross-control
+          path: ${{ runner.temp }}/retained-aa-control
+      - name: Verify native runner and complete the single A/A experiment
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          test "$(uname -s)" = Darwin
+          test "$(uname -m)" = arm64
+          test "$(sysctl -in sysctl.proc_translated 2>/dev/null || true)" != 1
+          mkdir "$RUNNER_TEMP/aa-evidence"
+          {
+            sw_vers
+            sysctl machdep.cpu.brand_string hw.logicalcpu hw.memsize hw.pagesize
+            git rev-parse HEAD 'HEAD^{tree}'
+          } > "$RUNNER_TEMP/aa-evidence/environment.log"
+          python3 -B .github/apple-header-aa/measure.py \
+            --artifact "$RUNNER_TEMP/retained-aa-control" \
+            --headers .github/en8-mainnet/mainnet-headers-100k.bin.gz \
+            --case-root "$RUNNER_TEMP/aa-cases" \
+            --output "$RUNNER_TEMP/aa-evidence/measurement" \
+            > "$RUNNER_TEMP/aa-evidence/driver.log" 2>&1
+      - name: Retain complete and partial evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-apple-header-aa-evidence
+          path: ${{ runner.temp }}/aa-evidence
+          if-no-files-found: warn
+          retention-days: 14
