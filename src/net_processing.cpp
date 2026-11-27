@@ -231,6 +231,8 @@ struct QueuedBlock {
     const CBlockIndex* pindex;
     /** Optional, used for CMPCTBLOCK downloads */
     std::unique_ptr<PartiallyDownloadedBlock> partialBlock;
+    /** Allow one dispatch pass for a timely full block already in the processing queue. */
+    bool timeout_deferred{false};
 };
 
 /**
@@ -6290,7 +6292,22 @@ bool PeerManagerImpl::SendMessages(CNode& node)
         if (state.vBlocksInFlight.size() > 0) {
             QueuedBlock &queuedBlock = state.vBlocksInFlight.front();
             int nOtherPeersWithValidatedDownloads = m_peers_downloading_from - 1;
-            if (current_time > state.m_downloading_since + std::chrono::seconds{consensusParams.nPowTargetSpacing} * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER * nOtherPeersWithValidatedDownloads)) {
+            const auto deadline{state.m_downloading_since + std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::seconds{consensusParams.nPowTargetSpacing} * (BLOCK_DOWNLOAD_TIMEOUT_BASE + BLOCK_DOWNLOAD_TIMEOUT_PER_PEER * nOtherPeersWithValidatedDownloads))};
+            if (current_time > deadline) {
+                // Local message processing may take longer than the download interval.
+                // Give a matching, timely frame at the head of the queue one normal dispatch pass.
+                if (!queuedBlock.timeout_deferred && !queuedBlock.partialBlock && !node.fPauseSend &&
+                    m_chainparams.GetChainType() == ChainType::MAIN && m_chainman.IsInitialBlockDownload()) {
+                    DataStream header;
+                    header << queuedBlock.pindex->GetBlockHeader();
+                    if (node.HasNextBlockMessage(std::span{header}, deadline)) {
+                        queuedBlock.timeout_deferred = true;
+                        LogDebug(BCLog::NET, "Block %s arrived by the download deadline and is queued for processing, peer=%d\n",
+                                 queuedBlock.pindex->GetBlockHash().ToString(), node.GetId());
+                        return true;
+                    }
+                }
                 LogInfo("Timeout downloading block %s, %s\n", queuedBlock.pindex->GetBlockHash().ToString(), node.DisconnectMsg(fLogIPs));
                 node.fDisconnect = true;
                 return true;

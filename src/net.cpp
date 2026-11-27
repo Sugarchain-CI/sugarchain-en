@@ -4126,6 +4126,18 @@ std::optional<std::pair<CNetMessage, bool>> CNode::PollMessage()
     return std::make_pair(std::move(msgs.front()), !m_msg_process_queue.empty());
 }
 
+bool CNode::HasNextBlockMessage(std::span<const std::byte> header, std::chrono::microseconds deadline)
+{
+    if (header.size() != 80) return false;
+    LOCK(m_msg_process_queue_mutex);
+    if (m_msg_process_queue.empty()) return false;
+
+    const auto& message = m_msg_process_queue.front();
+    return message.m_type == NetMsgType::BLOCK && message.m_time <= deadline &&
+           message.m_recv.size() > header.size() && // Includes at least a transaction count.
+           std::equal(header.begin(), header.end(), message.m_recv.begin());
+}
+
 bool CConnman::NodeFullyConnected(const CNode* pnode)
 {
     return pnode && pnode->fSuccessfullyConnected && !pnode->fDisconnect;

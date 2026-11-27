@@ -24,6 +24,7 @@
 #include <util/strencodings.h>
 #include <util/string.h>
 #include <util/threadinterrupt.h>
+#include <util/time.h>
 #include <validation.h>
 
 #include <boost/test/unit_test.hpp>
@@ -44,6 +45,110 @@ using namespace util::hex_literals;
 using util::ToString;
 
 BOOST_FIXTURE_TEST_SUITE(net_tests, RegTestingSetup)
+
+BOOST_FIXTURE_TEST_CASE(mainnet_block_timeout_queued_body, TestingSetup)
+{
+    LOCK(NetEventsInterface::g_msgproc_mutex);
+    auto& connman{static_cast<ConnmanTestMsg&>(*m_node.connman)};
+    auto& peerman{*m_node.peerman};
+    const auto& genesis{m_node.chainman->GetParams().GenesisBlock()};
+    const auto* index{WITH_LOCK(cs_main, return m_node.chainman->ActiveChain().Genesis())};
+    BOOST_REQUIRE(index);
+    BOOST_REQUIRE(m_node.chainman->IsInitialBlockDownload());
+    const auto block_header{index->GetBlockHeader()};
+
+    struct RestoreTime {
+        const std::chrono::seconds previous{GetMockTime()};
+        ~RestoreTime() { SetMockTime(previous); }
+    } restore_time;
+    enum class Receipt { TIMELY, DEADLINE, MISSING, LATE, WRONG_HEADER, OTHER_FIRST, HEADER_ONLY, TRUNCATED_BODY, SEND_PAUSED };
+    const auto check_timeout = [&](Receipt receipt, bool process) {
+        const auto requested{GetTime<std::chrono::seconds>()};
+        SetMockTime(requested);
+        auto& peer{*new CNode(0, nullptr, CAddress{}, 0, 0, CAddress{}, "", ConnectionType::OUTBOUND_FULL_RELAY,
+                            /*inbound_onion=*/false, /*network_key=*/0)};
+        connman.AddTestNode(peer);
+        connman.Handshake(peer, /*successfully_connected=*/true, ServiceFlags(NODE_NETWORK | NODE_WITNESS),
+                          NODE_NETWORK, PROTOCOL_VERSION, /*relay_txs=*/false);
+        struct CleanupPeer {
+            ConnmanTestMsg& connman;
+            PeerManager& peerman;
+            CNode& peer;
+            ~CleanupPeer()
+            {
+                peerman.FinalizeNode(peer);
+                connman.ClearTestNodes();
+            }
+        } cleanup{connman, peerman, peer};
+
+        BOOST_REQUIRE(peerman.FetchBlock(peer.GetId(), *index).has_value());
+        CNodeStateStats inflight;
+        BOOST_REQUIRE(peerman.GetNodeStateStats(peer.GetId(), inflight));
+        BOOST_REQUIRE_EQUAL(inflight.vHeightInFlight.size(), 1);
+        connman.FlushSendBuffer(peer);
+
+        const auto deadline{requested + 5s};
+        auto received{deadline - 1s};
+        if (receipt == Receipt::DEADLINE) received = deadline;
+        if (receipt == Receipt::LATE) received = deadline + 1s;
+        SetMockTime(received);
+        if (receipt == Receipt::OTHER_FIRST) {
+            BOOST_REQUIRE(connman.ReceiveMsgFrom(peer, NetMsg::Make(NetMsgType::PING, uint64_t{1})));
+        }
+        if (receipt == Receipt::HEADER_ONLY) {
+            BOOST_REQUIRE(connman.ReceiveMsgFrom(peer, NetMsg::Make(NetMsgType::BLOCK, block_header)));
+        } else if (receipt == Receipt::TRUNCATED_BODY) {
+            BOOST_REQUIRE(connman.ReceiveMsgFrom(peer, NetMsg::Make(NetMsgType::BLOCK, block_header, uint8_t{1})));
+        } else if (receipt != Receipt::MISSING) {
+            CBlock body{genesis};
+            if (receipt == Receipt::WRONG_HEADER) ++body.nNonce;
+            BOOST_REQUIRE(connman.ReceiveMsgFrom(peer, NetMsg::Make(NetMsgType::BLOCK, TX_WITH_WITNESS(body))));
+        }
+        peer.fPauseSend = receipt == Receipt::SEND_PAUSED;
+        SetMockTime(deadline + 2s);
+        BOOST_REQUIRE(peerman.SendMessages(peer));
+
+        if (receipt != Receipt::TIMELY && receipt != Receipt::DEADLINE && receipt != Receipt::TRUNCATED_BODY) {
+            BOOST_CHECK(peer.fDisconnect);
+            return;
+        }
+        BOOST_REQUIRE(!peer.fDisconnect);
+        CNodeStateStats before_dispatch;
+        BOOST_REQUIRE(peerman.GetNodeStateStats(peer.GetId(), before_dispatch));
+        BOOST_CHECK(before_dispatch.vHeightInFlight == inflight.vHeightInFlight);
+
+        DataStream header;
+        header << block_header << uint8_t{1};
+        const auto header_bytes{std::span{header}};
+        BOOST_REQUIRE_EQUAL(header_bytes.size(), 81);
+        BOOST_CHECK(peer.HasNextBlockMessage(header_bytes.first(80), deadline));
+        BOOST_CHECK(!peer.HasNextBlockMessage(header_bytes.first(0), deadline));
+        BOOST_CHECK(!peer.HasNextBlockMessage(header_bytes.first(79), deadline));
+        BOOST_CHECK(!peer.HasNextBlockMessage(header_bytes, deadline));
+
+        if (process) (void)connman.ProcessMessagesOnce(peer);
+        BOOST_CHECK(peerman.SendMessages(peer));
+        if (process && receipt == Receipt::TIMELY) {
+            CNodeStateStats after_dispatch;
+            BOOST_REQUIRE(peerman.GetNodeStateStats(peer.GetId(), after_dispatch));
+            BOOST_CHECK(after_dispatch.vHeightInFlight.empty());
+            BOOST_CHECK(!peer.fDisconnect);
+        } else {
+            // The same already expired request gets no second pass, even at unchanged mock time.
+            BOOST_CHECK(peer.fDisconnect);
+        }
+    };
+
+    check_timeout(Receipt::TIMELY, /*process=*/true);
+    check_timeout(Receipt::DEADLINE, /*process=*/false);
+    check_timeout(Receipt::MISSING, /*process=*/false);
+    check_timeout(Receipt::LATE, /*process=*/false);
+    check_timeout(Receipt::WRONG_HEADER, /*process=*/false);
+    check_timeout(Receipt::OTHER_FIRST, /*process=*/false);
+    check_timeout(Receipt::HEADER_ONLY, /*process=*/false);
+    check_timeout(Receipt::TRUNCATED_BODY, /*process=*/true);
+    check_timeout(Receipt::SEND_PAUSED, /*process=*/false);
+}
 
 BOOST_AUTO_TEST_CASE(message_batches_bound_work_and_respect_termination)
 {
