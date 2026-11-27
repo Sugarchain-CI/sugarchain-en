@@ -62,7 +62,7 @@ BOOST_FIXTURE_TEST_CASE(mainnet_block_timeout_queued_body, TestingSetup)
         ~RestoreTime() { SetMockTime(previous); }
     } restore_time;
     enum class Receipt { TIMELY, DEADLINE, MISSING, LATE, WRONG_HEADER, OTHER_FIRST, HEADER_ONLY, TRUNCATED_BODY, SEND_PAUSED };
-    const auto check_timeout = [&](Receipt receipt, bool process) {
+    const auto check_timeout = [&](Receipt receipt, bool process) EXCLUSIVE_LOCKS_REQUIRED(NetEventsInterface::g_msgproc_mutex) {
         const auto requested{GetTime<std::chrono::seconds>()};
         SetMockTime(requested);
         auto& peer{*new CNode(0, nullptr, CAddress{}, 0, 0, CAddress{}, "", ConnectionType::OUTBOUND_FULL_RELAY,
