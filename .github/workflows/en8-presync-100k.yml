@@ -1,0 +1,174 @@
+name: En.8 native Regtest 100k PRESYNC measurements
+on:
+  push:
+    branches: [ci/en8-presync-100k]
+    paths:
+      - .github/workflows/en8-presync-100k.yml
+      - .github/en8-presync-100k/**
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: en8-presync-100k-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  TOOLS: .github/en8-presync-100k
+  PYTHONUTF8: '1'
+jobs:
+  linux:
+    name: Native Linux ${{ matrix.arch }}
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-presync-100k'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            host: x86_64-linux-gnu
+            runner: ubuntu-24.04
+          - arch: arm64
+            host: aarch64-linux-gnu
+            runner: ubuntu-24.04-arm
+          - arch: armhf
+            host: arm-linux-gnueabihf
+            runner: ubuntu-24.04-arm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/en8-presync-100k
+      - name: Prepare native runtime and display
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends xvfb xauth fonts-dejavu-core libfontconfig1 libfreetype6 libxkbcommon-x11-0 libxcb-cursor0
+          if [[ '${{ matrix.arch }}' == armhf ]]; then
+            sudo dpkg --add-architecture armhf
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends libc6:armhf libfontconfig1:armhf libfreetype6:armhf libxkbcommon-x11-0:armhf libxcb-cursor0:armhf
+          fi
+      - name: Qualify direct native AArch32 execution
+        id: native
+        if: matrix.arch == 'armhf'
+        run: |
+          mkdir -p "$RUNNER_TEMP/en8-linux-native"
+          if python3 -B "$TOOLS/check-native-armhf.py" "$RUNNER_TEMP/en8-linux-native/armhf-native.json"; then
+            echo 'supported=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'supported=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Verify and unpack the common 100000-block fixture
+        run: python3 -B "$TOOLS/prepare.py" --output "$RUNNER_TEMP/en8-fixture"
+      - name: Measure released native Linux daemon and GUI
+        if: matrix.arch != 'armhf' || steps.native.outputs.supported == 'true'
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s '-screen 0 1280x800x24' python3 -B "$TOOLS/linux-adapter.py" \
+            --host '${{ matrix.host }}' --arch '${{ matrix.arch }}' --pins "$TOOLS/assets.json" \
+            --harness "$TOOLS/en8-regtest-presync.py" \
+            --fixture "$RUNNER_TEMP/en8-fixture/regtest-100000.dat" --fixture-info "$RUNNER_TEMP/en8-fixture/fixture-info.json" \
+            --output "$RUNNER_TEMP/en8-linux-result"
+      - name: Collect only benchmark evidence
+        if: always()
+        run: |
+          python3 -B "$TOOLS/collect.py" --input "$RUNNER_TEMP/en8-linux-result" --output "$RUNNER_TEMP/en8-linux-evidence"
+          if [[ -f "$RUNNER_TEMP/en8-linux-native/armhf-native.json" ]]; then
+            cp "$RUNNER_TEMP/en8-linux-native/armhf-native.json" "$RUNNER_TEMP/en8-linux-evidence/"
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: en8-presync100k-linux-${{ matrix.arch }}
+          path: ${{ runner.temp }}/en8-linux-evidence/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+  windows:
+    name: Native Windows ${{ matrix.crt }}
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-presync-100k'
+    runs-on: windows-2025
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        crt: [ucrt, msvcrt]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/en8-presync-100k
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Verify and unpack the common 100000-block fixture
+        run: python -B "$TOOLS/prepare.py" --output "$RUNNER_TEMP/en8-fixture"
+      - name: Measure released portable and extracted-installer binaries
+        run: |
+          python -B "$TOOLS/windows-regtest.py" --crt '${{ matrix.crt }}' \
+            --harness "$TOOLS/en8-regtest-presync.py" \
+            --fixture "$RUNNER_TEMP/en8-fixture/regtest-100000.dat" --fixture-info "$RUNNER_TEMP/en8-fixture/fixture-info.json" \
+            --pins "$TOOLS/assets.json" --keyring "$TOOLS/release-public.gpg" \
+            --output "$RUNNER_TEMP/en8-windows-result" --trial-seconds 300
+      - name: Collect only benchmark evidence
+        if: always()
+        run: python -B "$TOOLS/collect.py" --input "$RUNNER_TEMP/en8-windows-result" --output "$RUNNER_TEMP/en8-windows-evidence"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: en8-presync100k-windows-${{ matrix.crt }}
+          path: ${{ runner.temp }}/en8-windows-evidence/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
+  macos:
+    name: Native macOS ${{ matrix.arch }}
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-presync-100k'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x86_64
+            runner: macos-15-intel
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/en8-presync-100k
+      - name: Verify and unpack the common 100000-block fixture
+        run: python3 -B "$TOOLS/prepare.py" --output "$RUNNER_TEMP/en8-fixture"
+      - name: Download only pinned published macOS payloads
+        run: |
+          python3 -B "$TOOLS/download.py" --output "$RUNNER_TEMP/en8-macos-downloads" \
+            SHA256SUMS 'sugarchain-en-31.1.2-macos-${{ matrix.arch }}-cli.tar.gz' 'sugarchain-en-31.1.2-macos-${{ matrix.arch }}.zip'
+      - name: Measure released native macOS CLI and GUI
+        run: |
+          python3 -B "$TOOLS/run-macos-benchmark.py" --arch '${{ matrix.arch }}' \
+            --downloads "$RUNNER_TEMP/en8-macos-downloads" --harness "$TOOLS/en8-regtest-presync.py" \
+            --fixture "$RUNNER_TEMP/en8-fixture/regtest-100000.dat" --fixture-info "$RUNNER_TEMP/en8-fixture/fixture-info.json" \
+            --output "$RUNNER_TEMP/en8-macos-result"
+      - name: Collect only benchmark evidence
+        if: always()
+        run: python3 -B "$TOOLS/collect.py" --input "$RUNNER_TEMP/en8-macos-result" --output "$RUNNER_TEMP/en8-macos-evidence"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: en8-presync100k-macos-${{ matrix.arch }}
+          path: ${{ runner.temp }}/en8-macos-evidence/
+          compression-level: 0
+          retention-days: 1
+          if-no-files-found: error
