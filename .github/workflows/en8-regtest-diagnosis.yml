@@ -1,0 +1,115 @@
+name: En.8 native block-phase diagnostic
+on:
+  push:
+    branches: [ci/en8-regtest-diagnosis]
+    paths:
+      - .github/workflows/en8-regtest-diagnosis.yml
+      - .github/en8-regtest-diagnosis/**
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: en8-regtest-diagnosis-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  diagnose:
+    name: Native diagnostic / ${{ matrix.target }}
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-regtest-diagnosis'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            platform: linux
+            arch: x86_64
+            runner: ubuntu-24.04
+            python: python3
+            asset: sugarchain-en-31.1.2-x86_64-linux-gnu.tar.gz
+          - target: linux-arm64
+            platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+            python: python3
+            asset: sugarchain-en-31.1.2-aarch64-linux-gnu.tar.gz
+          - target: linux-armhf
+            platform: linux
+            arch: armhf
+            runner: ubuntu-24.04-arm
+            python: python3
+            asset: sugarchain-en-31.1.2-arm-linux-gnueabihf.tar.gz
+          - target: windows-ucrt
+            platform: windows
+            arch: x86_64
+            runner: windows-2025
+            python: python
+            asset: sugarchain-en-31.1.2-windows-x86_64-ucrt-portable.zip
+          - target: windows-msvcrt
+            platform: windows
+            arch: x86_64
+            runner: windows-2025
+            python: python
+            asset: sugarchain-en-31.1.2-windows-x86_64-msvcrt-portable.zip
+          - target: macos-arm64
+            platform: macos
+            arch: arm64
+            runner: macos-15
+            python: python3
+            asset: sugarchain-en-31.1.2-macos-arm64-cli.tar.gz
+          - target: macos-x86_64
+            platform: macos
+            arch: x86_64
+            runner: macos-15-intel
+            python: python3
+            asset: sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz
+    env:
+      TOOLS: .github/en8-regtest-diagnosis
+      PYTHONUTF8: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/en8-regtest-diagnosis
+      - uses: actions/setup-python@v6
+        if: matrix.platform == 'windows'
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - name: Prepare native ARM hard-float compatibility if selected
+        id: native
+        if: matrix.arch == 'armhf'
+        run: |
+          set -euo pipefail
+          sudo dpkg --add-architecture armhf
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libc6:armhf
+          mkdir -p "$RUNNER_TEMP/diagnostic-native"
+          python3 -B "$TOOLS/check-native-armhf.py" "$RUNNER_TEMP/diagnostic-native/armhf-native.json"
+      - name: Verify identical frozen fixture
+        run: ${{ matrix.python }} -B "$TOOLS/prepare.py" --output "$RUNNER_TEMP/diagnostic-fixture"
+      - name: Run fixed ABBA block-phase logging diagnostic
+        run: |
+          ${{ matrix.python }} -B "$TOOLS/launch.py" \
+            --platform '${{ matrix.platform }}' --arch '${{ matrix.arch }}' --asset '${{ matrix.asset }}' \
+            --fixture "$RUNNER_TEMP/diagnostic-fixture/regtest-100000.dat" \
+            --fixture-info "$RUNNER_TEMP/diagnostic-fixture/fixture-info.json" \
+            --output "$RUNNER_TEMP/diagnostic-result"
+      - name: Collect bounded diagnostic evidence
+        if: always()
+        run: |
+          ${{ matrix.python }} -B "$TOOLS/collect.py" --input "$RUNNER_TEMP/diagnostic-result" --output "$RUNNER_TEMP/diagnostic-evidence"
+          if [[ -f "$RUNNER_TEMP/diagnostic-native/armhf-native.json" ]]; then
+            cp "$RUNNER_TEMP/diagnostic-native/armhf-native.json" "$RUNNER_TEMP/diagnostic-evidence/"
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: en8-block-diagnostic-${{ matrix.target }}
+          path: ${{ runner.temp }}/diagnostic-evidence/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
