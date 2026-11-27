@@ -655,12 +655,14 @@ bool HeaderPoWVerifier::CheckEach(std::span<const CBlockHeader> headers, const C
 
 bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params)
 {
-    return Check(headers, params, /*established_presync=*/false);
+    return Check(headers, params, /*ordered_network_checks=*/false);
 }
 
 bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Consensus::Params& params,
-                              [[maybe_unused]] bool established_presync, const std::function<void()>& after_first_proof)
+                              [[maybe_unused]] bool ordered_network_checks, const std::function<void()>& after_first_proof,
+                              [[maybe_unused]] size_t* ordered_jobs)
 {
+    if (ordered_jobs) *ordered_jobs = 0;
     if (!params.fYespowerSugar || EnableFuzzDeterminism()) {
         return std::ranges::all_of(headers, [&](const auto& header) { return CheckBlockProofOfWork(header, params); });
     }
@@ -687,18 +689,23 @@ bool HeaderPoWVerifier::Check(std::span<const CBlockHeader> headers, const Conse
         return true;
     }
 #if defined(__APPLE__) && defined(__aarch64__)
-    if (established_presync && m_impl->network_window) {
+    if (ordered_network_checks && m_impl->network_window) {
         // Enumerate cold work in order, as in the fixed path below. At most
         // eight unresolved proofs are admitted beyond the verified prefix.
-        if (!m_impl->network_window->Run([headers, &params, &cache]() mutable -> std::optional<HeaderPoWCheck> {
+        size_t jobs{0};
+        if (!m_impl->network_window->Run([headers, &params, &cache, &jobs]() mutable -> std::optional<HeaderPoWCheck> {
                 while (!headers.empty()) {
                     const auto& header{headers.front()};
                     headers = headers.subspan(1);
-                    if (!cache.Contains(cache.Entry(header))) return HeaderPoWCheck{&header, &params};
+                    if (!cache.Contains(cache.Entry(header))) {
+                        ++jobs;
+                        return HeaderPoWCheck{&header, &params};
+                    }
                 }
                 return std::nullopt;
             })) return false;
         cache.InsertBatch(entry);
+        if (ordered_jobs) *ordered_jobs = jobs;
         return true;
     }
 #endif
