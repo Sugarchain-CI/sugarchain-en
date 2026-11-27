@@ -85,9 +85,12 @@ public:
     HeaderPoWVerifier(const HeaderPoWVerifier&) = delete;
     HeaderPoWVerifier& operator=(const HeaderPoWVerifier&) = delete;
     bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params);
-    /** Invoke after_first_proof on the caller thread before checking uncached remainder work. */
+    /** Invoke after_first_proof on the caller thread before checking uncached remainder work.
+     *  Report the admitted cold jobs after a successful ordered window when requested.
+     */
     bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params,
-               bool established_presync, const std::function<void()>& after_first_proof = {});
+               bool ordered_network_checks, const std::function<void()>& after_first_proof = {},
+               size_t* ordered_jobs = nullptr);
     /** Check every header once, including on warm-cache hits; used for startup block-index validation. */
     // Background historical scans persist evidence on disk instead of filling the RAM cache.
     bool CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params, bool cache_result = true);

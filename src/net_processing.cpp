@@ -2681,28 +2681,43 @@ bool PeerManagerImpl::CheckHeadersPoW(const std::vector<CBlockHeader>& headers, 
         }
     }
     // Do these headers have proof-of-work matching what's claimed?
-    const bool can_lead{NATIVE_MAINNET_PRESYNC && m_chainparams.GetChainType() == ChainType::MAIN &&
+    const bool can_optimize_native_ibd{NATIVE_MAINNET_PRESYNC && m_chainparams.GetChainType() == ChainType::MAIN &&
         m_chainman.IsInitialBlockDownload() && !pfrom.HasPermission(NetPermissionFlags::NoBan) &&
         headers.size() == MAX_HEADERS_RESULTS && m_opts.max_headers_result == MAX_HEADERS_RESULTS};
 #if defined(__APPLE__) && defined(__aarch64__)
-    constexpr bool check_presync_phase{true};
+    const auto phase{WITH_LOCK(peer.m_headers_sync_mutex, return peer.m_headers_sync ?
+        std::optional{peer.m_headers_sync->GetState()} : std::nullopt)};
+    const bool established_presync{phase == HeadersSyncState::State::PRESYNC};
+    bool ordinary_ordered_checks{false};
+    if (can_optimize_native_ibd && !phase) {
+        const auto minimum_work{GetAntiDoSWorkThreshold()};
+        LOCK(cs_main);
+        const auto* parent{m_chainman.m_blockman.LookupBlockIndex(headers.front().hashPrevBlock)};
+        ordinary_ordered_checks = parent && parent->IsValid(BLOCK_VALID_TREE) && parent->nChainWork >= minimum_work;
+    }
+    const bool ordered_network_checks{established_presync || ordinary_ordered_checks};
+    size_t ordered_jobs{0};
+    size_t* const ordinary_stats{ordinary_ordered_checks && LogAcceptCategory(BCLog::BENCH, BCLog::Level::Debug) ?
+        &ordered_jobs : nullptr};
 #else
-    const bool check_presync_phase{local_proof_time != nullptr || can_lead};
-#endif
+    const bool check_presync_phase{local_proof_time != nullptr || can_optimize_native_ibd};
     const bool established_presync = check_presync_phase && WITH_LOCK(peer.m_headers_sync_mutex, return peer.m_headers_sync &&
         peer.m_headers_sync->GetState() == HeadersSyncState::State::PRESYNC);
+    const bool ordered_network_checks{established_presync};
+    constexpr size_t* ordinary_stats{nullptr};
+#endif
     const bool measure_proof_time{local_proof_time && established_presync};
     const auto proof_started{measure_proof_time ? SteadyClock::now() : SteadyClock::time_point{}};
     auto lead_elapsed{0us};
     std::function<void()> after_first_proof;
-    if (can_lead && established_presync) {
+    if (can_optimize_native_ibd && established_presync) {
         after_first_proof = [&]() EXCLUSIVE_LOCKS_REQUIRED(g_msgproc_mutex) {
             const auto start{SteadyClock::now()};
             MaybeSendPresyncLead(pfrom, peer, headers, lead);
             lead_elapsed = std::chrono::duration_cast<std::chrono::microseconds>(SteadyClock::now() - start);
         };
     }
-    const bool valid{m_header_pow_verifier.Check(headers, m_chainparams.GetConsensus(), established_presync, after_first_proof)};
+    const bool valid{m_header_pow_verifier.Check(headers, m_chainparams.GetConsensus(), ordered_network_checks, after_first_proof, ordinary_stats)};
     if (!valid) {
         Misbehaving(peer, "header with invalid proof of work");
         return false;
@@ -2710,6 +2725,12 @@ bool PeerManagerImpl::CheckHeadersPoW(const std::vector<CBlockHeader>& headers, 
     if (measure_proof_time) {
         *local_proof_time = std::chrono::duration_cast<std::chrono::microseconds>(SteadyClock::now() - proof_started) - lead_elapsed;
     }
+#if defined(__APPLE__) && defined(__aarch64__)
+    if (ordered_jobs > 0) {
+        LogDebug(BCLog::BENCH, "Mainnet ordinary ordered proof window: peer=%d headers=%u cold_ordered=%u\n",
+                 pfrom.GetId(), headers.size(), ordered_jobs);
+    }
+#endif
 
     // Are these headers connected to each other?
     if (!CheckHeadersAreContinuous(headers)) {

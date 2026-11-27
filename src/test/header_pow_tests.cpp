@@ -1011,7 +1011,7 @@ BOOST_AUTO_TEST_CASE(presync_lead_waits_for_first_proof_and_target_checks)
     Invalidate(invalid_first.front());
     {
         Observation observation;
-        BOOST_CHECK(!verifier.Check(invalid_first, params, /*established_presync=*/true, lead));
+        BOOST_CHECK(!verifier.Check(invalid_first, params, /*ordered_network_checks=*/true, lead));
         BOOST_CHECK_EQUAL(callbacks, 0U);
 #ifdef ENABLE_YESPOWER_TEST_WRAP
         BOOST_CHECK_EQUAL(calls.load(), 1U);
@@ -1021,14 +1021,14 @@ BOOST_AUTO_TEST_CASE(presync_lead_waits_for_first_proof_and_target_checks)
     invalid_target.back().nBits = 0;
     {
         Observation observation;
-        BOOST_CHECK(!verifier.Check(invalid_target, params, /*established_presync=*/true, lead));
+        BOOST_CHECK(!verifier.Check(invalid_target, params, /*ordered_network_checks=*/true, lead));
         BOOST_CHECK_EQUAL(callbacks, 0U);
     }
     auto invalid_later{headers};
     Invalidate(invalid_later[1]);
     {
         Observation observation;
-        BOOST_CHECK(!verifier.Check(invalid_later, params, /*established_presync=*/true, lead));
+        BOOST_CHECK(!verifier.Check(invalid_later, params, /*ordered_network_checks=*/true, lead));
         BOOST_CHECK_EQUAL(callbacks, 1U);
 #ifdef ENABLE_YESPOWER_TEST_WRAP
         BOOST_CHECK_LE(calls.load(), 1U + MAX_HEADER_POW_WORKERS);
@@ -1037,12 +1037,12 @@ BOOST_AUTO_TEST_CASE(presync_lead_waits_for_first_proof_and_target_checks)
     auto cold{Headers(214, 9)};
     {
         Observation observation;
-        BOOST_CHECK(verifier.Check(cold, params, /*established_presync=*/true, lead));
+        BOOST_CHECK(verifier.Check(cold, params, /*ordered_network_checks=*/true, lead));
         BOOST_CHECK_EQUAL(callbacks, 2U);
     }
     {
         Observation observation;
-        BOOST_CHECK(verifier.Check(cold, params, /*established_presync=*/true, lead));
+        BOOST_CHECK(verifier.Check(cold, params, /*ordered_network_checks=*/true, lead));
         BOOST_CHECK_EQUAL(callbacks, 2U);
     }
 }
@@ -1496,7 +1496,7 @@ BOOST_AUTO_TEST_CASE(apple_ordered_checks_drain_and_reuse_after_failure)
     BOOST_CHECK_EQUAL(remaining, 0U);
 }
 
-BOOST_AUTO_TEST_CASE(apple_network_presync_validates_cold_and_cached_proofs)
+BOOST_AUTO_TEST_CASE(apple_network_ordered_checks_reject_invalid_mid_batch_and_reuse_valid_cache)
 {
     CacheBudget budget{1 << 20};
     DataStream stream{test::data::sugarchain_headers};
@@ -1510,16 +1510,34 @@ BOOST_AUTO_TEST_CASE(apple_network_presync_validates_cold_and_cached_proofs)
     } while (CheckProofOfWorkImpl(changed.GetPoWHash(), changed.nBits, consensus));
 
     HeaderPoWVerifier verifier{8, /*network=*/true};
-    // Exercise a fixed cohort before the peer enters PRESYNC.
-    BOOST_REQUIRE(verifier.Check(std::span{headers}.first(3), consensus,
-                                 /*established_presync=*/false));
-    // Mix noncontiguous warm cache entries with cold checks in the window.
-    BOOST_REQUIRE(verifier.Check(std::span{headers}.subspan(4, 1), consensus,
-                                 /*established_presync=*/false));
-    BOOST_REQUIRE(!verifier.Check(invalid, consensus, /*established_presync=*/true));
-    BOOST_REQUIRE(verifier.Check(headers, consensus, /*established_presync=*/true));
-    BOOST_CHECK(verifier.Check(headers, consensus, /*established_presync=*/false));
-    BOOST_CHECK(!verifier.Check(invalid, consensus, /*established_presync=*/false));
+    // Mix warm entries from a fixed cohort with cold work in the window.
+    BOOST_REQUIRE(verifier.Check(std::span{headers}.subspan(4, 3), consensus,
+                                 /*ordered_network_checks=*/false));
+    unsigned callbacks{0};
+    const auto after_first_proof = [&] {
+        ++callbacks;
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_EQUAL(calls.load(), 1U);
+        BOOST_CHECK_EQUAL(active.load(), 0U);
+#endif
+    };
+    size_t ordered_jobs{0};
+    {
+        Observation observation;
+        BOOST_CHECK(!verifier.Check(invalid, consensus, /*ordered_network_checks=*/true, after_first_proof, &ordered_jobs));
+        BOOST_CHECK_EQUAL(ordered_jobs, 0U);
+        BOOST_CHECK_EQUAL(callbacks, 1U);
+#ifdef ENABLE_YESPOWER_TEST_WRAP
+        BOOST_CHECK_LE(calls.load(), 9U + MAX_HEADER_POW_WORKERS);
+        BOOST_CHECK_EQUAL(active.load(), 0U);
+#endif
+    }
+    BOOST_REQUIRE(verifier.Check(headers, consensus, /*ordered_network_checks=*/true, {}, &ordered_jobs));
+    BOOST_CHECK_GT(ordered_jobs, 0U);
+    BOOST_CHECK(verifier.Check(headers, consensus, /*ordered_network_checks=*/true, after_first_proof, &ordered_jobs));
+    BOOST_CHECK_EQUAL(ordered_jobs, 0U);
+    BOOST_CHECK_EQUAL(callbacks, 1U);
+    BOOST_CHECK(!verifier.Check(invalid, consensus, /*ordered_network_checks=*/false));
 }
 #endif
 
