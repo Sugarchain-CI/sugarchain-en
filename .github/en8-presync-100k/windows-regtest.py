@@ -78,20 +78,37 @@ def download(name, directory, expected, local=None):
     return path
 
 
+def run_signature_command(command, work, prefix):
+    try:
+        result = subprocess.run(command, cwd=work, capture_output=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        (work / f"{prefix}-stdout.log").write_bytes(getattr(error, "stdout", None) or b"")
+        diagnostic = getattr(error, "stderr", None) or b""
+        (work / f"{prefix}-stderr.log").write_bytes(diagnostic + f"\n{error}\n".encode("utf-8"))
+        raise
+    (work / f"{prefix}-stdout.log").write_bytes(result.stdout)
+    (work / f"{prefix}-stderr.log").write_bytes(result.stderr)
+    result.check_returncode()
+    return result
+
+
 def verify_signature(manifest, signed, keyring, directory):
     require(digest(keyring) == KEY_SHA, "Pinned release keyring hash differs")
     git = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git" / "usr" / "bin"
     home = directory / "public-signature"
     home.mkdir(mode=0o700)
+    shutil.copyfile(keyring, home / "release-public.gpg")
+    shutil.copyfile(signed, home / "SHA256SUMS.asc")
     gpgv = shutil.which("gpgv") or (str(git / "gpgv.exe") if (git / "gpgv.exe").is_file() else None)
     if gpgv:
-        command = [gpgv, "--homedir", str(home), "--keyring", str(keyring), "--status-fd=2", "--output", "-", str(signed)]
+        command = [gpgv, "--homedir", ".", "--keyring", "./release-public.gpg", "--status-fd=2",
+                   "--output", "-", "./SHA256SUMS.asc"]
     else:
         gpg = executable("gpg", git / "gpg.exe")
-        common = [gpg, "--no-options", "--homedir", str(home), "--batch"]
-        subprocess.run([*common, "--import", str(keyring)], check=True, capture_output=True, timeout=30)
-        command = [*common, "--status-fd=2", "--output", "-", "--decrypt", str(signed)]
-    verified = subprocess.run(command, check=True, capture_output=True, timeout=30)
+        common = [gpg, "--no-options", "--homedir", ".", "--batch"]
+        run_signature_command([*common, "--import", "./release-public.gpg"], home, "import")
+        command = [*common, "--status-fd=2", "--output", "-", "--decrypt", "./SHA256SUMS.asc"]
+    verified = run_signature_command(command, home, "verify")
     signers = re.findall(rb"(?m)^\[GNUPG:\] VALIDSIG ([A-F0-9]{40}) ", verified.stderr)
     # Git for Windows may translate stdout line endings through its C runtime.
     require(signers == [KEY.encode("ascii")] and verified.stdout.replace(b"\r\n", b"\n") == manifest.read_bytes(),

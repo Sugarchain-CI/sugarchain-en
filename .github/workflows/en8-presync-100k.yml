@@ -17,7 +17,7 @@ env:
 jobs:
   linux:
     name: Native Linux ${{ matrix.arch }}
-    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-presync-100k'
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-presync-100k' && !contains(github.event.head_commit.message, '[windows-only]')
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     strategy:
@@ -130,7 +130,7 @@ jobs:
           if-no-files-found: error
   macos:
     name: Native macOS ${{ matrix.arch }}
-    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-presync-100k'
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-presync-100k' && !contains(github.event.head_commit.message, '[windows-only]')
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
