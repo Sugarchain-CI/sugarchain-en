@@ -110,9 +110,19 @@ def verify_signature(manifest, signed, keyring, directory):
         command = [*common, "--status-fd=2", "--output", "-", "--decrypt", "./SHA256SUMS.asc"]
     verified = run_signature_command(command, home, "verify")
     signers = re.findall(rb"(?m)^\[GNUPG:\] VALIDSIG ([A-F0-9]{40}) ", verified.stderr)
-    # Git for Windows may translate stdout line endings through its C runtime.
-    require(signers == [KEY.encode("ascii")] and verified.stdout.replace(b"\r\n", b"\n") == manifest.read_bytes(),
-            "The clearsigned release manifest and pinned signer did not match")
+    require(signers == [KEY.encode("ascii")], "The clearsigned release signer did not match")
+    expected = manifest.read_bytes()
+    require(expected.endswith(b"\n") and not expected.endswith(b"\n\n"),
+            "The pinned checksum manifest must end in exactly one LF")
+    comparison = "exact"
+    if verified.stdout != expected:
+        # The Windows Git runner's gpgv omitted only the final LF on the valid clearsigned output.
+        require(sys.platform == "win32" and verified.stdout + b"\n" == expected,
+                "The clearsigned release manifest did not match")
+        comparison = "missing_final_lf"
+    write_json(directory / "release-signature-verification.json", {"signer_fingerprint": KEY,
+               "recovered_plaintext_comparison": comparison, "recovered_plaintext_bytes": len(verified.stdout),
+               "pinned_manifest_sha256": SIGNED_FILES["SHA256SUMS"]})
     (directory / "release-signature-status.log").write_bytes(verified.stderr)
     hashes = {}
     for line in manifest.read_text(encoding="ascii").splitlines():
