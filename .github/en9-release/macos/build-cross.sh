@@ -19,10 +19,16 @@ export BITCOIN_CONFIG="
 if [[ "$arch" == arm64 ]]; then
   # Keep the Apple Silicon shipping profile from En.7.
   BITCOIN_CONFIG+=" -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON"
+elif [[ "$arch" == x86_64 ]]; then
+  # Restore the Intel profile shipped in En.6, with the default LTO link level.
+  BITCOIN_CONFIG+=" -DCMAKE_C_FLAGS_RELEASE=-O3 -DCMAKE_CXX_FLAGS_RELEASE=-O3 -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
 fi
 # The container uses line-oriented environment variables.
 BITCOIN_CONFIG=$(printf '%s\n' "$BITCOIN_CONFIG" | xargs)
 python3 ./ci/test/02_run_container.py
+if [[ "$arch" == x86_64 ]]; then
+  python3 -B "$(dirname -- "${BASH_SOURCE[0]}")/verify-intel-codegen.py" "$BASE_BUILD_DIR"
+fi
 
 transfer="$RUNNER_TEMP/en9-macos-transfer"
 scratch="$RUNNER_TEMP/en9-macos-transfer-cli"
