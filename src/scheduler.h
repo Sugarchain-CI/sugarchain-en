@@ -140,6 +140,9 @@ private:
 class SerialTaskRunner : public util::TaskRunnerInterface
 {
 private:
+#if defined(__APPLE__) && defined(__x86_64__)
+    friend struct SchedulerWaiterTestAccess;
+#endif
     CScheduler& m_scheduler;
 
     Mutex m_callbacks_mutex;
@@ -148,6 +151,10 @@ private:
     // but must ensure all callbacks happen in-order, so we end up creating
     // our own queue here :(
     std::list<std::function<void()>> m_callbacks_pending GUARDED_BY(m_callbacks_mutex);
+#if defined(__APPLE__) && defined(__x86_64__)
+    // Published under m_callbacks_mutex. Capacity waiters use the queue itself.
+    std::atomic<size_t> m_pending_count{0};
+#endif
     bool m_are_callbacks_running GUARDED_BY(m_callbacks_mutex) = false;
 #ifdef __APPLE__
     bool m_process_queue_scheduled GUARDED_BY(m_callbacks_mutex){false};
@@ -159,8 +166,8 @@ private:
     void MaybeScheduleProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
 #if defined(__APPLE__) && defined(__x86_64__)
     void ScheduleProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
-#endif
-#ifdef __APPLE__
+    void PopCallback(std::list<std::function<void()>>& ready) EXCLUSIVE_LOCKS_REQUIRED(m_callbacks_mutex);
+#elif defined(__APPLE__)
     std::function<void()> PopCallback() EXCLUSIVE_LOCKS_REQUIRED(m_callbacks_mutex);
 #endif
     void ProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
@@ -188,24 +195,16 @@ public:
 #endif
 };
 
-#if defined(__APPLE__) && (defined(__aarch64__) || defined(__x86_64__))
+#if defined(__APPLE__) && defined(__aarch64__)
 /** A single background worker for the ordered validation callback queue. */
 class ValidationTaskRunner final : public util::TaskRunnerInterface
 {
-#ifdef __x86_64__
-    friend struct SchedulerWaiterTestAccess;
-#endif
-
     Mutex m_mutex;
     std::condition_variable m_available;
     std::condition_variable m_capacity;
     size_t m_capacity_waiters GUARDED_BY(m_mutex){0};
     size_t m_capacity_wait_limit GUARDED_BY(m_mutex){0};
     std::list<std::function<void()>> m_pending GUARDED_BY(m_mutex);
-#ifdef __x86_64__
-    // Updated under m_mutex. Capacity waiters still use m_pending under the lock.
-    std::atomic<size_t> m_pending_count{0};
-#endif
     bool m_stopped GUARDED_BY(m_mutex){false};
     std::thread m_worker;
 

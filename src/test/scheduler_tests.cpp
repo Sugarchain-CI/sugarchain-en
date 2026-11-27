@@ -32,14 +32,18 @@ struct SchedulerWaiterTestAccess {
     {
         return WITH_LOCK(scheduler.newTaskMutex, return scheduler.m_waiting_threads);
     }
-    static bool WaitForCapacitySleeper(ValidationTaskRunner& runner)
+    static bool WaitForCapacitySleeper(SerialTaskRunner& runner)
     {
         const auto deadline{std::chrono::steady_clock::now() + 5s};
         do {
-            if (WITH_LOCK(runner.m_mutex, return runner.m_capacity_waiters != 0)) return true;
+            if (WITH_LOCK(runner.m_callbacks_mutex, return runner.m_capacity_waiters != 0)) return true;
             std::this_thread::yield();
         } while (std::chrono::steady_clock::now() < deadline);
         return false;
+    }
+    static void WakeCapacityWaiters(SerialTaskRunner& runner)
+    {
+        runner.m_capacity.notify_all();
     }
 };
 #endif
@@ -300,7 +304,7 @@ BOOST_AUTO_TEST_CASE(scheduler_due_tasks_respect_immediate_shutdown)
 }
 #endif
 
-#if defined(__APPLE__) && (defined(__aarch64__) || defined(__x86_64__))
+#if defined(__APPLE__) && defined(__aarch64__)
 BOOST_AUTO_TEST_CASE(validation_worker_capacity_and_shutdown)
 {
     ValidationTaskRunner runner;
@@ -350,115 +354,6 @@ BOOST_AUTO_TEST_CASE(validation_worker_capacity_and_shutdown)
 }
 #endif
 
-#if defined(__APPLE__) && defined(__x86_64__)
-BOOST_AUTO_TEST_CASE(validation_worker_resumes_with_callbacks_pending)
-{
-    std::promise<void> first_started;
-    std::promise<void> release_first;
-    std::promise<void> release_next;
-    const auto first_gate{release_first.get_future()};
-    const auto next_gate{release_next.get_future()};
-    size_t callbacks_run{0};
-    ValidationTaskRunner runner;
-    runner.insert([&] {
-        first_started.set_value();
-        first_gate.wait();
-    });
-    const auto start_status{first_started.get_future().wait_for(5s)};
-    if (start_status != std::future_status::ready) {
-        release_first.set_value();
-        runner.stop();
-        BOOST_FAIL("The validation worker did not start");
-        return;
-    }
-
-    for (size_t i{0}; i < 8; ++i) {
-        runner.insert([&] { ++callbacks_run; });
-    }
-    runner.insert([&] { next_gate.wait(); });
-    runner.insert([&] { ++callbacks_run; });
-    runner.insert([&] { ++callbacks_run; });
-    const size_t initial_pending{runner.size()};
-    auto capacity{std::async(std::launch::async, [&] { return runner.waitForPendingAtMost(2); })};
-    const bool capacity_blocked{SchedulerWaiterTestAccess::WaitForCapacitySleeper(runner)};
-    release_first.set_value();
-    const auto capacity_status{capacity.wait_for(5s)};
-    const size_t remaining_pending{runner.size()};
-    release_next.set_value();
-    runner.stop();
-    runner.flush();
-
-    BOOST_CHECK_EQUAL(initial_pending, 11U);
-    BOOST_CHECK(capacity_blocked);
-    BOOST_CHECK(capacity_status == std::future_status::ready);
-    BOOST_CHECK(capacity.get());
-    BOOST_CHECK_EQUAL(remaining_pending, 2U);
-    BOOST_CHECK_EQUAL(callbacks_run, 10U);
-}
-
-BOOST_AUTO_TEST_CASE(validation_worker_counts_waiting_callbacks_from_concurrent_producers)
-{
-    std::promise<void> active;
-    std::promise<void> release_active;
-    const auto active_started{active.get_future()};
-    const auto active_gate{release_active.get_future()};
-    std::vector<std::pair<int, int>> observed;
-    ValidationTaskRunner runner;
-    runner.insert([&] {
-        active.set_value();
-        active_gate.wait();
-    });
-    if (active_started.wait_for(5s) != std::future_status::ready) {
-        release_active.set_value();
-        runner.stop();
-        BOOST_FAIL("The validation worker did not start");
-        return;
-    }
-    const size_t count_while_active{runner.size()};
-    const auto produce = [&](int producer) {
-        for (int sequence{0}; sequence < 32; ++sequence) {
-            runner.insert([&, producer, sequence] { observed.emplace_back(producer, sequence); });
-        }
-    };
-    std::jthread first{produce, 0};
-    std::jthread second{produce, 1};
-    first.join();
-    second.join();
-    const size_t count_after_enqueue{runner.size()};
-    release_active.set_value();
-    runner.stop();
-    runner.flush();
-
-    BOOST_CHECK_EQUAL(count_while_active, 0U);
-    BOOST_CHECK_EQUAL(count_after_enqueue, 64U);
-    BOOST_CHECK_EQUAL(runner.size(), 0U);
-    BOOST_REQUIRE_EQUAL(observed.size(), 64U);
-    int next[2]{};
-    for (const auto& [producer, sequence] : observed) {
-        BOOST_REQUIRE(producer == 0 || producer == 1);
-        BOOST_CHECK_EQUAL(sequence, next[producer]++);
-    }
-    BOOST_CHECK_EQUAL(next[0], 32);
-    BOOST_CHECK_EQUAL(next[1], 32);
-}
-
-BOOST_AUTO_TEST_CASE(validation_worker_count_survives_throwing_flush_callback)
-{
-    bool later_ran{false};
-    ValidationTaskRunner runner;
-    runner.stop();
-    runner.insert([] { throw std::runtime_error{"validation callback"}; });
-    runner.insert([&] { later_ran = true; });
-    BOOST_CHECK_EQUAL(runner.size(), 2U);
-    BOOST_CHECK_THROW(runner.flush(), std::runtime_error);
-    BOOST_CHECK_EQUAL(runner.size(), 1U);
-    BOOST_CHECK(!later_ran);
-    runner.flush();
-    BOOST_CHECK(later_ran);
-    BOOST_CHECK_EQUAL(runner.size(), 0U);
-}
-#endif
-
 BOOST_AUTO_TEST_CASE(serial_callbacks_resume_after_exception_and_stop)
 {
     CScheduler scheduler;
@@ -477,12 +372,18 @@ BOOST_AUTO_TEST_CASE(serial_callbacks_resume_after_exception_and_stop)
 
     BOOST_CHECK_THROW(scheduler.serviceQueue(), std::runtime_error);
     BOOST_CHECK_EQUAL(order.size(), 2U);
+#if defined(__APPLE__) && defined(__x86_64__)
+    BOOST_CHECK_EQUAL(runner.size(), 2U);
+#endif
     scheduler.serviceQueue();
     BOOST_CHECK_EQUAL(runner.size(), 1U);
     runner.flush();
 
     const std::vector<int> expected{1, 2, 3, 4};
     BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+#if defined(__APPLE__) && defined(__x86_64__)
+    BOOST_CHECK_EQUAL(runner.size(), 0U);
+#endif
 }
 
 #if defined(__APPLE__) && defined(__x86_64__)
@@ -546,6 +447,67 @@ BOOST_AUTO_TEST_CASE(serial_callbacks_wake_append_and_drain)
     BOOST_CHECK_EQUAL(runner.size(), 0U);
     const std::vector<int> expected{20, 21, 22};
     BOOST_CHECK_EQUAL_COLLECTIONS(order.end() - 3, order.end(), expected.begin(), expected.end());
+}
+
+BOOST_AUTO_TEST_CASE(serial_callbacks_count_pending_and_wake_after_concurrent_insertion)
+{
+    CScheduler scheduler;
+    std::promise<void> started;
+    std::promise<void> release;
+    const auto started_result{started.get_future()};
+    const auto gate{release.get_future()};
+    std::vector<std::pair<int, int>> observed;
+    SerialTaskRunner runner{scheduler};
+    runner.insert([&] {
+        started.set_value();
+        gate.wait();
+    });
+    std::thread worker{[&] { scheduler.serviceQueue(); }};
+    if (started_result.wait_for(5s) != std::future_status::ready) {
+        release.set_value();
+        scheduler.stop();
+        worker.join();
+        runner.flush();
+        BOOST_FAIL("The serial callback did not start");
+        return;
+    }
+    const size_t active_count{runner.size()};
+    const auto produce = [&](int producer) {
+        for (int sequence{0}; sequence < 32; ++sequence) {
+            runner.insert([&, producer, sequence] { observed.emplace_back(producer, sequence); });
+        }
+    };
+    std::jthread first{produce, 0};
+    std::jthread second{produce, 1};
+    first.join();
+    second.join();
+    const size_t queued_count{runner.size()};
+    auto capacity{std::async(std::launch::async, [&] { return runner.waitForPendingAtMost(0); })};
+    const bool capacity_blocked{SchedulerWaiterTestAccess::WaitForCapacitySleeper(runner)};
+
+    scheduler.stop();
+    release.set_value();
+    worker.join();
+    const size_t stopped_count{runner.size()};
+    runner.flush();
+    const auto capacity_status{capacity.wait_for(5s)};
+    if (capacity_status != std::future_status::ready) SchedulerWaiterTestAccess::WakeCapacityWaiters(runner);
+
+    BOOST_CHECK_EQUAL(active_count, 0U);
+    BOOST_CHECK_EQUAL(queued_count, 64U);
+    BOOST_CHECK_EQUAL(stopped_count, 64U);
+    BOOST_CHECK(capacity_blocked);
+    BOOST_CHECK(capacity_status == std::future_status::ready);
+    BOOST_CHECK(capacity.get());
+    BOOST_CHECK_EQUAL(runner.size(), 0U);
+    BOOST_REQUIRE_EQUAL(observed.size(), 64U);
+    int next[2]{};
+    for (const auto& [producer, sequence] : observed) {
+        BOOST_REQUIRE(producer == 0 || producer == 1);
+        BOOST_CHECK_EQUAL(sequence, next[producer]++);
+    }
+    BOOST_CHECK_EQUAL(next[0], 32);
+    BOOST_CHECK_EQUAL(next[1], 32);
 }
 #endif
 
