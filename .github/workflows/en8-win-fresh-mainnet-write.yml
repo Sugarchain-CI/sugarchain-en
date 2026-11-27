@@ -1,0 +1,120 @@
+name: En8 UCRT fresh Mainnet write comparison
+
+on:
+  push:
+    branches:
+      - ci/en8-win-fresh-mainnet-write
+    paths:
+      - .github/workflows/en8-win-fresh-mainnet-write.yml
+      - .github/fresh-mainnet-write/**
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  fresh-write-ucrt:
+    if: ${{ github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-win-fresh-mainnet-write' }}
+    name: Windows UCRT native Mainnet write ABBA
+    runs-on: windows-2022
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: bash
+    env:
+      BASE_TAG: en8-mainnet-tail-fixture-v1
+      BASE_MANIFEST_SHA: 234d86232dc76cc86045b0f6cba2988a140562a112ecbbb454e82fa3f20a30f3
+      OVERLAY_TAG: en8-fresh-mainnet-tail-overlay-v1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Download exact reference UCRT runtime
+        uses: actions/download-artifact@v8
+        with:
+          name: x86_64-w64-mingw32ucrt-executables-release-45872110419
+          run-id: '45872110419'
+          repository: Sugarchain-CI/sugarchain-en
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/en8-fresh-reference
+      - name: Download exact bounded32 UCRT runtime
+        uses: actions/download-artifact@v8
+        with:
+          name: x86_64-w64-mingw32ucrt-executables-release-45908164769
+          run-id: '45908164769'
+          repository: Sugarchain-CI/sugarchain-en
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/en8-fresh-candidate
+      - name: Read pinned public checkpoint and overlay metadata
+        timeout-minutes: 3
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/en8-fresh-input/public" "$RUNNER_TEMP/en8-fresh-input/overlay"
+          gh release download --repo Sugarchain-CI/sugarchain-en --pattern manifest.json \
+            --dir "$RUNNER_TEMP/en8-fresh-input/public" -- "$BASE_TAG"
+          gh release download --repo Sugarchain-CI/sugarchain-en \
+            --pattern overlay-manifest.json --pattern fresh-tail-overlay.tar.gz --pattern mature-mainnet-tail.dat \
+            --pattern anchor-header.bin --pattern converter-cursors.json \
+            --dir "$RUNNER_TEMP/en8-fresh-input/overlay" -- "$OVERLAY_TAG"
+          python -B .github/en8-mainnet/mature-checkpoint/checkpoint_fixture.py \
+            --manifest "$RUNNER_TEMP/en8-fresh-input/public/manifest.json" \
+            --manifest-sha256 "$BASE_MANIFEST_SHA" --output "$RUNNER_TEMP/en8-fresh-preflight"
+          python -B .github/fresh-mainnet-write/run_windows_abba.py \
+            --public-fixture "$RUNNER_TEMP/en8-fresh-input/public" \
+            --overlay-fixture "$RUNNER_TEMP/en8-fresh-input/overlay" --preflight \
+            --output "$RUNNER_TEMP/en8-fresh-overlay-preflight.json"
+      - name: Download verified public checkpoint parts once
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          parts=()
+          while IFS= read -r part; do
+            parts+=(--pattern "$part")
+          done < "$RUNNER_TEMP/en8-fresh-preflight/parts.txt"
+          gh release download --repo Sugarchain-CI/sugarchain-en "${parts[@]}" \
+            --dir "$RUNNER_TEMP/en8-fresh-input/public" -- "$BASE_TAG"
+      - name: Build the small native LevelDB evidence exporter
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:src/leveldb)" = 2127174963e4df3aceec7a8d6fd14c04272d2e1e
+          cmake -S .github/fresh-mainnet-write -B "$RUNNER_TEMP/en8-fresh-exporter" \
+            -G "Visual Studio 17 2022" -A x64 -DSUGARCHAIN_SOURCE="$GITHUB_WORKSPACE"
+          cmake --build "$RUNNER_TEMP/en8-fresh-exporter" --config Release --parallel 2
+      - name: Run four fixed native Mainnet replay cases
+        timeout-minutes: 77
+        run: |
+          set -euo pipefail
+          python -B .github/fresh-mainnet-write/run_windows_abba.py \
+            --baseline "$RUNNER_TEMP/en8-fresh-reference" --candidate "$RUNNER_TEMP/en8-fresh-candidate" \
+            --public-fixture "$RUNNER_TEMP/en8-fresh-input/public" --overlay-fixture "$RUNNER_TEMP/en8-fresh-input/overlay" \
+            --index-exporter "$RUNNER_TEMP/en8-fresh-exporter/Release/export-fresh-index.exe" \
+            --scratch "$RUNNER_TEMP/en8-fresh-owned" --output "$RUNNER_TEMP/en8-fresh-report"
+      - name: Retain all native comparison and typed-audit inputs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: en8-ucrt-fresh-mainnet-write
+          path: |
+            ${{ runner.temp }}/en8-fresh-preflight/preflight.json
+            ${{ runner.temp }}/en8-fresh-overlay-preflight.json
+            ${{ runner.temp }}/en8-fresh-report/sequence.json
+            ${{ runner.temp }}/en8-fresh-report/*/fixture-receipt.json
+            ${{ runner.temp }}/en8-fresh-report/*/flat-file-audit.json
+            ${{ runner.temp }}/en8-fresh-report/*/flat-file-positions.json
+            ${{ runner.temp }}/en8-fresh-report/*/index-key-request.bin
+            ${{ runner.temp }}/en8-fresh-report/*/index-export.bin
+            ${{ runner.temp }}/en8-fresh-report/*/index-export.json
+            ${{ runner.temp }}/en8-fresh-report/*/sample/result.json
+            ${{ runner.temp }}/en8-fresh-report/*/sample/wire.jsonl
+            ${{ runner.temp }}/en8-fresh-report/*/sample/*-node.log
+            ${{ runner.temp }}/en8-fresh-report/*/sample/*-console.log
+          if-no-files-found: warn
+          retention-days: 14
