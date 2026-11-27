@@ -1,0 +1,42 @@
+name: En.9 Intel native callback regression profiles
+'on':
+  push:
+    branches:
+    - ci/en9-intel-profile
+    paths:
+    - .github/workflows/en9-intel-profile.yml
+    - .github/en9-release/measure/**
+permissions:
+  contents: read
+  actions: read
+env:
+  RELEASE_SOURCE: 409ea3ee5f1cdb03790ec2adf5e191031a28737f
+  RELEASE_TREE: 578110fc4d33962ed429171addc1d09cf5d5906f
+jobs:
+  native-profile:
+    runs-on: macos-15-intel
+    timeout-minutes: 25
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: Download and verify the already-built candidate
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: "python3 - <<'PY_FETCH'\nimport os,pathlib,subprocess,hashlib,zipfile,stat\nout=pathlib.Path(os.environ['RUNNER_TEMP'])/'profile-candidate';out.mkdir()\np=out/'artifact.zip'\nwith p.open('wb') as f:subprocess.run(['gh','api','repos/Sugarchain-CI/sugarchain-en/actions/artifacts/15206819567/zip'],stdout=f,check=True,timeout=180)\nwith p.open('rb') as f:assert hashlib.file_digest(f,'sha256').hexdigest()=='883fdf315e295606dc4c904e646802c0e6c7a5bd304cbdfa3cc8dbe04e29a380'\nwith zipfile.ZipFile(p) as z:\n for row in z.infolist():\n  name=pathlib.PurePosixPath(row.filename);assert not name.is_absolute() and '..' not in name.parts and '\\\\' not in row.filename and not stat.S_ISLNK(row.external_attr>>16)\n z.extractall(out)\nprint('Exact candidate producer artifact verified')\nPY_FETCH"
+    - name: Prepare exact baseline and candidate inputs
+      run: 'python3 -B .github/en9-release/measure/prepare.py --output "$RUNNER_TEMP/profile-fixture"
+
+        python3 -B .github/en9-release/measure/prepare-paired-inputs.py --platform macos --candidate-dir "$RUNNER_TEMP/profile-candidate" --baseline-pins .github/en9-release/measure/assets.json --candidate-source "$RELEASE_SOURCE" --candidate-tree "$RELEASE_TREE" --output "$RUNNER_TEMP/profile-inputs"'
+    - name: Collect fixed-sender ABBA receiver profiles
+      run: python3 -B .github/en9-release/measure/profile-intel.py --manifest "$RUNNER_TEMP/profile-inputs/cli.json" --common .github/en9-release/measure/en8-regtest-presync.py --normal .github/en9-release/measure/regtest-normal.py --resources .github/en9-release/measure/resource_metrics.py --paired .github/en9-release/measure/regtest-release-paired.py --profile-module .github/en9-release/measure/profile_macos.py --fixture "$RUNNER_TEMP/profile-fixture/regtest-100000.dat" --fixture-info "$RUNNER_TEMP/profile-fixture/fixture-info.json" --work-dir "$RUNNER_TEMP/profile-output" --candidate-source "$RELEASE_SOURCE" --candidate-tree "$RELEASE_TREE" --fixed-candidate-sender
+    - name: Retain only owned profile evidence
+      if: always()
+      run: "python3 - <<'PY_COLLECT'\nimport os,pathlib,tarfile\nroot=pathlib.Path(os.environ['RUNNER_TEMP'])/'profile-output'\nallowed={'result.json','profile-input.json','profile-receipt.json','worker.log','debug.log','console.log'}\nwith tarfile.open(root.parent/'en9-intel-profile-evidence.tar.gz','w:gz') as archive:\n if root.exists():\n  for p in sorted(root.rglob('*')):\n   if p.is_file() and (p.name in allowed or (p.suffix in ['.txt','.log','.json'] and 'profile-evidence' in p.parts)):\n    archive.add(p,arcname=str(p.relative_to(root)),recursive=False)\nPY_COLLECT"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: en9-intel-profile
+        path: ${{ runner.temp }}/en9-intel-profile-evidence.tar.gz
+        if-no-files-found: error
+        retention-days: 7
