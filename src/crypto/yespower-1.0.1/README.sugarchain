@@ -15,6 +15,11 @@ implementations. Header, target and chain validation remain unchanged.
 
 When the Apple ARM64 target provides __ARM_FEATURE_SHA2, sha256.c also uses
 the hardware SHA-256 compression instructions. State layout, padding, HMAC
-and PBKDF2 remain unchanged. Other targets retain scalar compression. Native
+and PBKDF2 remain unchanged. Native
 validation compares this path with a separately compiled original SHA-256
 implementation, including padding boundaries, split updates and PBKDF2 paths.
+
+Windows x86-64 builds with SHA-NI support reuse the existing x86 SHA-256
+compressor selected and self-tested by the Core CPU dispatch. Before detection,
+when optimized code is disabled, or on CPUs without SHA-NI, Yespower retains
+its original scalar compressor. The release does not require a newer CPU ISA.

@@ -10,9 +10,12 @@
 #include <pow.h>
 #include <test/util/common.h>
 #include <test/util/setup_common.h>
+#include <util/time.h>
 #include <validation.h>
 
+#include <chrono>
 #include <cstddef>
+#include <utility>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -140,6 +143,222 @@ std::vector<CBlockHeader> HeadersGeneratorSetup::GenerateHeaders(
 // 3. Repeat the second set of headers in both phases to demonstrate behavior
 //    when the chain a peer provides has too little work.
 BOOST_FIXTURE_TEST_SUITE(headers_sync_chainwork_tests, HeadersGeneratorSetup)
+
+BOOST_AUTO_TEST_CASE(initial_headers_locator_aligns_only_low_work_mainnet)
+{
+    const auto mainnet{CChainParams::Main()};
+    const auto testnet{CChainParams::TestNet()};
+    constexpr arith_uint256 minimum_work{100};
+    std::vector<CBlockIndex> index(2783);
+    for (size_t height{0}; height < index.size(); ++height) {
+        auto& entry{index[height]};
+        entry.nHeight = static_cast<int>(height);
+        entry.nChainWork = minimum_work - 1;
+        if (height > 0) entry.pprev = &index[height - 1];
+        entry.BuildSkip();
+    }
+
+    struct Start { int best; int parent; int aligned; };
+    for (const auto& [best, parent, aligned] : {Start{0, 0, 0}, Start{1, 0, 0}, Start{1999, 1998, 0},
+            Start{2000, 1999, 0}, Start{2001, 2000, 2000}, Start{2782, 2781, 2000}}) {
+        BOOST_TEST_CONTEXT("best header height=" << best) {
+            const auto choose = [&](const CChainParams& network, uint32_t size, bool align) {
+                return &GetInitialHeadersSyncStart(index[parent], index[best], network, minimum_work, size, align);
+            };
+            BOOST_CHECK_EQUAL(choose(*mainnet, MAX_HEADERS_RESULTS, true), &index[aligned]);
+            BOOST_CHECK_EQUAL(choose(*mainnet, MAX_HEADERS_RESULTS, false), &index[parent]);
+            BOOST_CHECK_EQUAL(choose(*testnet, MAX_HEADERS_RESULTS, true), &index[parent]);
+            BOOST_CHECK_EQUAL(choose(Params(), MAX_HEADERS_RESULTS, true), &index[parent]);
+            BOOST_CHECK_EQUAL(choose(*mainnet, 0, true), &index[parent]);
+            BOOST_CHECK_EQUAL(choose(*mainnet, 1, true), &index[parent]);
+            index[best].nChainWork = minimum_work;
+            BOOST_CHECK_EQUAL(choose(*mainnet, MAX_HEADERS_RESULTS, true), &index[parent]);
+            index[best].nChainWork = minimum_work - 1;
+        }
+    }
+    BOOST_CHECK_EQUAL(&GetInitialHeadersSyncStart(index[2781], index.back(), *mainnet, minimum_work, 997, true), &index[1994]);
+
+    // Announcement and unconnecting-header requests ordinarily start at the
+    // best header itself. Their alignment keeps an exact boundary in place.
+    for (const auto& [best, aligned] : {std::pair{0, 0}, {782, 0}, {1999, 0}, {2000, 2000}, {2782, 2000}}) {
+        const auto choose = [&](const CChainParams& network, bool can_align) {
+            return &GetInitialHeadersSyncStart(index[best], index[best], network, minimum_work, MAX_HEADERS_RESULTS, can_align);
+        };
+        BOOST_CHECK_EQUAL(choose(*mainnet, true), &index[aligned]);
+        BOOST_CHECK_EQUAL(choose(*mainnet, false), &index[best]);
+        BOOST_CHECK_EQUAL(choose(*testnet, true), &index[best]);
+    }
+}
+
+BOOST_AUTO_TEST_CASE(initial_headers_locator_keeps_aligned_anchor_on_best_fork)
+{
+    const auto mainnet{CChainParams::Main()};
+    constexpr arith_uint256 minimum_work{100};
+    std::vector<CBlockIndex> trunk(2783);
+    std::vector<CBlockIndex> fork(trunk.size() - 1999);
+    for (size_t height{0}; height < trunk.size(); ++height) {
+        auto& entry{trunk[height]};
+        entry.nHeight = static_cast<int>(height);
+        entry.nChainWork = minimum_work - 1;
+        if (height > 0) entry.pprev = &trunk[height - 1];
+        entry.BuildSkip();
+    }
+    auto* previous{&trunk[1998]};
+    for (auto& entry : fork) {
+        entry.nHeight = previous->nHeight + 1;
+        entry.nChainWork = minimum_work - 1;
+        entry.pprev = previous;
+        entry.BuildSkip();
+        previous = &entry;
+    }
+
+    const auto& anchor{GetInitialHeadersSyncStart(*fork.back().pprev, fork.back(), *mainnet, minimum_work, MAX_HEADERS_RESULTS, true)};
+    BOOST_CHECK_EQUAL(anchor.nHeight, 2000);
+    BOOST_CHECK_EQUAL(&anchor, &fork[1]);
+    BOOST_CHECK_NE(&anchor, &trunk[2000]);
+    BOOST_CHECK_EQUAL(&GetInitialHeadersSyncStart(fork[0], fork[1], *mainnet, minimum_work, MAX_HEADERS_RESULTS, true), &trunk[0]);
+    BOOST_CHECK_EQUAL(&GetInitialHeadersSyncStart(fork.back(), fork.back(), *mainnet, minimum_work, MAX_HEADERS_RESULTS, true), &fork[1]);
+}
+
+BOOST_AUTO_TEST_CASE(advancing_presync_preserves_network_wait_allowance)
+{
+    struct ResetClock {
+        ~ResetClock() { MockableSteadyClock::ClearMockTime(); }
+    } reset_clock;
+    const auto now = [] {
+        return std::chrono::duration_cast<std::chrono::microseconds>(MockableSteadyClock::now().time_since_epoch());
+    };
+    MockableSteadyClock::SetMockTime(1s);
+    auto deadline{now() + 4s};
+    std::chrono::microseconds remaining_credit{2s};
+
+    auto state{CreateState()};
+    const std::span chain{FirstChain()};
+    BOOST_REQUIRE(state.ProcessNextHeaders(chain.first(1), /*full_headers_message=*/true).request_more);
+    const auto previous_height{state.GetPresyncHeight()};
+
+    MockableSteadyClock::SetMockTime(4500ms);
+    const auto start{now()};
+    MockableSteadyClock::SetMockTime(5500ms);
+    BOOST_CHECK(now() > deadline);
+    const auto advanced{state.ProcessNextHeaders(chain.subspan(1, 1), /*full_headers_message=*/true)};
+    BOOST_REQUIRE(advanced.success && advanced.request_more);
+    state.AccountForLocalPresyncProofTime(previous_height, now() - start, deadline, remaining_credit);
+    BOOST_CHECK(deadline - now() == 500ms);
+    BOOST_CHECK(remaining_credit == 1s);
+
+    MockableSteadyClock::SetMockTime(6001ms);
+    BOOST_CHECK(now() > deadline);
+}
+
+BOOST_AUTO_TEST_CASE(presync_lead_preview_preserves_state_and_work_floor)
+{
+    auto state{CreateState()};
+    const std::span chain{FirstChain()};
+    constexpr size_t group{MAX_HEADERS_RESULTS};
+    BOOST_REQUIRE(state.ProcessNextHeaders(chain.first(group), /*full_headers_message=*/true).request_more);
+    const auto before_work{state.GetPresyncWork()};
+    const auto before_height{state.GetPresyncHeight()};
+    const auto before_locator{state.NextHeadersRequestLocator()};
+    const auto next{chain.subspan(group, group)};
+
+    BOOST_CHECK(!state.PreviewPresyncLead({}, /*full_headers_message=*/true));
+    BOOST_CHECK(!state.PreviewPresyncLead(next, /*full_headers_message=*/false));
+    BOOST_CHECK(!state.PreviewPresyncLead(chain.subspan(group + 1, group), /*full_headers_message=*/true));
+    auto corrupt{std::vector<CBlockHeader>{next.begin(), next.end()}};
+    corrupt.back().hashPrevBlock.SetNull();
+    BOOST_CHECK(!state.PreviewPresyncLead(corrupt, /*full_headers_message=*/true));
+    corrupt.back() = next.back();
+    corrupt.back().nBits = 0;
+    BOOST_CHECK(!state.PreviewPresyncLead(corrupt, /*full_headers_message=*/true));
+
+    const auto preview{state.PreviewPresyncLead(next, /*full_headers_message=*/true)};
+    BOOST_REQUIRE(preview);
+    BOOST_CHECK_EQUAL(preview->vHave.front(), next.back().GetHash());
+    BOOST_CHECK_EQUAL(state.GetPresyncHeight(), before_height);
+    BOOST_CHECK_EQUAL(state.GetPresyncWork().GetHex(), before_work.GetHex());
+    BOOST_CHECK(state.NextHeadersRequestLocator().vHave == before_locator.vHave);
+    BOOST_REQUIRE(state.ProcessNextHeaders(next, /*full_headers_message=*/true).request_more);
+    BOOST_CHECK(state.NextHeadersRequestLocator().vHave == preview->vHave);
+
+    const auto remainder{chain.subspan(2 * group)};
+    BOOST_CHECK(!state.PreviewPresyncLead(remainder, /*full_headers_message=*/true));
+    BOOST_REQUIRE(state.ProcessNextHeaders(remainder, /*full_headers_message=*/true).request_more);
+    BOOST_CHECK(state.GetState() == State::REDOWNLOAD);
+    BOOST_CHECK_EQUAL(state.NextHeadersRequestLocator().vHave.front(), chain_start.GetBlockHash());
+    BOOST_CHECK(!state.PreviewPresyncLead(next, /*full_headers_message=*/true));
+}
+
+BOOST_AUTO_TEST_CASE(presync_proof_credit_requires_live_advancement)
+{
+    auto state{CreateState()};
+    const std::span chain{SecondChain()};
+    BOOST_REQUIRE(state.ProcessNextHeaders(chain.first(1), /*full_headers_message=*/true).request_more);
+    const auto previous_height{state.GetPresyncHeight()};
+    std::chrono::microseconds deadline{10s};
+    std::chrono::microseconds remaining_credit{2s};
+
+    state.AccountForLocalPresyncProofTime(previous_height, 1s, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 10s);
+    BOOST_CHECK(remaining_credit == 2s);
+
+    const auto invalid{state.ProcessNextHeaders(chain.first(1), /*full_headers_message=*/true)};
+    BOOST_CHECK(!invalid.success);
+    state.AccountForLocalPresyncProofTime(previous_height, 1s, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 10s);
+    BOOST_CHECK(remaining_credit == 2s);
+
+    auto incomplete_state{CreateState()};
+    BOOST_REQUIRE(incomplete_state.ProcessNextHeaders(chain.first(1), /*full_headers_message=*/true).request_more);
+    const auto incomplete_before{incomplete_state.GetPresyncHeight()};
+    const auto incomplete{incomplete_state.ProcessNextHeaders(chain.subspan(1, 1), /*full_headers_message=*/false)};
+    BOOST_CHECK(incomplete.success && !incomplete.request_more);
+    incomplete_state.AccountForLocalPresyncProofTime(incomplete_before, 1s, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 10s);
+    BOOST_CHECK(remaining_credit == 2s);
+}
+
+BOOST_AUTO_TEST_CASE(presync_proof_credit_is_bounded_and_keeps_deadline_sentinels)
+{
+    auto state{CreateState()};
+    const std::span chain{FirstChain()};
+    BOOST_REQUIRE(state.ProcessNextHeaders(chain.first(1), /*full_headers_message=*/true).request_more);
+    const auto initial_height{state.GetPresyncHeight()};
+    BOOST_REQUIRE(state.ProcessNextHeaders(chain.subspan(1, 1), /*full_headers_message=*/true).request_more);
+    std::chrono::microseconds deadline{10s};
+    std::chrono::microseconds remaining_credit{2s};
+    state.AccountForLocalPresyncProofTime(initial_height, 1s, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 11s);
+    BOOST_CHECK(remaining_credit == 1s);
+
+    const auto previous_height{state.GetPresyncHeight()};
+    const auto transition{state.ProcessNextHeaders(chain.subspan(2), /*full_headers_message=*/false)};
+    BOOST_REQUIRE(transition.success && transition.request_more);
+    BOOST_CHECK(state.GetState() == State::REDOWNLOAD);
+    state.AccountForLocalPresyncProofTime(previous_height, -1us, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 11s);
+    state.AccountForLocalPresyncProofTime(previous_height, 3s, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 12s);
+    BOOST_CHECK(remaining_credit == 0us);
+    state.AccountForLocalPresyncProofTime(previous_height, 3s, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 12s);
+
+    constexpr auto disabled{std::chrono::microseconds::max()};
+    deadline = disabled - 2us;
+    remaining_credit = 3us;
+    state.AccountForLocalPresyncProofTime(previous_height, 3us, deadline, remaining_credit);
+    BOOST_CHECK(deadline == disabled - 1us);
+    BOOST_CHECK(remaining_credit == 2us);
+
+    deadline = disabled;
+    state.AccountForLocalPresyncProofTime(previous_height, 3us, deadline, remaining_credit);
+    BOOST_CHECK(deadline == disabled);
+    BOOST_CHECK(remaining_credit == 2us);
+    deadline = 0us;
+    state.AccountForLocalPresyncProofTime(previous_height, 3us, deadline, remaining_credit);
+    BOOST_CHECK(deadline == 0us);
+    BOOST_CHECK(remaining_credit == 2us);
+}
 
 BOOST_AUTO_TEST_CASE(sneaky_redownload)
 {

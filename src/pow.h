@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <span>
 
@@ -77,10 +78,16 @@ class HeaderPoWVerifier {
 
 public:
     explicit HeaderPoWVerifier(int workers);
+#if defined(__APPLE__) && defined(__aarch64__)
+    HeaderPoWVerifier(int workers, bool network);
+#endif
     ~HeaderPoWVerifier();
     HeaderPoWVerifier(const HeaderPoWVerifier&) = delete;
     HeaderPoWVerifier& operator=(const HeaderPoWVerifier&) = delete;
     bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params);
+    /** Invoke after_first_proof on the caller thread before checking uncached remainder work. */
+    bool Check(std::span<const CBlockHeader> headers, const Consensus::Params& params,
+               bool established_presync, const std::function<void()>& after_first_proof = {});
     /** Check every header once, including on warm-cache hits; used for startup block-index validation. */
     // Background historical scans persist evidence on disk instead of filling the RAM cache.
     bool CheckEach(std::span<const CBlockHeader> headers, const Consensus::Params& params, bool cache_result = true);

@@ -4,6 +4,7 @@
 
 #include <headerssync.h>
 
+#include <kernel/chainparams.h>
 #include <logging.h>
 #include <pow.h>
 #include <util/check.h>
@@ -15,6 +16,35 @@
 // Our memory analysis in headerssync-params.py assumes this many bytes for a
 // CompressedHeader (we should re-calculate parameters if we compress further).
 static_assert(sizeof(CompressedHeader) == 48);
+
+const CBlockIndex& GetInitialHeadersSyncStart(const CBlockIndex& start, const CBlockIndex& best_header, const CChainParams& params,
+        const arith_uint256& minimum_chain_work, uint32_t batch_size, bool align_low_work_sync)
+{
+    if (!align_low_work_sync || params.GetChainType() != ChainType::MAIN || !params.GetConsensus().fYespowerSugar ||
+        best_header.nChainWork >= minimum_chain_work || batch_size == 0) {
+        return start;
+    }
+
+    // Matching batch boundaries can reuse the exact-header proof cache from
+    // an earlier download in this process.
+    const auto height{static_cast<uint32_t>(start.nHeight)};
+    const int aligned_height{static_cast<int>(height - height % batch_size)};
+    return *Assert(start.GetAncestor(aligned_height));
+}
+
+void HeadersSyncState::AccountForLocalPresyncProofTime(int64_t previous_height,
+        std::chrono::microseconds proof_time, std::chrono::microseconds& deadline,
+        std::chrono::microseconds& credit_remaining) const
+{
+    constexpr auto disabled{std::chrono::microseconds::max()};
+    if (m_download_state == State::FINAL || m_current_height <= previous_height ||
+        proof_time <= 0us || credit_remaining <= 0us || deadline <= 0us || deadline == disabled) {
+        return;
+    }
+    const auto credit{std::min({proof_time, credit_remaining, disabled - 1us - deadline})};
+    deadline += credit;
+    credit_remaining -= credit;
+}
 
 HeadersSyncState::HeadersSyncState(NodeId id,
                                    const Consensus::Params& consensus_params,
@@ -366,25 +396,41 @@ std::vector<CBlockHeader> HeadersSyncState::PopHeadersReadyForAcceptance()
     return ret;
 }
 
+std::optional<CBlockLocator> HeadersSyncState::PreviewPresyncLead(std::span<const CBlockHeader> headers, bool full_headers_message) const
+{
+    if (m_download_state != State::PRESYNC || !full_headers_message || headers.empty() ||
+        m_current_chain_work >= m_minimum_required_work) return std::nullopt;
+
+    auto previous{m_last_header_received.GetHash()};
+    auto height{m_current_height};
+    auto remaining_work{m_minimum_required_work - m_current_chain_work};
+    auto commitments{m_header_commitments.size()};
+    for (const auto& header : headers) {
+        if (header.hashPrevBlock != previous || !DeriveTarget(header.nBits, m_consensus_params.powLimit)) return std::nullopt;
+        // Subtract from the work margin to avoid modular wrap on arbitrary targets.
+        // The response that reaches the floor must request REDOWNLOAD instead.
+        const auto work{GetBlockProof(header)};
+        if (work >= remaining_work) return std::nullopt;
+        remaining_work -= work;
+        if (++height % m_params.commitment_period == m_commit_offset && ++commitments > m_max_commitments) return std::nullopt;
+        previous = header.GetHash();
+    }
+    return ContinuationLocator(previous);
+}
+
+CBlockLocator HeadersSyncState::ContinuationLocator(const uint256& last_hash) const
+{
+    auto chain_start_locator = LocatorEntries(&m_chain_start);
+    std::vector<uint256> locator{last_hash};
+    locator.insert(locator.end(), chain_start_locator.begin(), chain_start_locator.end());
+
+    return CBlockLocator{std::move(locator)};
+}
+
 CBlockLocator HeadersSyncState::NextHeadersRequestLocator() const
 {
     Assume(m_download_state != State::FINAL);
     if (m_download_state == State::FINAL) return {};
 
-    auto chain_start_locator = LocatorEntries(&m_chain_start);
-    std::vector<uint256> locator;
-
-    if (m_download_state == State::PRESYNC) {
-        // During pre-synchronization, we continue from the last header received.
-        locator.push_back(m_last_header_received.GetHash());
-    }
-
-    if (m_download_state == State::REDOWNLOAD) {
-        // During redownload, we will download from the last received header that we stored.
-        locator.push_back(m_redownload_buffer_last_hash);
-    }
-
-    locator.insert(locator.end(), chain_start_locator.begin(), chain_start_locator.end());
-
-    return CBlockLocator{std::move(locator)};
+    return ContinuationLocator(m_download_state == State::PRESYNC ? m_last_header_received.GetHash() : m_redownload_buffer_last_hash);
 }

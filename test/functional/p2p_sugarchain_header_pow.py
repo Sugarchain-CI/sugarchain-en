@@ -8,12 +8,28 @@ Only a localhost test peer connects. Mainnet minimum chainwork is unchanged;
 """
 from io import BytesIO
 from pathlib import Path
+import platform
 
 from test_framework.messages import CBlock, CBlockHeader, MAGIC_BYTES, msg_headers
 from test_framework.p2p import P2PInterface
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.test_node import ErrorMatch
 from test_framework.util import assert_equal
+
+
+class PresyncLeadPeer(P2PInterface):
+    def __init__(self, requested_tip, queued_reply=None):
+        super().__init__()
+        self.requested_tip = requested_tip
+        self.queued_reply = queued_reply
+        self.lead_requests = 0
+
+    def on_getheaders(self, message):
+        if message.locator.vHave[:1] != [self.requested_tip]:
+            return
+        self.lead_requests += 1
+        if self.queued_reply is not None:
+            self.send_without_ping(self.queued_reply)
 
 
 class SugarchainHeaderPoWTest(BitcoinTestFramework):
@@ -28,7 +44,45 @@ class SugarchainHeaderPoWTest(BitcoinTestFramework):
         # Exercise the production default of eight workers without an override.
         self.extra_args = [["-conf=sugarchain.conf", "-disablewallet=1",
                             "-assumevalid=0", "-v2transport=0", "-maxpowcache=1",
-                            "-prune=550"]]
+                            "-prune=550", "-debug=net"]]
+
+    def check_presync_lead_failure(self, node, headers, bad_index):
+        # Both marked nonce mutations have been checked with the uncached
+        # Yespower primitive against their original compact target.
+        batch = list(headers[2000:4000])
+        bad = CBlockHeader(batch[bad_index])
+        bad.nNonce ^= 1
+        batch[bad_index] = bad
+        later_invalid = bad_index != 0
+        if not later_invalid:
+            # Isolate the first-proof gate. The preview's linkage and target
+            # checks must not hide an incorrectly dispatched lead request.
+            for index in range(1, len(batch)):
+                header = CBlockHeader(batch[index])
+                header.hashPrevBlock = batch[index - 1].hash_int
+                batch[index] = header
+        follow_up = CBlockHeader(headers[4000])
+        follow_up.hashPrevBlock = batch[-1].hash_int
+        peer = node.add_p2p_connection(PresyncLeadPeer(
+            batch[-1].hash_int, msg_headers([follow_up]) if later_invalid else None,
+        ), supports_v2_p2p=False)
+        peer.send_and_ping(msg_headers(headers[:2000]))
+        self.wait_until(lambda: node.getpeerinfo()[0]["presynced_headers"] == 2000)
+        peer.wait_for_getheaders(headers[1999].hash_int)
+
+        expected = ["header with invalid proof of work"]
+        unexpected = ["PRESYNC lead committed", "received: headers (82 bytes)"]
+        if later_invalid:
+            expected += ["PRESYNC lead getheaders", "PRESYNC lead discarded"]
+        else:
+            unexpected.append("PRESYNC lead getheaders")
+        with node.assert_debug_log(expected, unexpected):
+            peer.send_without_ping(msg_headers(batch))
+            peer.wait_for_disconnect()
+        self.wait_until(lambda: not node.getpeerinfo())
+        assert_equal(peer.lead_requests, int(later_invalid))
+        assert_equal(node.getblockchaininfo()["headers"], 0)
+        assert_equal(node.getblockcount(), 0)
 
     def run_test(self):
         node = self.nodes[0]
@@ -44,6 +98,15 @@ class SugarchainHeaderPoWTest(BitcoinTestFramework):
             header = CBlockHeader()
             header.deserialize(BytesIO(raw[offset:offset + 80]))
             headers.append(header)
+
+        native_lead = (platform.system(), platform.machine().lower()) in {
+            ("Darwin", "arm64"), ("Windows", "amd64"), ("Windows", "x86_64"),
+        }
+        if native_lead:
+            # Keep the later-invalid batch cold long enough for the owned peer
+            # to queue its response while the earlier proof checks are running.
+            self.check_presync_lead_failure(node, headers, bad_index=-1)
+            self.check_presync_lead_failure(node, headers, bad_index=0)
 
         peer = node.add_p2p_connection(P2PInterface(), supports_v2_p2p=False)
         for offset in range(0, len(headers), 2000):

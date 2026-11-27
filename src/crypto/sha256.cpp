@@ -4,6 +4,7 @@
 
 #include <crypto/sha256.h>
 #include <crypto/common.h>
+#include <crypto/yespower-1.0.1/sha256-dispatch.h>
 
 #include <algorithm>
 #include <cassert>
@@ -688,6 +689,24 @@ std::string SHA256AutoDetect(sha256_implementation::UseImplementation use_implem
     assert(SelfTest());
     return ret;
 }
+
+#ifdef YESPOWER_WINDOWS_SHA_NI
+extern "C" bool YespowerSHA256TryCompress(uint32_t state[8], const uint8_t block[64])
+{
+#if !defined(DISABLE_OPTIMIZED_SHA256)
+    // Reuse the compressor selected by the existing CPU detection and self-test.
+    // Before detection, and on CPUs without SHA-NI, Yespower keeps its scalar path.
+    if (Transform == sha256_x86_shani::Transform) {
+        Transform(state, block, 1);
+        return true;
+    }
+#else
+    (void)state;
+    (void)block;
+#endif
+    return false;
+}
+#endif
 
 ////// SHA-256
 

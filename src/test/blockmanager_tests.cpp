@@ -23,9 +23,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <limits>
 #include <memory>
 #include <set>
+#include <thread>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -84,6 +86,51 @@ struct BufferedBlockStorageSetup : BasicTestingSetup {
 };
 struct LargeFileBufferedBlockStorageSetup : BufferedBlockStorageSetup {
     LargeFileBufferedBlockStorageSetup() : BufferedBlockStorageSetup(false) {}
+};
+#endif
+
+#if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+namespace node {
+struct BlockManagerTestAccess {
+    static int ReadFile(const BlockManager& manager)
+    {
+        LOCK(manager.cs_LastBlockFile);
+        return manager.m_block_read_stream_num;
+    }
+    static bool Finalize(BlockManager& manager, int file_num)
+    {
+        return manager.FlushBlockFile(file_num, /*fFinalize=*/true, /*finalize_undo=*/false);
+    }
+    static BlockManager::ReadRawBlockResult Reopen(const BlockManager& manager, const FlatFilePos& pos)
+    {
+        return manager.ReadRawBlockImpl(pos, std::nullopt);
+    }
+};
+} // namespace node
+
+struct MainnetBlockReaderSetup : BasicTestingSetup {
+    KernelNotifications notifications{Assert(m_node.shutdown_request), m_node.exit_status, *Assert(m_node.warnings)};
+    const fs::path path{m_args.GetDataDirNet() / "reader-blocks"};
+    BlockManager::Options ReaderOptions()
+    {
+        fs::create_directories(path);
+        // Use a deterministic nonzero key to exercise absolute offsets after
+        // seek, not just the unobfuscated case.
+        const std::array key{std::byte{0x34}, std::byte{0xe1}, std::byte{0x42}, std::byte{0x73},
+                             std::byte{0x55}, std::byte{0x61}, std::byte{0xd3}, std::byte{0x87}};
+        AutoFile file{fsbridge::fopen(path / "xor.dat", "wb")};
+        BOOST_REQUIRE(!file.IsNull());
+        file.write(key);
+        BOOST_REQUIRE_EQUAL(file.fclose(), 0);
+        return {
+            .chainparams = Params(),
+            .fast_prune = true,
+            .blocks_dir = path,
+            .notifications = notifications,
+            .block_tree_db_params = {.path = m_args.GetDataDirNet() / "reader-index", .cache_bytes = 0},
+        };
+    }
+    BlockManager blockman{*Assert(m_node.shutdown_signal), ReaderOptions()};
 };
 #endif
 
@@ -519,7 +566,107 @@ BOOST_FIXTURE_TEST_CASE(blockmanager_block_data_part, TestChain100Setup)
     expect_part(1, block->size() - 1);
     expect_part(10, 20);
     expect_part(block->size() - 1, 1);
+#if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::ReadFile(blockman), -1);
+#endif
 }
+
+#if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+BOOST_FIXTURE_TEST_CASE(windows_mainnet_block_reader_append_seeks_and_short_read, MainnetBlockReaderSetup)
+{
+    using Access = node::BlockManagerTestAccess;
+    CBlock block;
+    block.nVersion = 7;
+    const auto first{blockman.WriteBlock(block, 1)};
+    BOOST_REQUIRE(!first.IsNull());
+    DataStream first_expected;
+    first_expected << TX_WITH_WITNESS(block);
+    const auto initial{blockman.ReadRawBlock(first)};
+    BOOST_REQUIRE(initial);
+    BOOST_CHECK(std::ranges::equal(*initial, first_expected));
+    BOOST_CHECK_EQUAL(Access::ReadFile(blockman), first.nFile);
+
+    block.nVersion = 8;
+    block.nNonce = 0x94265ecf;
+    const auto second{blockman.WriteBlock(block, 2)};
+    BOOST_REQUIRE(!second.IsNull());
+    BOOST_REQUIRE_EQUAL(first.nFile, second.nFile);
+    BOOST_REQUIRE_LT(second.nPos, 4096U);
+    DataStream second_expected;
+    second_expected << TX_WITH_WITNESS(block);
+    const auto appended{blockman.ReadRawBlock(second)};
+    if (!appended) {
+        const auto reopened{Access::Reopen(blockman, second)};
+        BOOST_REQUIRE_MESSAGE(appended, "Cached append read failed. Reopened file matched appended bytes: "
+                                           << (reopened && std::ranges::equal(*reopened, second_expected)));
+    }
+    BOOST_CHECK(std::ranges::equal(*appended, second_expected));
+    BOOST_CHECK_EQUAL(Access::ReadFile(blockman), second.nFile);
+
+    std::atomic_bool good{true};
+    const auto read_parts = [&](FlatFilePos position, const DataStream& expected, size_t offset) {
+        for (unsigned i{0}; i < 64; ++i) {
+            const auto bytes{blockman.ReadRawBlock(position, std::pair{offset, size_t{13}})};
+            if (!bytes || !std::ranges::equal(*bytes, std::span{expected}.subspan(offset, 13))) {
+                good.store(false, std::memory_order_relaxed);
+                return;
+            }
+        }
+    };
+    std::jthread low{[&] { read_parts(first, first_expected, 3); }};
+    std::jthread high{[&] { read_parts(second, second_expected, 5); }};
+    low.join();
+    high.join();
+    BOOST_CHECK(good.load(std::memory_order_relaxed));
+
+    const auto invalid_part{blockman.ReadRawBlock(second, std::pair{second_expected.size(), size_t{1}})};
+    BOOST_REQUIRE(!invalid_part);
+    BOOST_CHECK_EQUAL(invalid_part.error(), node::ReadRawError::BadPartRange);
+    BOOST_CHECK_EQUAL(Access::ReadFile(blockman), second.nFile);
+
+    BOOST_REQUIRE(Access::Finalize(blockman, second.nFile));
+    BOOST_CHECK_EQUAL(Access::ReadFile(blockman), -1);
+    const auto filename{blockman.GetBlockPosFilename(second)};
+    fs::resize_file(filename, fs::file_size(filename) - 1);
+    const auto missing{blockman.ReadRawBlock(second)};
+    BOOST_REQUIRE(!missing);
+    BOOST_CHECK_EQUAL(missing.error(), node::ReadRawError::IO);
+    BOOST_CHECK_EQUAL(Access::ReadFile(blockman), -1);
+    BOOST_REQUIRE(blockman.ReadRawBlock(first));
+}
+
+BOOST_FIXTURE_TEST_CASE(windows_mainnet_block_reader_rotation_prune_and_reload, MainnetBlockReaderSetup)
+{
+    using Access = node::BlockManagerTestAccess;
+    CBlock block;
+    block.nVersion = 10;
+    const auto first{blockman.WriteBlock(block, 1)};
+    BOOST_REQUIRE(!first.IsNull());
+    BOOST_REQUIRE(blockman.ReadRawBlock(first));
+    BOOST_CHECK_EQUAL(Access::ReadFile(blockman), first.nFile);
+
+    blockman.GetBlockFileInfo(first.nFile)->nSize = 0x10000;
+    block.nVersion = 11;
+    const auto second{blockman.WriteBlock(block, 2)};
+    BOOST_REQUIRE(!second.IsNull());
+    BOOST_REQUIRE_NE(first.nFile, second.nFile);
+    BOOST_CHECK_EQUAL(Access::ReadFile(blockman), -1);
+    BOOST_REQUIRE(blockman.ReadRawBlock(second));
+    BOOST_CHECK_EQUAL(Access::ReadFile(blockman), second.nFile);
+    BOOST_REQUIRE(blockman.ReadRawBlock(first));
+    BOOST_CHECK_EQUAL(Access::ReadFile(blockman), first.nFile);
+    blockman.UnlinkPrunedFiles({first.nFile});
+    BOOST_CHECK_EQUAL(Access::ReadFile(blockman), -1);
+    BOOST_CHECK(!fs::exists(blockman.GetBlockPosFilename(first)));
+    BOOST_CHECK(!blockman.ReadRawBlock(first));
+    BOOST_REQUIRE(blockman.ReadRawBlock(second));
+    BOOST_CHECK_EQUAL(Access::ReadFile(blockman), second.nFile);
+
+    BOOST_REQUIRE(WITH_LOCK(cs_main, return blockman.LoadBlockIndexDB(std::nullopt)));
+    BOOST_CHECK_EQUAL(Access::ReadFile(blockman), -1);
+    BOOST_REQUIRE(blockman.ReadRawBlock(second));
+}
+#endif
 
 BOOST_FIXTURE_TEST_CASE(blockmanager_block_data_part_error, TestChain100Setup)
 {

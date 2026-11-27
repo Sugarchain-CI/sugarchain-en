@@ -207,7 +207,7 @@ class BlockManager
 {
     friend Chainstate;
     friend ChainstateManager;
-#if defined(__APPLE__) && defined(__x86_64__)
+#if (defined(__APPLE__) && defined(__x86_64__)) || (defined(WIN32) && (defined(__x86_64__) || defined(_M_X64)))
     friend struct BlockManagerTestAccess;
 #endif
 
@@ -285,6 +285,13 @@ private:
     // Keep one read-only file available and let each read own its reference.
     mutable std::shared_ptr<std::FILE> m_block_read_file GUARDED_BY(cs_LastBlockFile);
     mutable int m_block_read_file_num GUARDED_BY(cs_LastBlockFile){-1};
+#endif
+#if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+    // Only the raw Mainnet reader uses this stream. Keep its cursor and its
+    // entire lifetime serialized with file writes, truncation, and pruning.
+    mutable std::unique_ptr<std::FILE, decltype(&std::fclose)> m_block_read_stream GUARDED_BY(cs_LastBlockFile){nullptr, std::fclose};
+    mutable int m_block_read_stream_num GUARDED_BY(cs_LastBlockFile){-1};
+    void CloseBlockReadStream(int file_num = -1) const EXCLUSIVE_LOCKS_REQUIRED(cs_LastBlockFile);
 #endif
 
     /* Calculate the block/rev files to delete based on height specified by user with RPC command pruneblockchain */
@@ -589,6 +596,12 @@ public:
     bool ReadBlockUndo(CBlockUndo& blockundo, const CBlockIndex& index) const;
 
     void CleanupBlockRevFiles() const;
+
+#if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+private:
+    ReadRawBlockResult ReadRawBlockImpl(const FlatFilePos& pos, std::optional<std::pair<size_t, size_t>> block_part,
+                                        std::FILE* cached_stream = nullptr) const;
+#endif
 };
 
 // Calls ActivateBestChain() even if no blocks are imported.

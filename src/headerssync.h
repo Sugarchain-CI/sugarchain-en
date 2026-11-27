@@ -14,8 +14,17 @@
 #include <util/bitdeque.h>
 #include <util/hasher.h>
 
+#include <chrono>
+#include <cstdint>
 #include <deque>
+#include <optional>
 #include <vector>
+
+class CChainParams;
+
+/** Choose the locator start for a new headers download. */
+const CBlockIndex& GetInitialHeadersSyncStart(const CBlockIndex& start, const CBlockIndex& best_header, const CChainParams& params,
+    const arith_uint256& minimum_chain_work, uint32_t batch_size, bool align_low_work_sync);
 
 // A compressed CBlockHeader, which leaves out the prevhash
 struct CompressedHeader {
@@ -128,6 +137,14 @@ public:
     /** Return the amount of work in the chain received during the PRESYNC phase. */
     arith_uint256 GetPresyncWork() const { return m_current_chain_work; }
 
+    /** Preview a full PRESYNC continuation without modifying work, commitments or difficulty history. */
+    std::optional<CBlockLocator> PreviewPresyncLead(std::span<const CBlockHeader> headers, bool full_headers_message) const;
+
+    /** Apply bounded local proof time after processing a batch from an established PRESYNC. */
+    void AccountForLocalPresyncProofTime(int64_t previous_height, std::chrono::microseconds proof_time,
+                                        std::chrono::microseconds& deadline,
+                                        std::chrono::microseconds& credit_remaining) const;
+
     /** Construct a HeadersSyncState object representing a headers sync via this
      *  download-twice mechanism).
      *
@@ -216,6 +233,8 @@ private:
 
     /** Return a set of headers that satisfy our proof-of-work threshold */
     std::vector<CBlockHeader> PopHeadersReadyForAcceptance();
+
+    CBlockLocator ContinuationLocator(const uint256& last_hash) const;
 
 private:
     /** NodeId of the peer (used for log messages) **/
