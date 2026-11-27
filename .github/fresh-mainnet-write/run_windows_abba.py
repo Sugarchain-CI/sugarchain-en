@@ -22,16 +22,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "en8-mainnet" / "ma
 import checkpoint_fixture
 
 BASELINE = {
-    "run": "45872110419", "source": "9c502574b652804905d2533d51742ca91f694532",
-    "tree": "f44aa1b47f9701996046bbb396106f1d5c365e66",
-    "manifest": "65a8c4e1ff440de4a3f39d88361f4b791a7730571b0a7b8f4754302ca0824a0a",
-    "daemon": "04ccedd40133b40011ca1a4be688fbe8eb7553b4f5846f488a087b11581fedbb",
+    "run": "45926384208", "source": "1b3029359223d7cee5da852762c04f2aac700a88",
+    "tree": "8c9e821fa61317b218d437f7f211b5b5336e3a44",
+    "manifest": "4c4ef37ddd09019e693221eb20424d1d241761a511811d695aec49819b62d489",
+    "daemon": "6ccb4c7ab8bee0528773cfffa76b68b05d69bfb0fa86a46f6b13a7a278a1deb7",
 }
 BOUNDED = {
-    "run": "45908164769", "source": "1ee8a457660ba1917e9ff7074fcbac900eacd242",
-    "tree": "1c2425aa5dd7245a6317d887d83d4ea84c6f4c92",
-    "manifest": "b493b2295a1f6660de871dd2fda459efc71d7abf8d0b1fd9fe609ad85f4e4d94",
-    "daemon": "9afb0c5fd70edca643e64245d97106d83c9191cead1d2495635fa57944d7c1d1",
+    "run": "45929224054", "source": "60f067d121651b8267b8d02c46fb221af4fc3529",
+    "tree": "df36ec99710f16ddcdae0c12623db2034d362d99",
+    "manifest": "db8a29695de4f79bb2f967b664f6cda45d3f84fdad80053470138b020db64949",
+    "daemon": "05821a46cb376d1a8e5c885fb4df55f0ed500fff7238313078b481f6c646dfde",
 }
 ORDER = ("default", "bounded32", "bounded32", "default")
 ARTIFACT_FILES = {

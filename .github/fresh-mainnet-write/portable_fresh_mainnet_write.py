@@ -54,10 +54,10 @@ MAX_ACCEPTED_BYTES = 4 << 20
 NATIVE_PINS = {
     "4032c943f6969767d5c2413215063ca5051075a3f6391f443655ab8e0fef5f96":
         ("Linux", "d68b443c027b1f962be73f715643fcafce4f51f1"),
-    "04ccedd40133b40011ca1a4be688fbe8eb7553b4f5846f488a087b11581fedbb":
-        ("Windows", "9c502574b652804905d2533d51742ca91f694532"),
-    "9afb0c5fd70edca643e64245d97106d83c9191cead1d2495635fa57944d7c1d1":
-        ("Windows", "1ee8a457660ba1917e9ff7074fcbac900eacd242"),
+    "6ccb4c7ab8bee0528773cfffa76b68b05d69bfb0fa86a46f6b13a7a278a1deb7":
+        ("Windows", "1b3029359223d7cee5da852762c04f2aac700a88"),
+    "05821a46cb376d1a8e5c885fb4df55f0ed500fff7238313078b481f6c646dfde":
+        ("Windows", "60f067d121651b8267b8d02c46fb221af4fc3529"),
 }
 
 
@@ -448,7 +448,7 @@ async def run(args):
         "process_resources": {},
     }
     snapshots = result["process_resources"]
-    bounded = result["source_commit"] == "1ee8a457660ba1917e9ff7074fcbac900eacd242"
+    bounded = result["source_commit"] == "60f067d121651b8267b8d02c46fb221af4fc3529"
     try:
         with (args.output / "wire.jsonl").open("x") as transcript:
             port = free_port()

@@ -3,7 +3,7 @@ name: En8 UCRT fresh Mainnet write comparison
 on:
   push:
     branches:
-      - ci/en8-win-fresh-mainnet-write
+      - ci/en8-win-fresh-mainnet-write-fixed
     paths:
       - .github/workflows/en8-win-fresh-mainnet-write.yml
       - .github/fresh-mainnet-write/**
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   fresh-write-ucrt:
-    if: ${{ github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-win-fresh-mainnet-write' }}
+    if: ${{ github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en8-win-fresh-mainnet-write-fixed' }}
     name: Windows UCRT native Mainnet write ABBA
     runs-on: windows-2022
     timeout-minutes: 100
@@ -35,16 +35,16 @@ jobs:
       - name: Download exact reference UCRT runtime
         uses: actions/download-artifact@v8
         with:
-          name: x86_64-w64-mingw32ucrt-executables-release-45872110419
-          run-id: '45872110419'
+          name: x86_64-w64-mingw32ucrt-executables-release-45926384208
+          run-id: '45926384208'
           repository: Sugarchain-CI/sugarchain-en
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/en8-fresh-reference
       - name: Download exact bounded32 UCRT runtime
         uses: actions/download-artifact@v8
         with:
-          name: x86_64-w64-mingw32ucrt-executables-release-45908164769
-          run-id: '45908164769'
+          name: x86_64-w64-mingw32ucrt-cache32-executables-release-45929224054
+          run-id: '45929224054'
           repository: Sugarchain-CI/sugarchain-en
           github-token: ${{ github.token }}
           path: ${{ runner.temp }}/en8-fresh-candidate
