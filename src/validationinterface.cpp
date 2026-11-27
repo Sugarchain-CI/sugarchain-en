@@ -97,7 +97,7 @@ public:
 ValidationSignals::ValidationSignals(std::unique_ptr<util::TaskRunnerInterface> task_runner)
     : m_internals{std::make_unique<ValidationSignalsImpl>(std::move(task_runner))} {}
 
-#if defined(__APPLE__) && defined(__aarch64__)
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__x86_64__))
 ValidationSignals::~ValidationSignals()
 {
     StopBackgroundCallbacks();

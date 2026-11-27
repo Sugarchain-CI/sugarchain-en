@@ -185,10 +185,14 @@ public:
 #endif
 };
 
-#if defined(__APPLE__) && defined(__aarch64__)
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__x86_64__))
 /** A single background worker for the ordered validation callback queue. */
 class ValidationTaskRunner final : public util::TaskRunnerInterface
 {
+#ifdef __x86_64__
+    friend struct SchedulerWaiterTestAccess;
+#endif
+
     Mutex m_mutex;
     std::condition_variable m_available;
     std::condition_variable m_capacity;

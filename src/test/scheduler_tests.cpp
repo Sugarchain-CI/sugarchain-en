@@ -32,6 +32,15 @@ struct SchedulerWaiterTestAccess {
     {
         return WITH_LOCK(scheduler.newTaskMutex, return scheduler.m_waiting_threads);
     }
+    static bool WaitForCapacitySleeper(ValidationTaskRunner& runner)
+    {
+        const auto deadline{std::chrono::steady_clock::now() + 5s};
+        do {
+            if (WITH_LOCK(runner.m_mutex, return runner.m_capacity_waiters != 0)) return true;
+            std::this_thread::yield();
+        } while (std::chrono::steady_clock::now() < deadline);
+        return false;
+    }
 };
 #endif
 
@@ -291,7 +300,7 @@ BOOST_AUTO_TEST_CASE(scheduler_due_tasks_respect_immediate_shutdown)
 }
 #endif
 
-#if defined(__APPLE__) && defined(__aarch64__)
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__x86_64__))
 BOOST_AUTO_TEST_CASE(validation_worker_capacity_and_shutdown)
 {
     ValidationTaskRunner runner;
@@ -338,6 +347,51 @@ BOOST_AUTO_TEST_CASE(validation_worker_capacity_and_shutdown)
     BOOST_CHECK(draining_id == std::this_thread::get_id());
     BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
     BOOST_CHECK_EQUAL(runner.size(), 0U);
+}
+#endif
+
+#if defined(__APPLE__) && defined(__x86_64__)
+BOOST_AUTO_TEST_CASE(validation_worker_resumes_with_callbacks_pending)
+{
+    std::promise<void> first_started;
+    std::promise<void> release_first;
+    std::promise<void> release_next;
+    const auto first_gate{release_first.get_future()};
+    const auto next_gate{release_next.get_future()};
+    size_t callbacks_run{0};
+    ValidationTaskRunner runner;
+    runner.insert([&] {
+        first_started.set_value();
+        first_gate.wait();
+    });
+    const auto start_status{first_started.get_future().wait_for(5s)};
+    if (start_status != std::future_status::ready) {
+        release_first.set_value();
+        runner.stop();
+        BOOST_FAIL("The validation worker did not start");
+        return;
+    }
+
+    runner.insert([&] { next_gate.wait(); });
+    for (size_t i{0}; i < 8; ++i) {
+        runner.insert([&] { ++callbacks_run; });
+    }
+    const size_t initial_pending{runner.size()};
+    auto capacity{std::async(std::launch::async, [&] { return runner.waitForPendingAtMost(8); })};
+    const bool capacity_blocked{SchedulerWaiterTestAccess::WaitForCapacitySleeper(runner)};
+    release_first.set_value();
+    const auto capacity_status{capacity.wait_for(5s)};
+    const size_t remaining_pending{runner.size()};
+    release_next.set_value();
+    runner.stop();
+    runner.flush();
+
+    BOOST_CHECK_EQUAL(initial_pending, 9U);
+    BOOST_CHECK(capacity_blocked);
+    BOOST_CHECK(capacity_status == std::future_status::ready);
+    BOOST_CHECK(capacity.get());
+    BOOST_CHECK_EQUAL(remaining_pending, 8U);
+    BOOST_CHECK_EQUAL(callbacks_run, 8U);
 }
 #endif
 

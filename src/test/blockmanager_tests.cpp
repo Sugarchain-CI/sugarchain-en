@@ -101,9 +101,10 @@ struct BlockManagerTestAccess {
     {
         return manager.FlushBlockFile(file_num, /*fFinalize=*/true, /*finalize_undo=*/false);
     }
-    static BlockManager::ReadRawBlockResult Reopen(const BlockManager& manager, const FlatFilePos& pos)
+    static int64_t ReadOffset(const BlockManager& manager)
     {
-        return manager.ReadRawBlockImpl(pos, std::nullopt);
+        LOCK(manager.cs_LastBlockFile);
+        return manager.m_block_read_stream_offset;
     }
 };
 } // namespace node
@@ -567,7 +568,9 @@ BOOST_FIXTURE_TEST_CASE(blockmanager_block_data_part, TestChain100Setup)
     expect_part(10, 20);
     expect_part(block->size() - 1, 1);
 #if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
-    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::ReadFile(blockman), -1);
+    // Regtest also retains the native reader across range reads.
+    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::ReadFile(blockman), tip_block_pos.nFile);
+    BOOST_CHECK_EQUAL(node::BlockManagerTestAccess::ReadOffset(blockman), tip_block_pos.nPos + block->size());
 #endif
 }
 
@@ -585,6 +588,7 @@ BOOST_FIXTURE_TEST_CASE(windows_mainnet_block_reader_append_seeks_and_short_read
     BOOST_REQUIRE(initial);
     BOOST_CHECK(std::ranges::equal(*initial, first_expected));
     BOOST_CHECK_EQUAL(Access::ReadFile(blockman), first.nFile);
+    BOOST_CHECK_EQUAL(Access::ReadOffset(blockman), first.nPos + first_expected.size());
 
     block.nVersion = 8;
     block.nNonce = 0x94265ecf;
@@ -595,13 +599,10 @@ BOOST_FIXTURE_TEST_CASE(windows_mainnet_block_reader_append_seeks_and_short_read
     DataStream second_expected;
     second_expected << TX_WITH_WITNESS(block);
     const auto appended{blockman.ReadRawBlock(second)};
-    if (!appended) {
-        const auto reopened{Access::Reopen(blockman, second)};
-        BOOST_REQUIRE_MESSAGE(appended, "Cached append read failed. Reopened file matched appended bytes: "
-                                           << (reopened && std::ranges::equal(*reopened, second_expected)));
-    }
+    BOOST_REQUIRE(appended);
     BOOST_CHECK(std::ranges::equal(*appended, second_expected));
     BOOST_CHECK_EQUAL(Access::ReadFile(blockman), second.nFile);
+    BOOST_CHECK_EQUAL(Access::ReadOffset(blockman), second.nPos + second_expected.size());
 
     std::atomic_bool good{true};
     const auto read_parts = [&](FlatFilePos position, const DataStream& expected, size_t offset) {
@@ -626,6 +627,7 @@ BOOST_FIXTURE_TEST_CASE(windows_mainnet_block_reader_append_seeks_and_short_read
 
     BOOST_REQUIRE(Access::Finalize(blockman, second.nFile));
     BOOST_CHECK_EQUAL(Access::ReadFile(blockman), -1);
+    BOOST_CHECK_EQUAL(Access::ReadOffset(blockman), 0);
     const auto filename{blockman.GetBlockPosFilename(second)};
     fs::resize_file(filename, fs::file_size(filename) - 1);
     const auto missing{blockman.ReadRawBlock(second)};
