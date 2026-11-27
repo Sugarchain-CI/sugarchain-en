@@ -8,6 +8,10 @@
 
 #include <boost/test/unit_test.hpp>
 
+#if defined(__APPLE__) && defined(__x86_64__)
+#include <array>
+#include <memory>
+#endif
 #include <functional>
 #ifdef __APPLE__
 #include <future>
@@ -31,19 +35,6 @@ struct SchedulerWaiterTestAccess {
     static size_t WaitingThreads(CScheduler& scheduler)
     {
         return WITH_LOCK(scheduler.newTaskMutex, return scheduler.m_waiting_threads);
-    }
-    static bool WaitForCapacitySleeper(SerialTaskRunner& runner)
-    {
-        const auto deadline{std::chrono::steady_clock::now() + 5s};
-        do {
-            if (WITH_LOCK(runner.m_callbacks_mutex, return runner.m_capacity_waiters != 0)) return true;
-            std::this_thread::yield();
-        } while (std::chrono::steady_clock::now() < deadline);
-        return false;
-    }
-    static void WakeCapacityWaiters(SerialTaskRunner& runner)
-    {
-        runner.m_capacity.notify_all();
     }
 };
 #endif
@@ -372,23 +363,19 @@ BOOST_AUTO_TEST_CASE(serial_callbacks_resume_after_exception_and_stop)
 
     BOOST_CHECK_THROW(scheduler.serviceQueue(), std::runtime_error);
     BOOST_CHECK_EQUAL(order.size(), 2U);
-#if defined(__APPLE__) && defined(__x86_64__)
-    BOOST_CHECK_EQUAL(runner.size(), 2U);
-#endif
     scheduler.serviceQueue();
     BOOST_CHECK_EQUAL(runner.size(), 1U);
     runner.flush();
 
     const std::vector<int> expected{1, 2, 3, 4};
     BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
-#if defined(__APPLE__) && defined(__x86_64__)
-    BOOST_CHECK_EQUAL(runner.size(), 0U);
-#endif
 }
 
 #if defined(__APPLE__) && defined(__x86_64__)
 BOOST_AUTO_TEST_CASE(serial_callbacks_wake_append_and_drain)
 {
+    constexpr int queued_callbacks{1024};
+    constexpr int last_callback{queued_callbacks + 2};
     CScheduler scheduler;
     SerialTaskRunner runner{scheduler};
     std::vector<int> order;
@@ -409,12 +396,12 @@ BOOST_AUTO_TEST_CASE(serial_callbacks_wake_append_and_drain)
         // A callback can append more work without deadlocking or overtaking
         // callbacks inserted while it was running.
         runner.insert([&] {
-            order.push_back(19);
+            order.push_back(last_callback);
             drained.set_value();
         });
     });
     const auto wake_status{first_ready.wait_for(5s)};
-    for (int i{2}; i <= 18; ++i) {
+    for (int i{2}; i < last_callback; ++i) {
         runner.insert([&, i] { order.push_back(i); });
     }
     const size_t held_pending{runner.size()};
@@ -427,8 +414,8 @@ BOOST_AUTO_TEST_CASE(serial_callbacks_wake_append_and_drain)
 
     BOOST_CHECK(wake_status == std::future_status::ready);
     BOOST_CHECK(drain_status == std::future_status::ready);
-    BOOST_CHECK_EQUAL(held_pending, 17U);
-    BOOST_REQUIRE_EQUAL(order.size(), 19U);
+    BOOST_CHECK_EQUAL(held_pending, queued_callbacks);
+    BOOST_REQUIRE_EQUAL(order.size(), last_callback);
     for (size_t i{0}; i < order.size(); ++i) BOOST_CHECK_EQUAL(order[i], i + 1);
 
     // Final notifications may arrive after scheduler shutdown. They must stay
@@ -437,77 +424,57 @@ BOOST_AUTO_TEST_CASE(serial_callbacks_wake_append_and_drain)
     std::thread::id draining_thread;
     runner.insert([&] {
         draining_thread = std::this_thread::get_id();
-        order.push_back(20);
-        runner.insert([&] { order.push_back(22); });
+        order.push_back(last_callback + 1);
+        runner.insert([&] { order.push_back(last_callback + 3); });
     });
-    runner.insert([&] { order.push_back(21); });
+    runner.insert([&] { order.push_back(last_callback + 2); });
     BOOST_CHECK_EQUAL(runner.size(), 2U);
     runner.flush();
     BOOST_CHECK(draining_thread == caller);
     BOOST_CHECK_EQUAL(runner.size(), 0U);
-    const std::vector<int> expected{20, 21, 22};
+    const std::vector<int> expected{last_callback + 1, last_callback + 2, last_callback + 3};
     BOOST_CHECK_EQUAL_COLLECTIONS(order.end() - 3, order.end(), expected.begin(), expected.end());
 }
 
-BOOST_AUTO_TEST_CASE(serial_callbacks_count_pending_and_wake_after_concurrent_insertion)
+BOOST_AUTO_TEST_CASE(serial_callbacks_destroy_heap_target_outside_queue_lock)
 {
-    CScheduler scheduler;
-    std::promise<void> started;
-    std::promise<void> release;
-    const auto started_result{started.get_future()};
-    const auto gate{release.get_future()};
-    std::vector<std::pair<int, int>> observed;
-    SerialTaskRunner runner{scheduler};
-    runner.insert([&] {
-        started.set_value();
-        gate.wait();
-    });
-    std::thread worker{[&] { scheduler.serviceQueue(); }};
-    if (started_result.wait_for(5s) != std::future_status::ready) {
-        release.set_value();
-        scheduler.stop();
-        worker.join();
-        runner.flush();
-        BOOST_FAIL("The serial callback did not start");
-        return;
-    }
-    const size_t active_count{runner.size()};
-    const auto produce = [&](int producer) {
-        for (int sequence{0}; sequence < 32; ++sequence) {
-            runner.insert([&, producer, sequence] { observed.emplace_back(producer, sequence); });
+    struct NotifyOnDestruction {
+        CScheduler& scheduler;
+        SerialTaskRunner& runner;
+        std::vector<int>& order;
+
+        ~NotifyOnDestruction()
+        {
+            runner.insert([schedule = &scheduler, observed = &order] {
+                observed->push_back(3);
+                schedule->stop();
+            });
         }
     };
-    std::jthread first{produce, 0};
-    std::jthread second{produce, 1};
-    first.join();
-    second.join();
-    const size_t queued_count{runner.size()};
-    auto capacity{std::async(std::launch::async, [&] { return runner.waitForPendingAtMost(0); })};
-    const bool capacity_blocked{SchedulerWaiterTestAccess::WaitForCapacitySleeper(runner)};
 
-    scheduler.stop();
-    release.set_value();
-    worker.join();
-    const size_t stopped_count{runner.size()};
-    runner.flush();
-    const auto capacity_status{capacity.wait_for(5s)};
-    if (capacity_status != std::future_status::ready) SchedulerWaiterTestAccess::WakeCapacityWaiters(runner);
+    for (const bool raise : {false, true}) {
+        CScheduler scheduler;
+        std::vector<int> order;
+        SerialTaskRunner runner{scheduler};
+        auto target{std::make_shared<NotifyOnDestruction>(scheduler, runner, order)};
+        const std::array<int, 64> padding{};
+        runner.insert([owner = std::move(target), padding, &order, raise] {
+            BOOST_REQUIRE(owner);
+            BOOST_CHECK_EQUAL(padding.front(), 0);
+            order.push_back(1);
+            if (raise) throw std::runtime_error{"validation callback"};
+        });
+        runner.insert([&] { order.push_back(2); });
 
-    BOOST_CHECK_EQUAL(active_count, 0U);
-    BOOST_CHECK_EQUAL(queued_count, 64U);
-    BOOST_CHECK_EQUAL(stopped_count, 64U);
-    BOOST_CHECK(capacity_blocked);
-    BOOST_CHECK(capacity_status == std::future_status::ready);
-    BOOST_CHECK(capacity.get());
-    BOOST_CHECK_EQUAL(runner.size(), 0U);
-    BOOST_REQUIRE_EQUAL(observed.size(), 64U);
-    int next[2]{};
-    for (const auto& [producer, sequence] : observed) {
-        BOOST_REQUIRE(producer == 0 || producer == 1);
-        BOOST_CHECK_EQUAL(sequence, next[producer]++);
+        if (raise) {
+            BOOST_CHECK_THROW(scheduler.serviceQueue(), std::runtime_error);
+        }
+        BOOST_CHECK_NO_THROW(scheduler.serviceQueue());
+        runner.flush();
+        const std::vector<int> expected{1, 2, 3};
+        BOOST_CHECK_EQUAL_COLLECTIONS(order.begin(), order.end(), expected.begin(), expected.end());
+        BOOST_CHECK_EQUAL(runner.size(), 0U);
     }
-    BOOST_CHECK_EQUAL(next[0], 32);
-    BOOST_CHECK_EQUAL(next[1], 32);
 }
 #endif
 

@@ -10,12 +10,12 @@
 #include <threadsafety.h>
 #include <util/task_runner.h>
 
-#if defined(__APPLE__) && defined(__x86_64__)
-#include <atomic>
-#endif
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#if defined(__APPLE__) && defined(__x86_64__)
+#include <deque>
+#endif
 #include <functional>
 #include <list>
 #include <map>
@@ -140,9 +140,6 @@ private:
 class SerialTaskRunner : public util::TaskRunnerInterface
 {
 private:
-#if defined(__APPLE__) && defined(__x86_64__)
-    friend struct SchedulerWaiterTestAccess;
-#endif
     CScheduler& m_scheduler;
 
     Mutex m_callbacks_mutex;
@@ -150,10 +147,11 @@ private:
     // We are not allowed to assume the scheduler only runs in one thread,
     // but must ensure all callbacks happen in-order, so we end up creating
     // our own queue here :(
-    std::list<std::function<void()>> m_callbacks_pending GUARDED_BY(m_callbacks_mutex);
 #if defined(__APPLE__) && defined(__x86_64__)
-    // Published under m_callbacks_mutex. Capacity waiters use the queue itself.
-    std::atomic<size_t> m_pending_count{0};
+    // Amortize storage allocation across callbacks in the Intel scheduler queue.
+    std::deque<std::function<void()>> m_callbacks_pending GUARDED_BY(m_callbacks_mutex);
+#else
+    std::list<std::function<void()>> m_callbacks_pending GUARDED_BY(m_callbacks_mutex);
 #endif
     bool m_are_callbacks_running GUARDED_BY(m_callbacks_mutex) = false;
 #ifdef __APPLE__
@@ -166,8 +164,8 @@ private:
     void MaybeScheduleProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
 #if defined(__APPLE__) && defined(__x86_64__)
     void ScheduleProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
-    void PopCallback(std::list<std::function<void()>>& ready) EXCLUSIVE_LOCKS_REQUIRED(m_callbacks_mutex);
-#elif defined(__APPLE__)
+#endif
+#ifdef __APPLE__
     std::function<void()> PopCallback() EXCLUSIVE_LOCKS_REQUIRED(m_callbacks_mutex);
 #endif
     void ProcessQueue() EXCLUSIVE_LOCKS_REQUIRED(!m_callbacks_mutex);
