@@ -10,6 +10,9 @@
 #include <threadsafety.h>
 #include <util/task_runner.h>
 
+#if defined(__APPLE__) && defined(__x86_64__)
+#include <atomic>
+#endif
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -199,6 +202,10 @@ class ValidationTaskRunner final : public util::TaskRunnerInterface
     size_t m_capacity_waiters GUARDED_BY(m_mutex){0};
     size_t m_capacity_wait_limit GUARDED_BY(m_mutex){0};
     std::list<std::function<void()>> m_pending GUARDED_BY(m_mutex);
+#ifdef __x86_64__
+    // Updated under m_mutex. Capacity waiters still use m_pending under the lock.
+    std::atomic<size_t> m_pending_count{0};
+#endif
     bool m_stopped GUARDED_BY(m_mutex){false};
     std::thread m_worker;
 

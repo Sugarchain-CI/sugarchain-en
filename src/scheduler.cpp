@@ -341,6 +341,9 @@ ValidationTaskRunner::~ValidationTaskRunner()
 
 void ValidationTaskRunner::Run(bool drain)
 {
+#ifdef __x86_64__
+    std::list<std::function<void()>> ready;
+#endif
     WAIT_LOCK(m_mutex, lock);
     while (drain || !m_stopped) {
         if (m_pending.empty()) {
@@ -349,14 +352,24 @@ void ValidationTaskRunner::Run(bool drain)
             continue;
         }
 
+#ifdef __x86_64__
+        ready.splice(ready.end(), m_pending, m_pending.begin());
+        m_pending_count.store(m_pending.size(), std::memory_order_relaxed);
+#else
         auto callback{std::move(m_pending.front())};
         m_pending.pop_front();
+#endif
         if (m_capacity_waiters != 0 && m_pending.size() <= m_capacity_wait_limit) {
             m_capacity.notify_all();
         }
         {
             REVERSE_LOCK(lock, m_mutex);
+#ifdef __x86_64__
+            auto task{std::move(ready.front())};
+            ready.pop_front();
+#else
             auto task{std::move(callback)};
+#endif
             task();
         }
     }
@@ -364,11 +377,21 @@ void ValidationTaskRunner::Run(bool drain)
 
 void ValidationTaskRunner::insert(std::function<void()> func)
 {
+#ifdef __x86_64__
+    // Allocate the list node before taking the contended queue lock.
+    std::list<std::function<void()>> ready;
+    ready.emplace_back(std::move(func));
+#endif
     bool wake;
     {
         LOCK(m_mutex);
         wake = m_pending.empty() && !m_stopped;
+#ifdef __x86_64__
+        m_pending.splice(m_pending.end(), ready);
+        m_pending_count.store(m_pending.size(), std::memory_order_relaxed);
+#else
         m_pending.emplace_back(std::move(func));
+#endif
     }
     if (wake) m_available.notify_one();
 }
@@ -392,8 +415,12 @@ void ValidationTaskRunner::flush()
 
 size_t ValidationTaskRunner::size()
 {
+#ifdef __x86_64__
+    return m_pending_count.load(std::memory_order_relaxed);
+#else
     LOCK(m_mutex);
     return m_pending.size();
+#endif
 }
 
 bool ValidationTaskRunner::waitForPendingAtMost(size_t limit)
