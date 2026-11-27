@@ -1,0 +1,115 @@
+name: En8 private Apple mapped block-map capacity from the audited build
+'on':
+  push:
+    branches: [ci/en8-apple-index-cache]
+    paths:
+      - .github/workflows/en8-apple-mapped-blockmap-native-only.yml
+permissions:
+  contents: read
+  actions: read
+defaults:
+  run:
+    shell: bash
+jobs:
+  mature-apple:
+    name: Qualify the owned Mainnet checkpoint on Apple Silicon
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      CROSS_MANIFEST_SHA: 737d05d88f53837046ec6553796c6742d2bd222da400b4a22766be78b91ce9e3
+      FIXTURE_TAG: en8-mainnet-tail-fixture-v1
+      MANIFEST_SHA: 234d86232dc76cc86045b0f6cba2988a140562a112ecbbb454e82fa3f20a30f3
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Verify the Apple runner and prepare the existing qualifier
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          test "$(sysctl -n sysctl.proc_translated 2>/dev/null || true)" != 1
+          test "$(sysctl -n hw.memsize)" = 7516192768
+          git apply --check .github/apple-mapped-blockmap/qualifier.patch
+          git apply .github/apple-mapped-blockmap/qualifier.patch
+          mkdir "$RUNNER_TEMP/mapped-diagnostics"
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          compiler="$(xcrun --sdk macosx --find clang)"
+          test -d "$sdk"
+          test -x "$compiler"
+          "$compiler" -isysroot "$sdk" -arch arm64 -std=c11 -D_DARWIN_C_SOURCE -O2 -Wall -Wextra -Werror \
+            .github/apple-mapped-blockmap/mapped-resource.c -o "$RUNNER_TEMP/mapped-diagnostics/proc-rusage" \
+            > "$RUNNER_TEMP/mapped-diagnostics/proc-rusage-build.log" 2>&1
+      - name: Reuse the exact successful cross-build artifact
+        uses: actions/download-artifact@v8
+        with:
+          repository: Sugarchain-CI/sugarchain-en
+          github-token: ${{ github.token }}
+          run-id: 45913568960
+          name: mapped-blockmap-private-cross
+          path: ${{ runner.temp }}/mapped-cross
+      - name: Verify, ad-hoc sign, and test the exact private Apple executables
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          printf '%s  %s\n' "$CROSS_MANIFEST_SHA" "$RUNNER_TEMP/mapped-cross/private-runtime.sha256" \
+            | shasum -a 256 -c -
+          python3 -B .github/apple-mapped-blockmap/apple_mapped.py "$RUNNER_TEMP/mapped-cross" "$RUNNER_TEMP/mapped-native"
+          /usr/bin/time -p env -u SUGARCHAIN_PRIVATE_BLOCKMAP_PROFILE "$RUNNER_TEMP/mapped-native/test_bitcoin" \
+            --run_test=pool_tests,allocator_tests,blockmanager_tests,header_pow_tests \
+            --catch_system_error=no --log_level=test_suite --report_level=short \
+            > "$RUNNER_TEMP/mapped-diagnostics/native-tests.log" 2>&1
+      - name: Load the pinned manifest and reserve checkpoint space
+        timeout-minutes: 2
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "CHECKPOINT_DEADLINE=$(( $(date +%s) + 1120 ))" >> "$GITHUB_ENV"
+          mkdir "$RUNNER_TEMP/checkpoint-input"
+          gh release download --repo Sugarchain-CI/sugarchain-en --pattern manifest.json \
+            --dir "$RUNNER_TEMP/checkpoint-input" -- "$FIXTURE_TAG"
+          python3 -B .github/en8-mainnet/mature-checkpoint/checkpoint_fixture.py \
+            --manifest "$RUNNER_TEMP/checkpoint-input/manifest.json" --manifest-sha256 "$MANIFEST_SHA" \
+            --mapped-arena-bytes 8994160640 --output "$RUNNER_TEMP/checkpoint-preflight"
+      - name: Fetch the approved public checkpoint archive once
+        timeout-minutes: 6
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          args=()
+          while IFS= read -r part; do args+=(--pattern "$part"); done < "$RUNNER_TEMP/checkpoint-preflight/parts.txt"
+          gh release download --repo Sugarchain-CI/sugarchain-en "${args[@]}" \
+            --dir "$RUNNER_TEMP/checkpoint-input" -- "$FIXTURE_TAG"
+      - name: Run one offline candidate capacity trial with two ordered level-4 passes
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          python3 -B .github/en8-mainnet/mature-checkpoint/qualify_mature_checkpoint.py \
+            --runtime "$RUNNER_TEMP/mapped-native" --target apple-arm64 --apple-mapped \
+            --darwin-usage "$RUNNER_TEMP/mapped-diagnostics/proc-rusage" \
+            --fixture "$RUNNER_TEMP/checkpoint-input" --manifest-name manifest.json \
+            --fixture-manifest-sha256 "$MANIFEST_SHA" --deadline-epoch "$CHECKPOINT_DEADLINE" \
+            --output "$RUNNER_TEMP/checkpoint-qualification"
+      - name: Retain the private capacity and verification receipts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: mature-checkpoint-private-apple-mapped-blockmap
+          path: |
+            ${{ runner.temp }}/mapped-native/*.txt
+            ${{ runner.temp }}/mapped-native/*.json
+            ${{ runner.temp }}/mapped-native/*.sha256
+            ${{ runner.temp }}/mapped-diagnostics/*.log
+            ${{ runner.temp }}/checkpoint-preflight/preflight.json
+            ${{ runner.temp }}/checkpoint-qualification/result.json
+            ${{ runner.temp }}/checkpoint-qualification/resources.jsonl
+            ${{ runner.temp }}/checkpoint-qualification/vmmap-samples.jsonl
+            ${{ runner.temp }}/checkpoint-qualification/vmmap-*.log
+            ${{ runner.temp }}/checkpoint-qualification/node/debug-restart.log
+            ${{ runner.temp }}/checkpoint-qualification/node/console-restart.log
+          if-no-files-found: warn
+          retention-days: 14
