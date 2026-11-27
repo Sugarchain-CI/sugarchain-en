@@ -2144,7 +2144,9 @@ BlockManager::BlockManager(const util::SignalInterrupt& interrupt, Options opts)
       m_block_index{m_opts.startup_optimizations}
 {
     auto db_params{m_opts.block_tree_db_params};
+#if !defined(WIN32) || (!defined(__x86_64__) && !defined(_M_X64))
     db_params.reclaim_read_cache = m_opts.startup_optimizations;
+#endif
     m_block_tree_db = std::make_unique<BlockTreeDB>(db_params);
 
     if (m_opts.block_tree_db_params.wipe_data) {

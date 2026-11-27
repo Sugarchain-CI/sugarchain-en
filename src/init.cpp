@@ -1369,6 +1369,13 @@ static ChainstateLoadResult InitAndLoadChainstate(
         },
     };
     Assert(ApplyArgsManOptions(args, blockman_opts)); // no error can happen, already checked in AppInitParameterInteraction
+#if defined(WIN32) && (defined(__x86_64__) || defined(_M_X64))
+    if (blockman_opts.startup_optimizations && !do_reindex && chainparams.GetChainType() == ChainType::MAIN) {
+        constexpr uint64_t MAX_LOW_MEMORY_RAM{uint64_t{16} << 30};
+        const auto ram{GetTotalRAM()};
+        blockman_opts.block_tree_db_params.reclaim_read_cache = ram && *ram > 0 && *ram <= MAX_LOW_MEMORY_RAM;
+    }
+#endif
     // A GUI recovery retry wipes the old index; it must verify every rebuilt entry.
     if (do_reindex) blockman_opts.fast_startup = false;
     LogInfo("Fast Startup: %s", blockman_opts.fast_startup ? "enabled" : "disabled");
