@@ -63,7 +63,10 @@ def main():
     require(git(source, "diff", "--exit-code", "HEAD", "--", "src") == b"", "The product source became dirty")
     if options.role == "control":
         require(git(source, "diff", "--name-only", "HEAD^", "HEAD").splitlines() == [b"src/pow.cpp"], "Unexpected control diff scope")
-        diff = git(source, "diff", "--no-ext-diff", "--no-color", "HEAD^", "HEAD", "--", "src/pow.cpp")
+        diff = git(source, "diff", "--no-ext-diff", "--no-textconv", "--no-color", "--full-index",
+                   "--no-relative", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/",
+                   "--unified=3", "--inter-hunk-context=0", "--diff-algorithm=myers", "--no-indent-heuristic",
+                   "HEAD^", "HEAD", "--", "src/pow.cpp")
         require(hashlib.sha256(diff).hexdigest() == CONTROL_DIFF, "Unexpected control selector diff")
     commands = verify_compile_commands(build)
 
