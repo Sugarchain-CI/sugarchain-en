@@ -21,7 +21,7 @@ class TaskRunnerInterface
 public:
     virtual ~TaskRunnerInterface() = default;
 
-#if defined(__APPLE__) && (defined(__aarch64__) || defined(__x86_64__))
+#if defined(__APPLE__) && defined(__aarch64__)
     /** Stop the background worker before the caller flushes remaining tasks. */
     virtual void stop() {}
 #endif
