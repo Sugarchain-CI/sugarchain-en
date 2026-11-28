@@ -2,8 +2,8 @@ name: En.11 Windows release and stock synchronization qualification
 permissions:
   contents: read
 env:
-  PRODUCT_SOURCE: 06023b7940fa3669605561f8844648c03abc673c
-  PRODUCT_TREE: d628b9e960b99e373e6802ab25c3bdbc1e2a405a
+  PRODUCT_SOURCE: 99d1cf157cea59e52d22b1a899119b1fd7b578df
+  PRODUCT_TREE: cab98ded4d1a2956852164c59c415a95c0da424f
   PYTHONUTF8: 1
 defaults:
   run:
@@ -125,7 +125,7 @@ jobs:
     - name: Run affected native unit groups
       working-directory: product
       timeout-minutes: 10
-      run: "set -euo pipefail\nbin/test_bitcoin.exe --run_test=net_tests,header_pow_tests,headers_sync_chainwork_tests,caches_tests,blockmanager_tests,peerman_tests,streams_tests \\\n  --color_output=no --report_level=short --log_level=test_suite 2>&1 | tee \"$RUNNER_TEMP/en11-windows-logs/unit-tests.log\"\nunit_log=\"$RUNNER_TEMP/en11-windows-logs/unit-tests.log\"\nfor test_case in windows_block_and_undo_write_buffer_boundaries windows_cached_writer_position_and_obfuscation; do\n  for marker in Entering Leaving; do\n    test \"$(grep -Fc \"$marker test case \\\"$test_case\\\"\" \"$unit_log\")\" = 1\n  done\ndone\nbin/test_bitcoin.exe --run_test=crypto_tests/yespower_golden_vectors --color_output=no --report_level=short \\\n  2>&1 | tee \"$RUNNER_TEMP/en11-windows-logs/yespower-golden-vectors.log\"\nbin/test_bitcoin.exe --run_test=crypto_tests/sha256_testvectors --color_output=no --report_level=short \\\n  2>&1 | tee \"$RUNNER_TEMP/en11-windows-logs/sha256-testvectors.log\"\n"
+      run: "set -euo pipefail\nbin/test_bitcoin.exe --run_test=net_tests,header_pow_tests,headers_sync_chainwork_tests,caches_tests,blockmanager_tests,peerman_tests,streams_tests \\\n  --color_output=no --report_level=short --log_level=test_suite 2>&1 | tee \"$RUNNER_TEMP/en11-windows-logs/unit-tests.log\"\nunit_log=\"$RUNNER_TEMP/en11-windows-logs/unit-tests.log\"\nfor test_case in windows_block_and_undo_write_buffer_boundaries windows_cached_writer_position_and_obfuscation windows_raw_read_cache_bounds_and_visibility; do\n  for marker in Entering Leaving; do\n    test \"$(grep -Fc \"$marker test case \\\"$test_case\\\"\" \"$unit_log\")\" = 1\n  done\ndone\nbin/test_bitcoin.exe --run_test=crypto_tests/yespower_golden_vectors --color_output=no --report_level=short \\\n  2>&1 | tee \"$RUNNER_TEMP/en11-windows-logs/yespower-golden-vectors.log\"\nbin/test_bitcoin.exe --run_test=crypto_tests/sha256_testvectors --color_output=no --report_level=short \\\n  2>&1 | tee \"$RUNNER_TEMP/en11-windows-logs/sha256-testvectors.log\"\n"
     - name: Run the Sugarchain header proof protocol test
       working-directory: product
       timeout-minutes: 8
