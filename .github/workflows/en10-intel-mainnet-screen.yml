@@ -1,0 +1,64 @@
+name: En.9 Intel Mainnet request-ceiling screen
+
+on:
+  push:
+    branches: ['ci/en10-intel-mainnet-screen']
+    paths:
+      - '.github/workflows/en10-intel-mainnet-screen.yml'
+      - '.github/en10-intel-mainnet/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  same-binary-mainnet-body:
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en10-intel-mainnet-screen'
+    runs-on: macos-15-intel
+    timeout-minutes: 50
+    env:
+      RUN_ROOT: ${{ runner.temp }}/en10-intel-mainnet
+      EN9_RELEASE_URL: https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.9
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Verify diagnostic inputs and obtain the public Intel release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -m 700 "$RUN_ROOT"
+          mkdir -m 700 "$RUN_ROOT/download"
+          (cd .github/en10-intel-mainnet && shasum -a 256 -c inputs.sha256)
+          if ! command -v gpgv >/dev/null; then
+            HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install gnupg
+          fi
+          for file in SHA256SUMS SHA256SUMS.asc sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz sugarchain-en-31.1.2-macos-x86_64.zip; do
+            curl --fail --silent --show-error --location --retry 2 --max-time 90 \
+              --proto '=https' --proto-redir '=https' \
+              --output "$RUN_ROOT/download/$file" "$EN9_RELEASE_URL/$file"
+          done
+      - name: Compare only the request ceiling in the stock CLI and GUI
+        shell: bash
+        run: |
+          python3 -B .github/en10-intel-mainnet/run-screen.py \
+            --download-dir "$RUN_ROOT/download" \
+            --runtime-dir "$RUN_ROOT/runtime" \
+            --output "$RUN_ROOT/results"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: en10-intel-mainnet-screen
+          if-no-files-found: warn
+          retention-days: 1
+          path: |
+            ${{ env.RUN_ROOT }}/results/result.json
+            ${{ env.RUN_ROOT }}/results/signature/verification.json
+            ${{ env.RUN_ROOT }}/results/signature/gpgv.log
+            ${{ env.RUN_ROOT }}/results/*ms-*/debug.log
+            ${{ env.RUN_ROOT }}/results/*ms-*/debug-restart.log
+            ${{ env.RUN_ROOT }}/results/*ms-*/console.log
+            ${{ env.RUN_ROOT }}/results/*ms-*/console-restart.log
+            ${{ env.RUN_ROOT }}/results/*ms-*/shutdown.json
+            ${{ env.RUN_ROOT }}/results/*ms-*/shutdown-restart.json
+            ${{ env.RUN_ROOT }}/results/*ms-*/body-endpoint.json
