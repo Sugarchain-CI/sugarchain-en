@@ -1,0 +1,85 @@
+{
+  "asset_provenance_sha256": "b24c156bc495726ca6551244ffb37bfe71e7956974d4f11ced515345dd38a7ff",
+  "keyring_sha256": "03c4bb8a655e61c932977d4d3ff778784e7b559a589eeb1c799a1f306d856729",
+  "manifests": {
+    "SHA256SUMS": {
+      "bytes": 1910,
+      "name": "SHA256SUMS",
+      "sha256": "e900138702a377c40e7234f7e33af8ddf09de7ab7f5c8c1cc29f422cb3e9e959",
+      "url": "https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.10/SHA256SUMS"
+    },
+    "SHA256SUMS.asc": {
+      "bytes": 2792,
+      "name": "SHA256SUMS.asc",
+      "sha256": "e86f6c06da8b4543c35c503174ffcfaaeed31eb44641f83f6d131bbd1fd2bc6c",
+      "url": "https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.10/SHA256SUMS.asc"
+    }
+  },
+  "packages": {
+    "arm64": {
+      "cli": {
+        "bytes": 12902836,
+        "carried_via": "v31.1.2-en.9",
+        "executable_sha256": "1604a106deb23bada0bbeab6da941f9d8d022dc0e6972f7a35cfac7e8e7bc896",
+        "member": "sugarchain-en-31.1.2-macos-arm64-cli/bin/sugarchaind",
+        "name": "sugarchain-en-31.1.2-macos-arm64-cli.tar.gz",
+        "origin_tag": "v31.1.2-en.8",
+        "sha256": "74aeb08fc55b3f4cea727ad8f2935ec2dc52845cedebfd6fdfa39ce77b16925a",
+        "source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+        "tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+        "url": "https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.10/sugarchain-en-31.1.2-macos-arm64-cli.tar.gz",
+        "validation_scope": "verified_signed_prior_release"
+      },
+      "gui": {
+        "bytes": 17412086,
+        "carried_via": "v31.1.2-en.9",
+        "executable_sha256": "2414de10974f81ddeb7f7aa70d0561d62808acb0ea149e3f6b0951143bd8a7bb",
+        "member": "Sugarchain-Qt.app/Contents/MacOS/Sugarchain-Qt",
+        "name": "sugarchain-en-31.1.2-macos-arm64.zip",
+        "origin_tag": "v31.1.2-en.8",
+        "sha256": "e62c570e39044408cbf0b75ffdc0549c85b3099982513a306f1164d66bd0965d",
+        "source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+        "tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+        "url": "https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.10/sugarchain-en-31.1.2-macos-arm64.zip",
+        "validation_scope": "verified_signed_prior_release"
+      }
+    },
+    "x86_64": {
+      "cli": {
+        "bytes": 13742273,
+        "executable_sha256": "b8f3bcd81148c618e5e13e445467be1bb32f4a0803e8c6841ea20b54198175b4",
+        "member": "sugarchain-en-31.1.2-macos-x86_64-cli/bin/sugarchaind",
+        "name": "sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz",
+        "origin_tag": "v31.1.2-en.10",
+        "producer_run": 46101481398,
+        "producer_workflow": "91ba93f9442aa16824c8203d9971907c3bcab4cc",
+        "sha256": "f3c3b7e95acbe93aad80cb6918995e296844339cedfe8b5e9f65e066e06e8246",
+        "source": "b68f5bf6844c52501f77a674d8cd8cfff2fabeb9",
+        "tree": "a77026814986c5ab2950c4674f390f1a6b3a582a",
+        "url": "https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.10/sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz",
+        "validation_scope": "native"
+      },
+      "gui": {
+        "bytes": 18900304,
+        "executable_sha256": "766928052d945ed42fe11e3590929fce2f9152137bf6e70c4cf71ff53b19dca7",
+        "member": "Sugarchain-Qt.app/Contents/MacOS/Sugarchain-Qt",
+        "name": "sugarchain-en-31.1.2-macos-x86_64.zip",
+        "origin_tag": "v31.1.2-en.10",
+        "producer_run": 46101481398,
+        "producer_workflow": "91ba93f9442aa16824c8203d9971907c3bcab4cc",
+        "sha256": "7a714f46c9ee3da30e53ddb02890fa4089860fa0ab409e0091fe4d1d6a153c9a",
+        "source": "b68f5bf6844c52501f77a674d8cd8cfff2fabeb9",
+        "tree": "a77026814986c5ab2950c4674f390f1a6b3a582a",
+        "url": "https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.10/sugarchain-en-31.1.2-macos-x86_64.zip",
+        "validation_scope": "native"
+      }
+    }
+  },
+  "release_source": "b68f5bf6844c52501f77a674d8cd8cfff2fabeb9",
+  "release_tree": "a77026814986c5ab2950c4674f390f1a6b3a582a",
+  "repository": "decryp2kanon/sugarchain-en",
+  "schema": 1,
+  "signed_payload_count": 17,
+  "signer_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+  "tag": "v31.1.2-en.10"
+}

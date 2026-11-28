@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "release": "v31.1.2-en.10",
+  "release_id": 461311826,
+  "release_source": "b68f5bf6844c52501f77a674d8cd8cfff2fabeb9",
+  "release_tree": "a77026814986c5ab2950c4674f390f1a6b3a582a",
+  "signer": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+  "manifest_sha256": "e900138702a377c40e7234f7e33af8ddf09de7ab7f5c8c1cc29f422cb3e9e959",
+  "signature_sha256": "e86f6c06da8b4543c35c503174ffcfaaeed31eb44641f83f6d131bbd1fd2bc6c",
+  "fixture_sha256": "93dd96da0a4cefa7895639f8aa64e10daf04b6f57b01e7299fd76e7b7bb5e1a6",
+  "blocks": 100000,
+  "trials_per_slot": 3,
+  "clock": "Immediately before receiver process creation through exact tip/work/height100000 RPC with IBD=false",
+  "debug": 0,
+  "fixture_overrides": [
+    "regtest",
+    "disabled wallet and external network access",
+    "assumevalid=0",
+    "checkblockindex=0 (avoid Regtest-only quadratic diagnostic; Mainnet default is already zero)",
+    "fixture minimumchainwork for genuine PRESYNC/REDOWNLOAD",
+    "fixed mocktime and max tip age"
+  ],
+  "release_defaults_preserved": [
+    "dbcache",
+    "par",
+    "parpow",
+    "blocksxor",
+    "adaptive/request defaults"
+  ],
+  "scored_window_excludes": [
+    "archive preparation",
+    "verified sender import",
+    "post-score full verifychain/UTXO/hash and owned shutdown"
+  ],
+  "required_correctness": [
+    "exact verified signed release archive/executable",
+    "native ISA without QEMU/Wine/Rosetta",
+    "real positive PRESYNC and both header passes",
+    "exact fixture tip/work/UTXO",
+    "full stock verifychain(4,0)",
+    "clean owned-process exit"
+  ],
+  "native_job_targets": [
+    "linux-x86_64",
+    "linux-arm64",
+    "linux-armhf (only if kernel/executable prove native AArch32)",
+    "windows-x86_64 (both CRTs and packaging forms on one host)",
+    "macos-arm64",
+    "macos-x86_64"
+  ],
+  "unavailable_native_targets": [
+    "linux-ppc64 big-endian",
+    "linux-riscv64"
+  ],
+  "timing_selection": "All three fresh trials and failures retained; median only if all three qualify; no favorable-host reruns",
+  "arithmetic_reference": {
+    "linux_x86_64_cli_reference_hours": 17,
+    "formula": "17 * target_median_seconds / newly_measured_linux_x86_64_cli_median_seconds",
+    "interpretation": "Conditional arithmetic index only; no empirical full Mainnet duration prediction",
+    "valid_mainnet_estimate": null
+  },
+  "emulation": false,
+  "general_product_ci": false,
+  "product_rebuild": false,
+  "paid_larger_runners": false,
+  "operating_nodes_touched": false,
+  "frozen_utc": "2026-11-28T06:16:24.959819+00:00"
+}

@@ -1,0 +1,86 @@
+{
+  "release_tag": "v31.1.2-en.10",
+  "release_source": "b68f5bf6844c52501f77a674d8cd8cfff2fabeb9",
+  "release_tree": "a77026814986c5ab2950c4674f390f1a6b3a582a",
+  "signature": {
+    "fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+    "keyring_sha256": "03c4bb8a655e61c932977d4d3ff778784e7b559a589eeb1c799a1f306d856729",
+    "manifest": {
+      "name": "SHA256SUMS",
+      "size": 1910,
+      "sha256": "e900138702a377c40e7234f7e33af8ddf09de7ab7f5c8c1cc29f422cb3e9e959"
+    },
+    "clearsigned": {
+      "name": "SHA256SUMS.asc",
+      "size": 2792,
+      "sha256": "e86f6c06da8b4543c35c503174ffcfaaeed31eb44641f83f6d131bbd1fd2bc6c"
+    }
+  },
+  "archives": {
+    "x86_64": {
+      "name": "sugarchain-en-31.1.2-x86_64-linux-gnu.tar.gz",
+      "size": 41166523,
+      "sha256": "1dacf84446394a2e6e42becf7193318e8730a8468bcb867057aafbdcc2281059",
+      "root": "sugarchain-en-31.1.2-x86_64-linux-gnu",
+      "suffix": "x86_64-linux-gnu",
+      "runtime_source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+      "runtime_tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+      "executables": {
+        "sugarchaind": "7dd674557e17e0c8b18e33a84859ee57e197664f40d5f8c3ec36cc82f99f9075",
+        "sugarchain-qt": "b03c8609d437dbd9929e9fbf7d463ec9dba2f6179655527c7452b10e5d0b3358"
+      }
+    },
+    "arm64": {
+      "name": "sugarchain-en-31.1.2-aarch64-linux-gnu.tar.gz",
+      "size": 39690155,
+      "sha256": "56fe2d1562b9aa239d6854993b7fc7084774cd17c1c5acc5d25ab21d33813853",
+      "root": "sugarchain-en-31.1.2-aarch64-linux-gnu",
+      "suffix": "aarch64-linux-gnu",
+      "runtime_source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+      "runtime_tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+      "executables": {
+        "sugarchaind": "e49748d91eb7d02f7dec1b2dded791debfaceba8cb0b9f44185a15e3a457ee4b",
+        "sugarchain-qt": "042592b7b44a6768b38c744582ded72d1b61c3d57531436163d5868d5b161633"
+      }
+    },
+    "armhf": {
+      "name": "sugarchain-en-31.1.2-arm-linux-gnueabihf.tar.gz",
+      "size": 36751373,
+      "sha256": "42d79df08ff4576d02a34bea291580ecfee14241ddd215161541985676252841",
+      "root": "sugarchain-en-31.1.2-arm-linux-gnueabihf",
+      "suffix": "arm-linux-gnueabihf",
+      "runtime_source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+      "runtime_tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+      "executables": {
+        "sugarchaind": "a224c70895b7510a397a13fc95ace7c5096dd449cb16d08b92c1a47e0ac372c4",
+        "sugarchain-qt": "e7b7ecd91ff527770e1e289a04fc9bbd05f4a04778f4440448d9a363dc7dc641"
+      }
+    },
+    "ppc64": {
+      "name": "sugarchain-en-31.1.2-powerpc64-linux-gnu.tar.gz",
+      "size": 45723769,
+      "sha256": "8ebc501e80f86f70f5d0e796925d128c2c9254811a0c4d2b2693b5a0eee4eb9e",
+      "root": "sugarchain-en-31.1.2-powerpc64-linux-gnu",
+      "suffix": "powerpc64-linux-gnu",
+      "runtime_source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+      "runtime_tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+      "executables": {
+        "sugarchaind": "bb4751b1670c8ee1c31060ca69f69932620b611673ee1fc90ef7736bd9c0bc0f",
+        "sugarchain-qt": "cbfa3e05c7a1e2eb1db78e59528be59e890f42c1704cd604f80c8d7e6af25279"
+      }
+    },
+    "riscv64": {
+      "name": "sugarchain-en-31.1.2-riscv64-linux-gnu.tar.gz",
+      "size": 42518249,
+      "sha256": "3df41cfd87aaae820c0df8a1fb69fff7e7f06b3052b157ecfb061877614a9307",
+      "root": "sugarchain-en-31.1.2-riscv64-linux-gnu",
+      "suffix": "riscv64-linux-gnu",
+      "runtime_source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+      "runtime_tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+      "executables": {
+        "sugarchaind": "a42e6cf573335f39ebc9fc09a3e95a2e02495fa02ebede1b0259a99ccfcabc82",
+        "sugarchain-qt": "99510b78c5b3472534b67423481fa637e787c34302550068b0675569bc98b96e"
+      }
+    }
+  }
+}

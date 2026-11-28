@@ -1,0 +1,403 @@
+{
+  "tag": "v31.1.2-en.10",
+  "source": "b68f5bf6844c52501f77a674d8cd8cfff2fabeb9",
+  "tree": "a77026814986c5ab2950c4674f390f1a6b3a582a",
+  "manifest_sha256": "e900138702a377c40e7234f7e33af8ddf09de7ab7f5c8c1cc29f422cb3e9e959",
+  "signature_sha256": "e86f6c06da8b4543c35c503174ffcfaaeed31eb44641f83f6d131bbd1fd2bc6c",
+  "assets": {
+    "sugarchain-en-31.1.2-aarch64-linux-gnu.tar.gz": {
+      "bytes": 39690155,
+      "carried_via": {
+        "asset_provenance_sha256": "319a025e0e9dd60e35329159ae6083141418d599e0819fd5433ee1bd603f109f",
+        "packaging_inputs_sha256": "f743a08370545d62260e673b518ca6828fc8bdac3f8dbc423033c6f4cdf378e5",
+        "public_verification_sha256": "26dcaa8ba8a209feb7b4ef0f3f73083a4b041b4b7ab5711f7354440f5e8bc951",
+        "sha256sums_sha256": "c999c717d1d0ab96bafa11c2f2093af535012d384f7061f7d6d049f2d8435510",
+        "signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+        "signature_sha256": "e26a0ce0d721fd4ececb07c55e39c1b4dfe155c82469a32a5fa149478fbf9d60",
+        "source": "ef4f3c07244505b8b1eb78d43f91dd5fa561b2bf",
+        "tag": "v31.1.2-en.9",
+        "tree": "527d14fa0a9238828200ab643b56e718f3ba3bfb"
+      },
+      "old_manifest_sha256": "687595190828e35453b775c5fadf48a3be5cbf334f91c26e45b76f79af95dbe2",
+      "old_signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+      "origin_tag": "v31.1.2-en.8",
+      "sha256": "56fe2d1562b9aa239d6854993b7fc7084774cd17c1c5acc5d25ab21d33813853",
+      "source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+      "tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+      "validation_scope": "verified_signed_prior_release"
+    },
+    "sugarchain-en-31.1.2-arm-linux-gnueabihf.tar.gz": {
+      "bytes": 36751373,
+      "carried_via": {
+        "asset_provenance_sha256": "319a025e0e9dd60e35329159ae6083141418d599e0819fd5433ee1bd603f109f",
+        "packaging_inputs_sha256": "f743a08370545d62260e673b518ca6828fc8bdac3f8dbc423033c6f4cdf378e5",
+        "public_verification_sha256": "26dcaa8ba8a209feb7b4ef0f3f73083a4b041b4b7ab5711f7354440f5e8bc951",
+        "sha256sums_sha256": "c999c717d1d0ab96bafa11c2f2093af535012d384f7061f7d6d049f2d8435510",
+        "signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+        "signature_sha256": "e26a0ce0d721fd4ececb07c55e39c1b4dfe155c82469a32a5fa149478fbf9d60",
+        "source": "ef4f3c07244505b8b1eb78d43f91dd5fa561b2bf",
+        "tag": "v31.1.2-en.9",
+        "tree": "527d14fa0a9238828200ab643b56e718f3ba3bfb"
+      },
+      "old_manifest_sha256": "687595190828e35453b775c5fadf48a3be5cbf334f91c26e45b76f79af95dbe2",
+      "old_signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+      "origin_tag": "v31.1.2-en.8",
+      "sha256": "42d79df08ff4576d02a34bea291580ecfee14241ddd215161541985676252841",
+      "source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+      "tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+      "validation_scope": "verified_signed_prior_release"
+    },
+    "sugarchain-en-31.1.2-dependency-sources.zip": {
+      "bytes": 213102915,
+      "depends": "8b718f7e3c034fcaf999ea3373a43112509f67d1",
+      "receipt_sha256": {
+        "companion-validation.json": "75d7f9239d3f329fbce04c28a61d6ec8cecbe9e7ef76fcd47b178f4337905ab6",
+        "source-companion-receipt.json": "ab1f1ae62bf717587da096725c5e41866731cde8f9bd2461bada05665983b742"
+      },
+      "sha256": "fd57a4ab349b5db09a758ce1310db228babfd02557e6176140548374c0a4c53f",
+      "source": "b68f5bf6844c52501f77a674d8cd8cfff2fabeb9",
+      "tree": "a77026814986c5ab2950c4674f390f1a6b3a582a",
+      "validation_scope": "source_companion"
+    },
+    "sugarchain-en-31.1.2-macos-arm64-cli.tar.gz": {
+      "bytes": 12902836,
+      "carried_via": {
+        "asset_provenance_sha256": "319a025e0e9dd60e35329159ae6083141418d599e0819fd5433ee1bd603f109f",
+        "packaging_inputs_sha256": "f743a08370545d62260e673b518ca6828fc8bdac3f8dbc423033c6f4cdf378e5",
+        "public_verification_sha256": "26dcaa8ba8a209feb7b4ef0f3f73083a4b041b4b7ab5711f7354440f5e8bc951",
+        "sha256sums_sha256": "c999c717d1d0ab96bafa11c2f2093af535012d384f7061f7d6d049f2d8435510",
+        "signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+        "signature_sha256": "e26a0ce0d721fd4ececb07c55e39c1b4dfe155c82469a32a5fa149478fbf9d60",
+        "source": "ef4f3c07244505b8b1eb78d43f91dd5fa561b2bf",
+        "tag": "v31.1.2-en.9",
+        "tree": "527d14fa0a9238828200ab643b56e718f3ba3bfb"
+      },
+      "old_manifest_sha256": "687595190828e35453b775c5fadf48a3be5cbf334f91c26e45b76f79af95dbe2",
+      "old_signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+      "origin_tag": "v31.1.2-en.8",
+      "sha256": "74aeb08fc55b3f4cea727ad8f2935ec2dc52845cedebfd6fdfa39ce77b16925a",
+      "source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+      "tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+      "validation_scope": "verified_signed_prior_release"
+    },
+    "sugarchain-en-31.1.2-macos-arm64.zip": {
+      "bytes": 17412086,
+      "carried_via": {
+        "asset_provenance_sha256": "319a025e0e9dd60e35329159ae6083141418d599e0819fd5433ee1bd603f109f",
+        "packaging_inputs_sha256": "f743a08370545d62260e673b518ca6828fc8bdac3f8dbc423033c6f4cdf378e5",
+        "public_verification_sha256": "26dcaa8ba8a209feb7b4ef0f3f73083a4b041b4b7ab5711f7354440f5e8bc951",
+        "sha256sums_sha256": "c999c717d1d0ab96bafa11c2f2093af535012d384f7061f7d6d049f2d8435510",
+        "signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+        "signature_sha256": "e26a0ce0d721fd4ececb07c55e39c1b4dfe155c82469a32a5fa149478fbf9d60",
+        "source": "ef4f3c07244505b8b1eb78d43f91dd5fa561b2bf",
+        "tag": "v31.1.2-en.9",
+        "tree": "527d14fa0a9238828200ab643b56e718f3ba3bfb"
+      },
+      "old_manifest_sha256": "687595190828e35453b775c5fadf48a3be5cbf334f91c26e45b76f79af95dbe2",
+      "old_signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+      "origin_tag": "v31.1.2-en.8",
+      "sha256": "e62c570e39044408cbf0b75ffdc0549c85b3099982513a306f1164d66bd0965d",
+      "source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+      "tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+      "validation_scope": "verified_signed_prior_release"
+    },
+    "sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz": {
+      "apple_notarized": false,
+      "archive_artifact": {
+        "archive_bytes": 32645237,
+        "archive_sha256": "2c1446c843c1b8e7fb7e362be13628a25f9cf413d480b5af41a6d214bfeaf87b",
+        "id": 15247287651
+      },
+      "artifact": "en10-release-macos-x86_64",
+      "bytes": 13742273,
+      "ci_run_attempt": 1,
+      "ci_run_id": 46101481398,
+      "ci_url": "https://github.com/Sugarchain-CI/sugarchain-en/actions/runs/46101481398",
+      "code_signature": "ad-hoc",
+      "receipt_sha256": {
+        "macos-x86_64-provenance.json": "6b5a2c1e28f12c38fdcd1da3245695dbca182ccaa4a2e29ce54d4baff9cace09"
+      },
+      "sha256": "f3c3b7e95acbe93aad80cb6918995e296844339cedfe8b5e9f65e066e06e8246",
+      "source": "b68f5bf6844c52501f77a674d8cd8cfff2fabeb9",
+      "tree": "a77026814986c5ab2950c4674f390f1a6b3a582a",
+      "validation_scope": "native",
+      "workflow_sha": "91ba93f9442aa16824c8203d9971907c3bcab4cc"
+    },
+    "sugarchain-en-31.1.2-macos-x86_64.zip": {
+      "apple_notarized": false,
+      "archive_artifact": {
+        "archive_bytes": 32645237,
+        "archive_sha256": "2c1446c843c1b8e7fb7e362be13628a25f9cf413d480b5af41a6d214bfeaf87b",
+        "id": 15247287651
+      },
+      "artifact": "en10-release-macos-x86_64",
+      "bytes": 18900304,
+      "ci_run_attempt": 1,
+      "ci_run_id": 46101481398,
+      "ci_url": "https://github.com/Sugarchain-CI/sugarchain-en/actions/runs/46101481398",
+      "code_signature": "ad-hoc",
+      "receipt_sha256": {
+        "macos-x86_64-provenance.json": "6b5a2c1e28f12c38fdcd1da3245695dbca182ccaa4a2e29ce54d4baff9cace09"
+      },
+      "sha256": "7a714f46c9ee3da30e53ddb02890fa4089860fa0ab409e0091fe4d1d6a153c9a",
+      "source": "b68f5bf6844c52501f77a674d8cd8cfff2fabeb9",
+      "tree": "a77026814986c5ab2950c4674f390f1a6b3a582a",
+      "validation_scope": "native",
+      "workflow_sha": "91ba93f9442aa16824c8203d9971907c3bcab4cc"
+    },
+    "sugarchain-en-31.1.2-powerpc64-linux-gnu.tar.gz": {
+      "bytes": 45723769,
+      "carried_via": {
+        "asset_provenance_sha256": "319a025e0e9dd60e35329159ae6083141418d599e0819fd5433ee1bd603f109f",
+        "packaging_inputs_sha256": "f743a08370545d62260e673b518ca6828fc8bdac3f8dbc423033c6f4cdf378e5",
+        "public_verification_sha256": "26dcaa8ba8a209feb7b4ef0f3f73083a4b041b4b7ab5711f7354440f5e8bc951",
+        "sha256sums_sha256": "c999c717d1d0ab96bafa11c2f2093af535012d384f7061f7d6d049f2d8435510",
+        "signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+        "signature_sha256": "e26a0ce0d721fd4ececb07c55e39c1b4dfe155c82469a32a5fa149478fbf9d60",
+        "source": "ef4f3c07244505b8b1eb78d43f91dd5fa561b2bf",
+        "tag": "v31.1.2-en.9",
+        "tree": "527d14fa0a9238828200ab643b56e718f3ba3bfb"
+      },
+      "old_manifest_sha256": "687595190828e35453b775c5fadf48a3be5cbf334f91c26e45b76f79af95dbe2",
+      "old_signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+      "origin_tag": "v31.1.2-en.8",
+      "sha256": "8ebc501e80f86f70f5d0e796925d128c2c9254811a0c4d2b2693b5a0eee4eb9e",
+      "source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+      "tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+      "validation_scope": "verified_signed_prior_release"
+    },
+    "sugarchain-en-31.1.2-riscv64-linux-gnu.tar.gz": {
+      "bytes": 42518249,
+      "carried_via": {
+        "asset_provenance_sha256": "319a025e0e9dd60e35329159ae6083141418d599e0819fd5433ee1bd603f109f",
+        "packaging_inputs_sha256": "f743a08370545d62260e673b518ca6828fc8bdac3f8dbc423033c6f4cdf378e5",
+        "public_verification_sha256": "26dcaa8ba8a209feb7b4ef0f3f73083a4b041b4b7ab5711f7354440f5e8bc951",
+        "sha256sums_sha256": "c999c717d1d0ab96bafa11c2f2093af535012d384f7061f7d6d049f2d8435510",
+        "signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+        "signature_sha256": "e26a0ce0d721fd4ececb07c55e39c1b4dfe155c82469a32a5fa149478fbf9d60",
+        "source": "ef4f3c07244505b8b1eb78d43f91dd5fa561b2bf",
+        "tag": "v31.1.2-en.9",
+        "tree": "527d14fa0a9238828200ab643b56e718f3ba3bfb"
+      },
+      "old_manifest_sha256": "687595190828e35453b775c5fadf48a3be5cbf334f91c26e45b76f79af95dbe2",
+      "old_signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+      "origin_tag": "v31.1.2-en.8",
+      "sha256": "3df41cfd87aaae820c0df8a1fb69fff7e7f06b3052b157ecfb061877614a9307",
+      "source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+      "tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+      "validation_scope": "verified_signed_prior_release"
+    },
+    "sugarchain-en-31.1.2-source.tar.gz": {
+      "bytes": 14655014,
+      "depends": "8b718f7e3c034fcaf999ea3373a43112509f67d1",
+      "receipt_sha256": {
+        "companion-validation.json": "75d7f9239d3f329fbce04c28a61d6ec8cecbe9e7ef76fcd47b178f4337905ab6",
+        "source-companion-receipt.json": "ab1f1ae62bf717587da096725c5e41866731cde8f9bd2461bada05665983b742"
+      },
+      "sha256": "4de904df810061b312c5dd964fdccbfb96e41b541f4da743443e2b9b4b37e789",
+      "source": "b68f5bf6844c52501f77a674d8cd8cfff2fabeb9",
+      "tree": "a77026814986c5ab2950c4674f390f1a6b3a582a",
+      "validation_scope": "source_companion"
+    },
+    "sugarchain-en-31.1.2-third-party-notices.zip": {
+      "bytes": 497431,
+      "depends": "8b718f7e3c034fcaf999ea3373a43112509f67d1",
+      "receipt_sha256": {
+        "companion-validation.json": "75d7f9239d3f329fbce04c28a61d6ec8cecbe9e7ef76fcd47b178f4337905ab6",
+        "source-companion-receipt.json": "ab1f1ae62bf717587da096725c5e41866731cde8f9bd2461bada05665983b742"
+      },
+      "sha256": "9a477aef5f42fb303d0ec323675185cb4a1ed58ef1427b20d4f0f04ea059fc10",
+      "source": "b68f5bf6844c52501f77a674d8cd8cfff2fabeb9",
+      "tree": "a77026814986c5ab2950c4674f390f1a6b3a582a",
+      "validation_scope": "source_companion"
+    },
+    "sugarchain-en-31.1.2-windows-third-party-notices.zip": {
+      "archive_artifact": {
+        "archive_bytes": 69367647,
+        "archive_sha256": "d8d9e8403d055ec6f1659d84c31745bafe6101db36b5486ce91430601aeefd2e",
+        "id": 15208641954
+      },
+      "artifact": "en9-release-windows-ucrt",
+      "bytes": 167128,
+      "carried_via": {
+        "asset_provenance_sha256": "319a025e0e9dd60e35329159ae6083141418d599e0819fd5433ee1bd603f109f",
+        "packaging_inputs_sha256": "f743a08370545d62260e673b518ca6828fc8bdac3f8dbc423033c6f4cdf378e5",
+        "public_verification_sha256": "26dcaa8ba8a209feb7b4ef0f3f73083a4b041b4b7ab5711f7354440f5e8bc951",
+        "sha256sums_sha256": "c999c717d1d0ab96bafa11c2f2093af535012d384f7061f7d6d049f2d8435510",
+        "signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+        "signature_sha256": "e26a0ce0d721fd4ececb07c55e39c1b4dfe155c82469a32a5fa149478fbf9d60",
+        "source": "ef4f3c07244505b8b1eb78d43f91dd5fa561b2bf",
+        "tag": "v31.1.2-en.9",
+        "tree": "527d14fa0a9238828200ab643b56e718f3ba3bfb"
+      },
+      "ci_run_attempt": 1,
+      "ci_run_id": 46011133445,
+      "ci_url": "https://github.com/Sugarchain-CI/sugarchain-en/actions/runs/46011133445",
+      "depends": "8b718f7e3c034fcaf999ea3373a43112509f67d1",
+      "notice_template_sha256": "5b3d1cd0a0efe0c0ea883457b0f6663afc8e1d8123853df364672d40b7454fc5",
+      "receipt_sha256": {
+        "codegen.json": "09c6e73b2b75c5867387cd10aa23559b104bd18d0b1f9a92bb78b659a7b9bb46",
+        "windows-build.json": "c280adda1b10cc21eec2eb7d838a8b7aa634fb194e1ea1197a5a487793ae60a7",
+        "windows-native.json": "a9ab7279609f83e8a3c522ae78d82a45e3697ec5b95a21eaeacb17e8902c47d7"
+      },
+      "sha256": "10ab3532174f65f786874c338a05a04b5459c8f3dbe606705b840ce539d31a38",
+      "source": "409ea3ee5f1cdb03790ec2adf5e191031a28737f",
+      "tree": "578110fc4d33962ed429171addc1d09cf5d5906f",
+      "validation_scope": "notice_companion",
+      "workflow_sha": "f8beb39501a1ecda8d83acb31b9abbc6ef567070"
+    },
+    "sugarchain-en-31.1.2-windows-x86_64-msvcrt-portable.zip": {
+      "archive_artifact": {
+        "archive_bytes": 62002162,
+        "archive_sha256": "e9243a2bc8dfb492e597e967656e7226562c3d05919fef268e493208ac757405",
+        "id": 15208547535
+      },
+      "artifact": "en9-release-windows-msvcrt",
+      "bytes": 36270994,
+      "carried_via": {
+        "asset_provenance_sha256": "319a025e0e9dd60e35329159ae6083141418d599e0819fd5433ee1bd603f109f",
+        "packaging_inputs_sha256": "f743a08370545d62260e673b518ca6828fc8bdac3f8dbc423033c6f4cdf378e5",
+        "public_verification_sha256": "26dcaa8ba8a209feb7b4ef0f3f73083a4b041b4b7ab5711f7354440f5e8bc951",
+        "sha256sums_sha256": "c999c717d1d0ab96bafa11c2f2093af535012d384f7061f7d6d049f2d8435510",
+        "signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+        "signature_sha256": "e26a0ce0d721fd4ececb07c55e39c1b4dfe155c82469a32a5fa149478fbf9d60",
+        "source": "ef4f3c07244505b8b1eb78d43f91dd5fa561b2bf",
+        "tag": "v31.1.2-en.9",
+        "tree": "527d14fa0a9238828200ab643b56e718f3ba3bfb"
+      },
+      "ci_run_attempt": 1,
+      "ci_run_id": 46011133445,
+      "ci_url": "https://github.com/Sugarchain-CI/sugarchain-en/actions/runs/46011133445",
+      "receipt_sha256": {
+        "codegen.json": "8707554fd31b6e039246f1acdeb3662e93cc0f4965341199bb8e29e17649d9b2",
+        "windows-build.json": "765a628c579703138f08df80d02a9a7bf410357ae47d2f143130a9247c96068c",
+        "windows-native.json": "54ae911595fec1aaf89c7ceea6dc2401dd23d81fe5dff6f5280ea2ac369c9b2f"
+      },
+      "sha256": "18cba038d19a89e92ab699b03253c985d6fd912bc66cdc5281ef7253a299b040",
+      "source": "409ea3ee5f1cdb03790ec2adf5e191031a28737f",
+      "tree": "578110fc4d33962ed429171addc1d09cf5d5906f",
+      "validation_scope": "native",
+      "workflow_sha": "f8beb39501a1ecda8d83acb31b9abbc6ef567070"
+    },
+    "sugarchain-en-31.1.2-windows-x86_64-msvcrt-setup.exe": {
+      "archive_artifact": {
+        "archive_bytes": 62002162,
+        "archive_sha256": "e9243a2bc8dfb492e597e967656e7226562c3d05919fef268e493208ac757405",
+        "id": 15208547535
+      },
+      "artifact": "en9-release-windows-msvcrt",
+      "bytes": 25936331,
+      "carried_via": {
+        "asset_provenance_sha256": "319a025e0e9dd60e35329159ae6083141418d599e0819fd5433ee1bd603f109f",
+        "packaging_inputs_sha256": "f743a08370545d62260e673b518ca6828fc8bdac3f8dbc423033c6f4cdf378e5",
+        "public_verification_sha256": "26dcaa8ba8a209feb7b4ef0f3f73083a4b041b4b7ab5711f7354440f5e8bc951",
+        "sha256sums_sha256": "c999c717d1d0ab96bafa11c2f2093af535012d384f7061f7d6d049f2d8435510",
+        "signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+        "signature_sha256": "e26a0ce0d721fd4ececb07c55e39c1b4dfe155c82469a32a5fa149478fbf9d60",
+        "source": "ef4f3c07244505b8b1eb78d43f91dd5fa561b2bf",
+        "tag": "v31.1.2-en.9",
+        "tree": "527d14fa0a9238828200ab643b56e718f3ba3bfb"
+      },
+      "ci_run_attempt": 1,
+      "ci_run_id": 46011133445,
+      "ci_url": "https://github.com/Sugarchain-CI/sugarchain-en/actions/runs/46011133445",
+      "receipt_sha256": {
+        "codegen.json": "8707554fd31b6e039246f1acdeb3662e93cc0f4965341199bb8e29e17649d9b2",
+        "windows-build.json": "765a628c579703138f08df80d02a9a7bf410357ae47d2f143130a9247c96068c",
+        "windows-native.json": "54ae911595fec1aaf89c7ceea6dc2401dd23d81fe5dff6f5280ea2ac369c9b2f"
+      },
+      "sha256": "bfbe0a84ba24d1324819726e829ffad8c484658f2ba805f1c7926cd5b33adcbc",
+      "source": "409ea3ee5f1cdb03790ec2adf5e191031a28737f",
+      "tree": "578110fc4d33962ed429171addc1d09cf5d5906f",
+      "validation_scope": "native",
+      "workflow_sha": "f8beb39501a1ecda8d83acb31b9abbc6ef567070"
+    },
+    "sugarchain-en-31.1.2-windows-x86_64-ucrt-portable.zip": {
+      "archive_artifact": {
+        "archive_bytes": 69367647,
+        "archive_sha256": "d8d9e8403d055ec6f1659d84c31745bafe6101db36b5486ce91430601aeefd2e",
+        "id": 15208641954
+      },
+      "artifact": "en9-release-windows-ucrt",
+      "bytes": 40740527,
+      "carried_via": {
+        "asset_provenance_sha256": "319a025e0e9dd60e35329159ae6083141418d599e0819fd5433ee1bd603f109f",
+        "packaging_inputs_sha256": "f743a08370545d62260e673b518ca6828fc8bdac3f8dbc423033c6f4cdf378e5",
+        "public_verification_sha256": "26dcaa8ba8a209feb7b4ef0f3f73083a4b041b4b7ab5711f7354440f5e8bc951",
+        "sha256sums_sha256": "c999c717d1d0ab96bafa11c2f2093af535012d384f7061f7d6d049f2d8435510",
+        "signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+        "signature_sha256": "e26a0ce0d721fd4ececb07c55e39c1b4dfe155c82469a32a5fa149478fbf9d60",
+        "source": "ef4f3c07244505b8b1eb78d43f91dd5fa561b2bf",
+        "tag": "v31.1.2-en.9",
+        "tree": "527d14fa0a9238828200ab643b56e718f3ba3bfb"
+      },
+      "ci_run_attempt": 1,
+      "ci_run_id": 46011133445,
+      "ci_url": "https://github.com/Sugarchain-CI/sugarchain-en/actions/runs/46011133445",
+      "receipt_sha256": {
+        "codegen.json": "09c6e73b2b75c5867387cd10aa23559b104bd18d0b1f9a92bb78b659a7b9bb46",
+        "windows-build.json": "c280adda1b10cc21eec2eb7d838a8b7aa634fb194e1ea1197a5a487793ae60a7",
+        "windows-native.json": "a9ab7279609f83e8a3c522ae78d82a45e3697ec5b95a21eaeacb17e8902c47d7"
+      },
+      "sha256": "2e6338e0504a1a11589d0d8d6b3db6b92a3b8b2577dba3a1cdc4c6c0f24fa4b3",
+      "source": "409ea3ee5f1cdb03790ec2adf5e191031a28737f",
+      "tree": "578110fc4d33962ed429171addc1d09cf5d5906f",
+      "validation_scope": "native",
+      "workflow_sha": "f8beb39501a1ecda8d83acb31b9abbc6ef567070"
+    },
+    "sugarchain-en-31.1.2-windows-x86_64-ucrt-setup.exe": {
+      "archive_artifact": {
+        "archive_bytes": 69367647,
+        "archive_sha256": "d8d9e8403d055ec6f1659d84c31745bafe6101db36b5486ce91430601aeefd2e",
+        "id": 15208641954
+      },
+      "artifact": "en9-release-windows-ucrt",
+      "bytes": 28680238,
+      "carried_via": {
+        "asset_provenance_sha256": "319a025e0e9dd60e35329159ae6083141418d599e0819fd5433ee1bd603f109f",
+        "packaging_inputs_sha256": "f743a08370545d62260e673b518ca6828fc8bdac3f8dbc423033c6f4cdf378e5",
+        "public_verification_sha256": "26dcaa8ba8a209feb7b4ef0f3f73083a4b041b4b7ab5711f7354440f5e8bc951",
+        "sha256sums_sha256": "c999c717d1d0ab96bafa11c2f2093af535012d384f7061f7d6d049f2d8435510",
+        "signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+        "signature_sha256": "e26a0ce0d721fd4ececb07c55e39c1b4dfe155c82469a32a5fa149478fbf9d60",
+        "source": "ef4f3c07244505b8b1eb78d43f91dd5fa561b2bf",
+        "tag": "v31.1.2-en.9",
+        "tree": "527d14fa0a9238828200ab643b56e718f3ba3bfb"
+      },
+      "ci_run_attempt": 1,
+      "ci_run_id": 46011133445,
+      "ci_url": "https://github.com/Sugarchain-CI/sugarchain-en/actions/runs/46011133445",
+      "receipt_sha256": {
+        "codegen.json": "09c6e73b2b75c5867387cd10aa23559b104bd18d0b1f9a92bb78b659a7b9bb46",
+        "windows-build.json": "c280adda1b10cc21eec2eb7d838a8b7aa634fb194e1ea1197a5a487793ae60a7",
+        "windows-native.json": "a9ab7279609f83e8a3c522ae78d82a45e3697ec5b95a21eaeacb17e8902c47d7"
+      },
+      "sha256": "c79b315f5c73d73c01cc7c5b863dfeb9d242504a5267c30fa9d2076e8b106c85",
+      "source": "409ea3ee5f1cdb03790ec2adf5e191031a28737f",
+      "tree": "578110fc4d33962ed429171addc1d09cf5d5906f",
+      "validation_scope": "native",
+      "workflow_sha": "f8beb39501a1ecda8d83acb31b9abbc6ef567070"
+    },
+    "sugarchain-en-31.1.2-x86_64-linux-gnu.tar.gz": {
+      "bytes": 41166523,
+      "carried_via": {
+        "asset_provenance_sha256": "319a025e0e9dd60e35329159ae6083141418d599e0819fd5433ee1bd603f109f",
+        "packaging_inputs_sha256": "f743a08370545d62260e673b518ca6828fc8bdac3f8dbc423033c6f4cdf378e5",
+        "public_verification_sha256": "26dcaa8ba8a209feb7b4ef0f3f73083a4b041b4b7ab5711f7354440f5e8bc951",
+        "sha256sums_sha256": "c999c717d1d0ab96bafa11c2f2093af535012d384f7061f7d6d049f2d8435510",
+        "signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+        "signature_sha256": "e26a0ce0d721fd4ececb07c55e39c1b4dfe155c82469a32a5fa149478fbf9d60",
+        "source": "ef4f3c07244505b8b1eb78d43f91dd5fa561b2bf",
+        "tag": "v31.1.2-en.9",
+        "tree": "527d14fa0a9238828200ab643b56e718f3ba3bfb"
+      },
+      "old_manifest_sha256": "687595190828e35453b775c5fadf48a3be5cbf334f91c26e45b76f79af95dbe2",
+      "old_signature_fingerprint": "CF8F465D97437DA3BB25534D92F37F683E41E891",
+      "origin_tag": "v31.1.2-en.8",
+      "sha256": "1dacf84446394a2e6e42becf7193318e8730a8468bcb867057aafbdcc2281059",
+      "source": "ba6ba77698f9a0759063604c4f87ce3eab93c107",
+      "tree": "585f08d47bc953b7863d2fc3ba51f3ea762bc36f",
+      "validation_scope": "verified_signed_prior_release"
+    }
+  }
+}
