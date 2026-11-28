@@ -1,0 +1,378 @@
+{
+  "schema": 1,
+  "configurations": {
+    "stock": {
+      "sender": {},
+      "receiver": {}
+    },
+    "receiver-blocksxor0": {
+      "sender": {},
+      "receiver": {
+        "blocksxor": "0"
+      }
+    },
+    "receiver-parpow1": {
+      "sender": {},
+      "receiver": {
+        "parpow": "1"
+      }
+    },
+    "receiver-par1": {
+      "sender": {},
+      "receiver": {
+        "par": "1"
+      }
+    },
+    "receiver-dbcache256": {
+      "sender": {},
+      "receiver": {
+        "dbcache": "256"
+      }
+    },
+    "sender-blocksxor0": {
+      "sender": {
+        "blocksxor": "0"
+      },
+      "receiver": {}
+    },
+    "old-combined4-both": {
+      "sender": {
+        "blocksxor": "0",
+        "parpow": "1",
+        "par": "1",
+        "dbcache": "256"
+      },
+      "receiver": {
+        "blocksxor": "0",
+        "parpow": "1",
+        "par": "1",
+        "dbcache": "256"
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "warm-stock",
+      "phase": "warmup",
+      "config": "stock"
+    },
+    {
+      "id": "warm-receiver-blocksxor0",
+      "phase": "warmup",
+      "config": "receiver-blocksxor0"
+    },
+    {
+      "id": "warm-receiver-parpow1",
+      "phase": "warmup",
+      "config": "receiver-parpow1"
+    },
+    {
+      "id": "warm-receiver-par1",
+      "phase": "warmup",
+      "config": "receiver-par1"
+    },
+    {
+      "id": "warm-receiver-dbcache256",
+      "phase": "warmup",
+      "config": "receiver-dbcache256"
+    },
+    {
+      "id": "warm-sender-blocksxor0",
+      "phase": "warmup",
+      "config": "sender-blocksxor0"
+    },
+    {
+      "id": "warm-old-combined4-both",
+      "phase": "warmup",
+      "config": "old-combined4-both"
+    },
+    {
+      "id": "pair-1-receiver-blocksxor0-1-stock",
+      "phase": "scored",
+      "treatment": "receiver-blocksxor0",
+      "pair": 1,
+      "position": 1,
+      "config": "stock"
+    },
+    {
+      "id": "pair-1-receiver-blocksxor0-2-receiver-blocksxor0",
+      "phase": "scored",
+      "treatment": "receiver-blocksxor0",
+      "pair": 1,
+      "position": 2,
+      "config": "receiver-blocksxor0"
+    },
+    {
+      "id": "pair-1-receiver-parpow1-1-receiver-parpow1",
+      "phase": "scored",
+      "treatment": "receiver-parpow1",
+      "pair": 1,
+      "position": 1,
+      "config": "receiver-parpow1"
+    },
+    {
+      "id": "pair-1-receiver-parpow1-2-stock",
+      "phase": "scored",
+      "treatment": "receiver-parpow1",
+      "pair": 1,
+      "position": 2,
+      "config": "stock"
+    },
+    {
+      "id": "pair-1-receiver-par1-1-stock",
+      "phase": "scored",
+      "treatment": "receiver-par1",
+      "pair": 1,
+      "position": 1,
+      "config": "stock"
+    },
+    {
+      "id": "pair-1-receiver-par1-2-receiver-par1",
+      "phase": "scored",
+      "treatment": "receiver-par1",
+      "pair": 1,
+      "position": 2,
+      "config": "receiver-par1"
+    },
+    {
+      "id": "pair-1-receiver-dbcache256-1-receiver-dbcache256",
+      "phase": "scored",
+      "treatment": "receiver-dbcache256",
+      "pair": 1,
+      "position": 1,
+      "config": "receiver-dbcache256"
+    },
+    {
+      "id": "pair-1-receiver-dbcache256-2-stock",
+      "phase": "scored",
+      "treatment": "receiver-dbcache256",
+      "pair": 1,
+      "position": 2,
+      "config": "stock"
+    },
+    {
+      "id": "pair-1-sender-blocksxor0-1-stock",
+      "phase": "scored",
+      "treatment": "sender-blocksxor0",
+      "pair": 1,
+      "position": 1,
+      "config": "stock"
+    },
+    {
+      "id": "pair-1-sender-blocksxor0-2-sender-blocksxor0",
+      "phase": "scored",
+      "treatment": "sender-blocksxor0",
+      "pair": 1,
+      "position": 2,
+      "config": "sender-blocksxor0"
+    },
+    {
+      "id": "pair-1-old-combined4-both-1-old-combined4-both",
+      "phase": "scored",
+      "treatment": "old-combined4-both",
+      "pair": 1,
+      "position": 1,
+      "config": "old-combined4-both"
+    },
+    {
+      "id": "pair-1-old-combined4-both-2-stock",
+      "phase": "scored",
+      "treatment": "old-combined4-both",
+      "pair": 1,
+      "position": 2,
+      "config": "stock"
+    },
+    {
+      "id": "pair-2-old-combined4-both-1-stock",
+      "phase": "scored",
+      "treatment": "old-combined4-both",
+      "pair": 2,
+      "position": 1,
+      "config": "stock"
+    },
+    {
+      "id": "pair-2-old-combined4-both-2-old-combined4-both",
+      "phase": "scored",
+      "treatment": "old-combined4-both",
+      "pair": 2,
+      "position": 2,
+      "config": "old-combined4-both"
+    },
+    {
+      "id": "pair-2-sender-blocksxor0-1-sender-blocksxor0",
+      "phase": "scored",
+      "treatment": "sender-blocksxor0",
+      "pair": 2,
+      "position": 1,
+      "config": "sender-blocksxor0"
+    },
+    {
+      "id": "pair-2-sender-blocksxor0-2-stock",
+      "phase": "scored",
+      "treatment": "sender-blocksxor0",
+      "pair": 2,
+      "position": 2,
+      "config": "stock"
+    },
+    {
+      "id": "pair-2-receiver-dbcache256-1-stock",
+      "phase": "scored",
+      "treatment": "receiver-dbcache256",
+      "pair": 2,
+      "position": 1,
+      "config": "stock"
+    },
+    {
+      "id": "pair-2-receiver-dbcache256-2-receiver-dbcache256",
+      "phase": "scored",
+      "treatment": "receiver-dbcache256",
+      "pair": 2,
+      "position": 2,
+      "config": "receiver-dbcache256"
+    },
+    {
+      "id": "pair-2-receiver-par1-1-receiver-par1",
+      "phase": "scored",
+      "treatment": "receiver-par1",
+      "pair": 2,
+      "position": 1,
+      "config": "receiver-par1"
+    },
+    {
+      "id": "pair-2-receiver-par1-2-stock",
+      "phase": "scored",
+      "treatment": "receiver-par1",
+      "pair": 2,
+      "position": 2,
+      "config": "stock"
+    },
+    {
+      "id": "pair-2-receiver-parpow1-1-stock",
+      "phase": "scored",
+      "treatment": "receiver-parpow1",
+      "pair": 2,
+      "position": 1,
+      "config": "stock"
+    },
+    {
+      "id": "pair-2-receiver-parpow1-2-receiver-parpow1",
+      "phase": "scored",
+      "treatment": "receiver-parpow1",
+      "pair": 2,
+      "position": 2,
+      "config": "receiver-parpow1"
+    },
+    {
+      "id": "pair-2-receiver-blocksxor0-1-receiver-blocksxor0",
+      "phase": "scored",
+      "treatment": "receiver-blocksxor0",
+      "pair": 2,
+      "position": 1,
+      "config": "receiver-blocksxor0"
+    },
+    {
+      "id": "pair-2-receiver-blocksxor0-2-stock",
+      "phase": "scored",
+      "treatment": "receiver-blocksxor0",
+      "pair": 2,
+      "position": 2,
+      "config": "stock"
+    },
+    {
+      "id": "pair-3-receiver-par1-1-stock",
+      "phase": "scored",
+      "treatment": "receiver-par1",
+      "pair": 3,
+      "position": 1,
+      "config": "stock"
+    },
+    {
+      "id": "pair-3-receiver-par1-2-receiver-par1",
+      "phase": "scored",
+      "treatment": "receiver-par1",
+      "pair": 3,
+      "position": 2,
+      "config": "receiver-par1"
+    },
+    {
+      "id": "pair-3-receiver-dbcache256-1-receiver-dbcache256",
+      "phase": "scored",
+      "treatment": "receiver-dbcache256",
+      "pair": 3,
+      "position": 1,
+      "config": "receiver-dbcache256"
+    },
+    {
+      "id": "pair-3-receiver-dbcache256-2-stock",
+      "phase": "scored",
+      "treatment": "receiver-dbcache256",
+      "pair": 3,
+      "position": 2,
+      "config": "stock"
+    },
+    {
+      "id": "pair-3-sender-blocksxor0-1-stock",
+      "phase": "scored",
+      "treatment": "sender-blocksxor0",
+      "pair": 3,
+      "position": 1,
+      "config": "stock"
+    },
+    {
+      "id": "pair-3-sender-blocksxor0-2-sender-blocksxor0",
+      "phase": "scored",
+      "treatment": "sender-blocksxor0",
+      "pair": 3,
+      "position": 2,
+      "config": "sender-blocksxor0"
+    },
+    {
+      "id": "pair-3-old-combined4-both-1-old-combined4-both",
+      "phase": "scored",
+      "treatment": "old-combined4-both",
+      "pair": 3,
+      "position": 1,
+      "config": "old-combined4-both"
+    },
+    {
+      "id": "pair-3-old-combined4-both-2-stock",
+      "phase": "scored",
+      "treatment": "old-combined4-both",
+      "pair": 3,
+      "position": 2,
+      "config": "stock"
+    },
+    {
+      "id": "pair-3-receiver-blocksxor0-1-stock",
+      "phase": "scored",
+      "treatment": "receiver-blocksxor0",
+      "pair": 3,
+      "position": 1,
+      "config": "stock"
+    },
+    {
+      "id": "pair-3-receiver-blocksxor0-2-receiver-blocksxor0",
+      "phase": "scored",
+      "treatment": "receiver-blocksxor0",
+      "pair": 3,
+      "position": 2,
+      "config": "receiver-blocksxor0"
+    },
+    {
+      "id": "pair-3-receiver-parpow1-1-receiver-parpow1",
+      "phase": "scored",
+      "treatment": "receiver-parpow1",
+      "pair": 3,
+      "position": 1,
+      "config": "receiver-parpow1"
+    },
+    {
+      "id": "pair-3-receiver-parpow1-2-stock",
+      "phase": "scored",
+      "treatment": "receiver-parpow1",
+      "pair": 3,
+      "position": 2,
+      "config": "stock"
+    }
+  ]
+}

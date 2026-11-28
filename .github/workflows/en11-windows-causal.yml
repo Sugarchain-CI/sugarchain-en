@@ -1,0 +1,66 @@
+name: En.11 Windows stock causal diagnostic
+'on':
+  push:
+    branches:
+    - bench/en11-windows-causal
+    paths:
+    - .github/en11-windows-causal/**
+    - .github/workflows/en11-windows-causal.yml
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  windows-stock-causal:
+    name: Native Windows UCRT option screen
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/bench/en11-windows-causal'
+    runs-on: windows-2025
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+        sparse-checkout: '.github/en10-native-regtest
+
+          .github/en11-windows-causal'
+    - name: Verify unchanged benchmark core inputs
+      shell: python
+      run: "from pathlib import Path\nimport hashlib\nr=Path('.github/en10-native-regtest')\nfor line in (r/'inputs.sha256').read_text().splitlines():\n\
+        \    h,n=line.split('  ',1)\n    with (r/n).open('rb') as f:assert hashlib.file_digest(f,'sha256').hexdigest()==h,n\n"
+    - name: Prepare the same authenticated Regtest fixture
+      run: 'python -B .github/en10-native-regtest/common/prepare.py --output "$env:RUNNER_TEMP/en11-causal-fixture"
+
+        '
+    - name: Compare stock and fixed single-option or combined cases
+      run: "$old = \".github/en10-native-regtest\"\n$fixture = \"$env:RUNNER_TEMP/en11-causal-fixture\"\npython -B .github/en11-windows-causal/screen-windows.py\
+        \ `\n  --common-dir \"$old/common\" --release-tools \"$old/windows/windows-regtest.py\" `\n  --keyring \"$old/windows/release-public.gpg\"\
+        \ --fixture \"$fixture/regtest-100000.dat\" `\n  --fixture-info \"$fixture/fixture-info.json\" --runtime \"$env:RUNNER_TEMP/en11-causal-runtime\"\
+        \ `\n  --output \"$env:RUNNER_TEMP/en11-causal-results\"\n"
+    - uses: actions/upload-artifact@v7
+      if: always()
+      with:
+        name: en11-windows-stock-causal
+        retention-days: 2
+        if-no-files-found: warn
+        path: '${{ runner.temp }}/en11-causal-results/screen-result.json
+
+          ${{ runner.temp }}/en11-causal-results/*/result.json
+
+          ${{ runner.temp }}/en11-causal-results/*/sender/debug.log
+
+          ${{ runner.temp }}/en11-causal-results/*/sender/console.log
+
+          ${{ runner.temp }}/en11-causal-results/*/receiver/debug.log
+
+          ${{ runner.temp }}/en11-causal-results/*/receiver/console.log
+
+          ${{ runner.temp }}/en11-causal-runtime/release-signature-verification.json
+
+          ${{ runner.temp }}/en11-causal-runtime/release-signature-status.log
+
+          '
