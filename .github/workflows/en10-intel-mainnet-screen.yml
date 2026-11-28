@@ -17,9 +17,11 @@ jobs:
     runs-on: macos-15-intel
     timeout-minutes: 50
     env:
-      RUN_ROOT: ${{ runner.temp }}/en10-intel-mainnet
       EN9_RELEASE_URL: https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.9
     steps:
+      - name: Set the runtime workspace path
+        shell: bash
+        run: printf 'RUN_ROOT=%s/en10-intel-mainnet\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
