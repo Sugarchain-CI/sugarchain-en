@@ -14,7 +14,8 @@
 namespace node {
 
 namespace {
-#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || \
+    (defined(__APPLE__) && (defined(__aarch64__) || defined(__x86_64__)))
 constexpr bool USE_RAM_BASED_IBD_REQUEST_LIMIT{true};
 #else
 constexpr bool USE_RAM_BASED_IBD_REQUEST_LIMIT{false};

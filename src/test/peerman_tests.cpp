@@ -95,7 +95,8 @@ BOOST_AUTO_TEST_CASE(ibd_request_budget_defaults_to_platform_and_ram_policy)
 {
     constexpr uint64_t four_gib{4ULL << 30};
     constexpr uint64_t eight_gib{8ULL << 30};
-#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || (defined(__APPLE__) && defined(__aarch64__))
+#if (defined(_WIN32) && (defined(__x86_64__) || defined(_M_X64))) || \
+    (defined(__APPLE__) && (defined(__aarch64__) || defined(__x86_64__)))
     constexpr int mainnet_4_gib_limit{64};
     constexpr int mainnet_8_gib_limit{128};
 #else
