@@ -109,7 +109,7 @@ def validate_release(directory, key, receipt):
     })
 
 
-def unpack(directory, runtime):
+def unpack(directory, runtime, program_hashes=PROGRAM_SHA):
     cli, gui = (runtime / mode for mode in MODES)
     cli.mkdir(parents=True)
     gui.mkdir()
@@ -121,7 +121,7 @@ def unpack(directory, runtime):
     binaries = {"cli": cli / f"{STEM}-cli/bin/sugarchaind", "gui": app / "Contents/MacOS/Sugarchain-Qt"}
     for mode, exe in binaries.items():
         require(exe.is_file() and not exe.is_symlink() and os.access(exe, os.X_OK)
-                and digest(exe) == PROGRAM_SHA[mode], f"Wrong packaged {mode} executable")
+                and digest(exe) == program_hashes[mode], f"Wrong packaged {mode} executable")
         arch = subprocess.check_output(["/usr/bin/lipo", "-archs", str(exe)], text=True, timeout=10).strip()
         require(arch == "x86_64", f"Expected thin x86_64 Mach-O for {mode}, got {arch}")
     subprocess.run(["/usr/bin/codesign", "--verify", "--strict", str(binaries["cli"])], check=True, timeout=20)
@@ -137,7 +137,7 @@ def schedule():
 
 
 def check_output(result, trial, fixture, work, geometry):
-    require(result["configured_request_limit"] == trial["limit"], "Wrong configured request ceiling")
+    require(result["configured_request_limit"] == trial.get("request_limit", trial["limit"]), "Wrong configured request ceiling")
     require(result["blocks"] == result["headers"] == result["unique_requested_blocks"] == HEIGHT,
             "End height or complete request set differs")
     require(result["initialblockdownload"] is True and result["chainwork"] == work
@@ -200,11 +200,11 @@ def apply_gate(cases):
     return {"status": overall, "groups": groups}
 
 
-def check_runtime(directory):
+def check_runtime(directory, source=SOURCE):
     for name in ("debug.log", "debug-restart.log"):
         raw = (directory / name).read_bytes()
         versions = re.findall(rb"Sugarchain En version v31\.1\.2-([a-f0-9]{12}) ", raw)
-        require(versions == [SOURCE[:12].encode("ascii")], f"Wrong running source in {name}")
+        require(versions == [source[:12].encode("ascii")], f"Wrong running source in {name}")
 
 
 def safe_node_end(directory):

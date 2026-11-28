@@ -1,0 +1,172 @@
+name: En.10 Intel macOS release and Mainnet delivery qualification
+permissions:
+  contents: read
+env:
+  RELEASE_SOURCE: b68f5bf6844c52501f77a674d8cd8cfff2fabeb9
+  RELEASE_TREE: a77026814986c5ab2950c4674f390f1a6b3a582a
+jobs:
+  macos-cross:
+    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/ci/en10-final-release'
+    name: Cross-build macOS ${{ matrix.arch }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: x86_64
+          profile: ./ci/test/00_setup_env_mac_cross_intel.sh
+    env:
+      FILE_ENV: ${{ matrix.profile }}
+      DANGER_CI_ON_HOST_FOLDERS: '1'
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        repository: decryp2kanon/sugarchain-en
+        ref: ${{ env.RELEASE_SOURCE }}
+        persist-credentials: false
+    - name: Verify release source and tree
+      run: 'test "$(git rev-parse HEAD)" = "$RELEASE_SOURCE"
+
+        test "$(git rev-parse ''HEAD^{tree}'')" = "$RELEASE_TREE"
+
+        git diff-index --quiet HEAD --
+
+        '
+    - uses: ./.github/actions/configure-environment
+    - uses: ./.github/actions/clear-files
+    - uses: ./.github/actions/cache/restore
+      with:
+        provider: gha
+    - uses: actions/cache/restore@v5
+      with:
+        path: '${{ env.BASE_CACHE }}
+
+          ${{ env.SOURCES_PATH }}
+
+          '
+        key: en9-${{ matrix.arch }}-depends-v1-${{ env.DEPENDS_HASH }}
+    - uses: actions/cache/restore@v5
+      with:
+        path: ${{ env.CCACHE_DIR }}
+        key: en9-${{ matrix.arch }}-ccache-v1-${{ env.DEPENDS_HASH }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: en9-${{ matrix.arch }}-ccache-v1-${{ env.DEPENDS_HASH }}-
+    - uses: ./.github/actions/configure-docker
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.sha }}
+        path: ci-tools
+        sparse-checkout: .github/en10-release/macos
+        persist-credentials: false
+    - name: Build static Qt, CLI and focused test executable
+      run: bash ci-tools/.github/en10-release/macos/build-cross.sh "${{ matrix.arch }}"
+    - uses: actions/upload-artifact@v7
+      with:
+        name: en10-cross-macos-${{ matrix.arch }}
+        path: ${{ runner.temp }}/en10-macos-transfer/
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 7
+  macos-package:
+    name: Verify and package macOS ${{ matrix.arch }}
+    needs: macos-cross
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - arch: x86_64
+          runner: macos-15-intel
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        repository: decryp2kanon/sugarchain-en
+        ref: ${{ env.RELEASE_SOURCE }}
+        persist-credentials: false
+    - uses: actions/checkout@v6
+      with:
+        ref: ${{ github.sha }}
+        path: ci-tools
+        sparse-checkout: |
+          .github/en10-release/macos
+          .github/en10-intel-mainnet
+        persist-credentials: false
+    - uses: actions/download-artifact@v8
+      with:
+        name: en10-cross-macos-${{ matrix.arch }}
+        path: ${{ runner.temp }}/en10-macos-incoming
+    - name: Sign and check the exact final archives on native hardware
+      timeout-minutes: 25
+      run: bash ci-tools/.github/en10-release/macos/package-native.sh "${{ matrix.arch }}"
+    - name: Retain the verified release payloads and receipt
+      uses: actions/upload-artifact@v7
+      with:
+        name: en10-release-macos-${{ matrix.arch }}
+        path: ${{ runner.temp }}/en10-macos-release/
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 14
+    - name: Retain native validation logs
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: en10-macos-validation-${{ matrix.arch }}
+        path: '${{ runner.temp }}/en10-macos-work/*.log
+
+          ${{ runner.temp }}/en10-macos-work/protocol/functional.log
+
+          '
+        if-no-files-found: ignore
+        retention-days: 14
+    - name: Verify comparison inputs and obtain signed public En.9 Intel archives
+      shell: bash
+      run: |
+        set -euo pipefail
+        root="$RUNNER_TEMP/en10-intel-default"
+        mkdir -m 700 "$root"
+        mkdir -m 700 "$root/download"
+        (cd ci-tools/.github/en10-intel-mainnet && shasum -a 256 -c inputs.sha256)
+        if ! command -v gpgv >/dev/null; then
+          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install gnupg
+        fi
+        release=https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.9
+        for file in SHA256SUMS SHA256SUMS.asc sugarchain-en-31.1.2-macos-x86_64-cli.tar.gz sugarchain-en-31.1.2-macos-x86_64.zip; do
+          curl --fail --silent --show-error --location --retry 2 --max-time 90 \
+            --proto '=https' --proto-redir '=https' \
+            --output "$root/download/$file" "$release/$file"
+        done
+    - name: Compare package defaults on genuine Mainnet bodies and verify explicit 16
+      timeout-minutes: 50
+      run: |
+        root="$RUNNER_TEMP/en10-intel-default"
+        python3 -B ci-tools/.github/en10-intel-mainnet/run-candidate.py \
+          --download-dir "$root/download" --candidate-dir "$RUNNER_TEMP/en10-macos-release" \
+          --runtime-dir "$root/runtime" --output "$root/results"
+    - name: Retain Mainnet delivery comparison evidence
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: en10-intel-mainnet-default
+        if-no-files-found: warn
+        retention-days: 7
+        path: |
+          ${{ runner.temp }}/en10-intel-default/results/result.json
+          ${{ runner.temp }}/en10-intel-default/results/signature/verification.json
+          ${{ runner.temp }}/en10-intel-default/results/signature/gpgv.log
+          ${{ runner.temp }}/en10-intel-default/results/*ms-*/debug.log
+          ${{ runner.temp }}/en10-intel-default/results/*ms-*/debug-restart.log
+          ${{ runner.temp }}/en10-intel-default/results/*ms-*/console.log
+          ${{ runner.temp }}/en10-intel-default/results/*ms-*/console-restart.log
+          ${{ runner.temp }}/en10-intel-default/results/*ms-*/shutdown.json
+          ${{ runner.temp }}/en10-intel-default/results/*ms-*/shutdown-restart.json
+          ${{ runner.temp }}/en10-intel-default/results/*ms-*/body-endpoint.json
+'on':
+  push:
+    branches:
+    - ci/en10-final-release
+    paths:
+    - .github/workflows/en10-release-intel-macos.yml
+    - .github/en10-release/macos/**
+    - .github/en10-intel-mainnet/**
+  workflow_dispatch: null
