@@ -1,0 +1,22 @@
+{
+  "assets": {
+    "sugarchain-en-31.1.2-windows-x86_64-msvcrt-portable.zip": {
+      "bytes": 36270994,
+      "sha256": "18cba038d19a89e92ab699b03253c985d6fd912bc66cdc5281ef7253a299b040",
+      "url": "https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.10/sugarchain-en-31.1.2-windows-x86_64-msvcrt-portable.zip"
+    },
+    "sugarchain-en-31.1.2-windows-x86_64-ucrt-portable.zip": {
+      "bytes": 40740527,
+      "sha256": "2e6338e0504a1a11589d0d8d6b3db6b92a3b8b2577dba3a1cdc4c6c0f24fa4b3",
+      "url": "https://github.com/decryp2kanon/sugarchain-en/releases/download/v31.1.2-en.10/sugarchain-en-31.1.2-windows-x86_64-ucrt-portable.zip"
+    }
+  },
+  "release_source": "b68f5bf6844c52501f77a674d8cd8cfff2fabeb9",
+  "release_tree": "a77026814986c5ab2950c4674f390f1a6b3a582a",
+  "repository": "decryp2kanon/sugarchain-en",
+  "schema": 1,
+  "sha256sums_sha256": "e900138702a377c40e7234f7e33af8ddf09de7ab7f5c8c1cc29f422cb3e9e959",
+  "source": "409ea3ee5f1cdb03790ec2adf5e191031a28737f",
+  "tag": "v31.1.2-en.10",
+  "tree": "578110fc4d33962ed429171addc1d09cf5d5906f"
+}
