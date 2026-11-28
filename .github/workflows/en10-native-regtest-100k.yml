@@ -13,78 +13,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  linux:
-    name: Native Linux ${{ matrix.arch }}
-    if: github.repository == 'Sugarchain-CI/sugarchain-en' && github.ref == 'refs/heads/bench/en10-native-regtest-100k'
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 48
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-        - arch: x86_64
-          runner: ubuntu-24.04
-        - arch: arm64
-          runner: ubuntu-24.04-arm
-        - arch: armhf
-          runner: ubuntu-24.04-arm
-    defaults:
-      run:
-        shell: bash
-    env:
-      TOOLS: .github/en10-native-regtest
-    steps:
-    - uses: actions/checkout@v6
-      with:
-        persist-credentials: false
-        sparse-checkout: .github/en10-native-regtest
-    - name: Verify frozen benchmark inputs
-      shell: python
-      run: "from pathlib import Path\nimport hashlib\nr=Path('.github/en10-native-regtest')\nfor line in (r/'inputs.sha256').read_text().splitlines():\n\
-        \    digest, name = line.split('  ',1)\n    p=r/name\n    assert p.is_file() and not p.is_symlink()\n    with p.open('rb')\
-        \ as f: assert hashlib.file_digest(f,'sha256').hexdigest()==digest, name\n"
-    - name: Prove direct native AArch32 execution before enabling ARMHF packages
-      if: matrix.arch == 'armhf'
-      id: armhf
-      run: "set -euo pipefail\nif python3 -B \"$TOOLS/linux/check-native-armhf.py\" \"$RUNNER_TEMP/en10-linux-probe/armhf-native.json\"\
-        ; then\n  echo 'supported=true' >> \"$GITHUB_OUTPUT\"\nelse\n  echo 'supported=false' >> \"$GITHUB_OUTPUT\"\nfi\n"
-    - name: Install packaged GUI runtime requirements
-      if: matrix.arch != 'armhf' || steps.armhf.outputs.supported == 'true'
-      run: "set -euo pipefail\npackages=(gpgv xvfb xauth fonts-dejavu-core libfontconfig1 libfreetype6 libxkbcommon-x11-0\
-        \ libxcb-cursor0)\nif [[ \"${{ matrix.arch }}\" == 'armhf' ]]; then\n  sudo dpkg --add-architecture armhf\n  packages+=(libc6:armhf\
-        \ libfontconfig1:armhf libfreetype6:armhf libxkbcommon-x11-0:armhf libxcb-cursor0:armhf)\nfi\nsudo apt-get update\
-        \ -qq\nsudo apt-get install -y --no-install-recommends \"${packages[@]}\"\n"
-    - name: Verify and unpack the common 100,000-block fixture
-      if: matrix.arch != 'armhf' || steps.armhf.outputs.supported == 'true'
-      run: python3 -B "$TOOLS/common/prepare.py" --output "$RUNNER_TEMP/en10-linux-fixture"
-    - name: Measure the signed published daemon and GUI
-      if: matrix.arch != 'armhf' || steps.armhf.outputs.supported == 'true'
-      run: "args=(\n  --arch \"${{ matrix.arch }}\"\n  --fixture-dir \"$RUNNER_TEMP/en10-linux-fixture\"\n  --output \"$RUNNER_TEMP/en10-linux-result\"\
-        \n)\npython3 -B \"$TOOLS/linux/linux-adapter.py\" \"${args[@]}\"\n"
-    - name: Retain native benchmarks and qualification reports
-      if: always()
-      uses: actions/upload-artifact@v7
-      with:
-        name: en10-native-regtest-linux-${{ matrix.arch }}
-        if-no-files-found: warn
-        retention-days: 7
-        path: '${{ runner.temp }}/en10-linux-probe/armhf-native.json
-
-          ${{ runner.temp }}/en10-linux-result/platform-summary.json
-
-          ${{ runner.temp }}/en10-linux-result/armhf-native.json
-
-          ${{ runner.temp }}/en10-linux-result/gpgv.log
-
-          ${{ runner.temp }}/en10-linux-result/*-harness.log
-
-          ${{ runner.temp }}/en10-linux-result/*/result.json
-
-          ${{ runner.temp }}/en10-linux-result/*/trial-*/*/debug.log
-
-          ${{ runner.temp }}/en10-linux-result/*/trial-*/*/console.log
-
-          '
   windows:
     name: Native Windows x86-64 (UCRT and MSVCRT)
     runs-on: windows-2025
@@ -148,11 +76,7 @@ jobs:
     - uses: actions/checkout@v6
       with:
         persist-credentials: false
-        sparse-checkout: '.github/en10-native-regtest/common
-
-          .github/en10-native-regtest/macos
-
-          '
+        sparse-checkout: .github/en10-native-regtest
     - name: Verify frozen benchmark inputs
       shell: python
       run: "from pathlib import Path\nimport hashlib\nr=Path('.github/en10-native-regtest')\nfor line in (r/'inputs.sha256').read_text().splitlines():\n\
